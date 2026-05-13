@@ -410,6 +410,7 @@ function estimateTokens(messages) {
 }
 
 let autoSaveTriggered = false;
+let lastSaveHash = '';  // Prevent duplicate saves of same conversation
 
 function updateContextBar() {
   const tokens = estimateTokens(history);
@@ -658,6 +659,17 @@ async function saveMemories(silent) {
     return false;
   }
 
+  // Dedupe: don't save the same conversation twice
+  const hash = history.map(m => m.content).join('|').slice(-500);
+  if (hash === lastSaveHash) {
+    if (!silent) {
+      statusEl.textContent = 'already saved';
+      statusEl.style.color = 'var(--accent)';
+      setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 2000);
+    }
+    return true;  // Return true so newChat doesn't warn
+  }
+
   statusEl.textContent = 'saving memories...';
   statusEl.style.color = 'var(--accent)';
 
@@ -681,6 +693,7 @@ async function saveMemories(silent) {
     statusEl.textContent = `saved ${result.memories_saved} memories`;
     statusEl.style.color = 'var(--accent)';
     console.log('Memories saved:', result);
+    lastSaveHash = hash;  // Mark this conversation as saved
     setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 3000);
     return true;
   } catch (err) {
@@ -708,6 +721,8 @@ async function newChat() {
 
   history = [];
   messagesEl.innerHTML = '';
+  lastSaveHash = '';
+  autoSaveTriggered = false;
   saveHistory();
   updateContextBar();
   inputEl.focus();
