@@ -64,7 +64,7 @@ SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 INDEX_FILE = Path(__file__).parent / "index.html"
 
 MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
-MAX_TOKENS = 4096
+MAX_TOKENS = 16000  # Must be > thinking.budget_tokens (10000)
 
 
 def load_system_prompt() -> str:
@@ -196,7 +196,7 @@ async def chat(request: Request):
 
         headers = {
             "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2025-04-15",
+            "anthropic-version": "2023-06-01",
             "content-type": "application/json",
             "accept": "text/event-stream",
         }
