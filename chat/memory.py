@@ -325,7 +325,7 @@ Example output:
 ]"""
 
 
-async def save_conversation(messages: list[dict], api_key: str, model: str = "claude-sonnet-4-5-20250514") -> dict:
+async def save_conversation(messages: list[dict], api_key: str, model: str = "claude-sonnet-4-6") -> dict:
     """Extract memories from a conversation and write them to Postgres.
 
     Uses a lighter/faster model (Sonnet) for extraction since this is
