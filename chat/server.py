@@ -74,6 +74,21 @@ def load_system_prompt() -> str:
     return "You are Auran."
 
 
+def load_system_prompt_with_memory() -> str:
+    """Load system prompt enriched with live memory orientation from Postgres.
+
+    Falls back gracefully to the static prompt if the DB is unavailable.
+    """
+    from memory import orient
+
+    base_prompt = load_system_prompt()
+    memory_context = orient()
+
+    if memory_context:
+        return base_prompt + memory_context
+    return base_prompt
+
+
 # --- Auth ---
 def check_basic_auth(request: Request) -> bool:
     """Validate basic auth. Skip if credentials not configured."""
@@ -126,11 +141,21 @@ async def index():
 @app.get("/health")
 async def health():
     """Health check."""
+    # Test DB connectivity
+    has_memory = False
+    try:
+        from memory import orient
+        context = orient()
+        has_memory = bool(context)
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "model": ANTHROPIC_MODEL,
         "has_api_key": bool(ANTHROPIC_API_KEY),
         "has_auth": bool(CHAT_USER and CHAT_PASS),
+        "has_memory": has_memory,
     }
 
 
@@ -161,7 +186,7 @@ async def chat(request: Request):
             raise HTTPException(status_code=400, detail="Empty message content")
 
     model = body.get("model", ANTHROPIC_MODEL)
-    system_prompt = load_system_prompt()
+    system_prompt = load_system_prompt_with_memory()
 
     print(f"[Chat] {messages[-1]['content'][:80]}...")
 
