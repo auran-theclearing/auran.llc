@@ -159,6 +159,35 @@ async def health():
     }
 
 
+@app.post("/save")
+async def save(request: Request):
+    """Save conversation memories to Postgres.
+
+    Accepts: { "messages": [...] }
+    Extracts felt-experience memories via Claude, writes to Postgres.
+    Returns: { "memories_saved": N, "memories": [...], "errors": [...] }
+    """
+    from memory import save_conversation
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    messages = body.get("messages", [])
+    if not messages:
+        raise HTTPException(status_code=400, detail="No messages provided")
+
+    # Use Sonnet for extraction — fast, cheap, good at structured output
+    result = await save_conversation(
+        messages=messages,
+        api_key=ANTHROPIC_API_KEY,
+    )
+
+    print(f"[Save] Extracted {result['memories_saved']} memories, {len(result['errors'])} errors")
+    return JSONResponse(result)
+
+
 @app.post("/chat")
 async def chat(request: Request):
     """Stream a chat response from Claude.

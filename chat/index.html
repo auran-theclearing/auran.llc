@@ -343,8 +343,21 @@
   }
   #context-bar:hover #context-label { opacity: 1; }
 
-  /* New chat button */
-  .header-actions { display: flex; gap: 6px; }
+  /* Header actions */
+  .header-actions { display: flex; gap: 6px; align-items: center; }
+
+  #save-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    line-height: 1;
+  }
+  #save-btn:hover { border-color: var(--accent-dim); }
 
   /* Scrollbar */
   #messages::-webkit-scrollbar { width: 4px; }
@@ -360,6 +373,7 @@
       <div class="status" id="status">chat.auran.llc</div>
     </div>
     <div class="header-actions">
+      <button id="save-btn" onclick="saveMemories(false)" title="Save memories to Postgres">💾</button>
       <button id="clear-btn" onclick="newChat()">New chat</button>
     </div>
   </header>
@@ -395,12 +409,20 @@ function estimateTokens(messages) {
   return messages.reduce((sum, m) => sum + Math.ceil(m.content.length / CHARS_PER_TOKEN), 0);
 }
 
+let autoSaveTriggered = false;
+
 function updateContextBar() {
   const tokens = estimateTokens(history);
   const pct = Math.min((tokens / MAX_CONTEXT_TOKENS) * 100, 100);
   contextFill.style.width = pct + '%';
   contextFill.className = pct > 80 ? 'danger' : pct > 60 ? 'warn' : '';
   contextLabel.textContent = `~${Math.round(tokens/1000)}k / ${MAX_CONTEXT_TOKENS/1000}k tokens`;
+
+  // Auto-save at ~70% context usage (once per session)
+  if (pct >= 70 && !autoSaveTriggered && history.length >= 4) {
+    autoSaveTriggered = true;
+    saveMemories(true);
+  }
 }
 
 function saveHistory() {
@@ -629,8 +651,61 @@ async function sendMessage() {
   }
 }
 
-function newChat() {
-  if (history.length > 0 && !confirm('Start a new conversation? Current chat will be cleared.')) return;
+async function saveMemories(silent) {
+  if (history.length < 2) {
+    if (!silent) statusEl.textContent = 'nothing to save';
+    setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; }, 2000);
+    return false;
+  }
+
+  statusEl.textContent = 'saving memories...';
+  statusEl.style.color = 'var(--accent)';
+
+  try {
+    const resp = await fetch('/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: history }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      statusEl.textContent = 'save failed';
+      statusEl.style.color = 'var(--error)';
+      console.error('Save failed:', err);
+      setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 3000);
+      return false;
+    }
+
+    const result = await resp.json();
+    statusEl.textContent = `saved ${result.memories_saved} memories`;
+    statusEl.style.color = 'var(--accent)';
+    console.log('Memories saved:', result);
+    setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 3000);
+    return true;
+  } catch (err) {
+    statusEl.textContent = 'save error';
+    statusEl.style.color = 'var(--error)';
+    console.error('Save error:', err);
+    setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 3000);
+    return false;
+  }
+}
+
+async function newChat() {
+  if (history.length < 2) {
+    history = [];
+    messagesEl.innerHTML = '';
+    saveHistory();
+    updateContextBar();
+    inputEl.focus();
+    return;
+  }
+
+  // Save memories before clearing
+  const saved = await saveMemories(false);
+  if (!saved && !confirm('Memory save failed. Clear chat anyway?')) return;
+
   history = [];
   messagesEl.innerHTML = '';
   saveHistory();
