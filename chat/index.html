@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0a0a">
+<title>Auran</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --border: #222;
+    --text: #e8e8e8;
+    --text-dim: #888;
+    --accent: #c4956a;
+    --accent-dim: #8a6a4a;
+    --user-bg: #1a1a2e;
+    --error: #cc4444;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    height: 100dvh;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  /* Header */
+  header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    background: var(--bg);
+  }
+
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--accent);
+  }
+
+  header .status {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  #clear-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  #clear-btn:hover {
+    border-color: var(--accent-dim);
+    color: var(--text);
+  }
+
+  /* Messages */
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .message {
+    margin-bottom: 16px;
+    animation: fadeIn 0.2s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .message .role {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+
+  .message.user .role { color: var(--text-dim); }
+  .message.assistant .role { color: var(--accent); }
+
+  .message .content {
+    padding: 10px 14px;
+    border-radius: 8px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  .message.user .content {
+    background: var(--user-bg);
+    border: 1px solid #252540;
+  }
+
+  .message.assistant .content {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+
+  .message.error .content {
+    background: #1a0a0a;
+    border: 1px solid var(--error);
+    color: var(--error);
+  }
+
+  /* Streaming cursor */
+  .streaming .content::after {
+    content: '▊';
+    color: var(--accent);
+    animation: blink 0.8s infinite;
+    margin-left: 1px;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* Input area */
+  #input-area {
+    padding: 12px 16px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+    flex-shrink: 0;
+  }
+
+  #input-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+
+  #input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 16px;
+    font-family: inherit;
+    line-height: 1.5;
+    resize: none;
+    outline: none;
+    min-height: 44px;
+    max-height: 140px;
+    transition: border-color 0.2s;
+  }
+
+  #input:focus {
+    border-color: var(--accent-dim);
+  }
+
+  #input::placeholder {
+    color: var(--text-dim);
+  }
+
+  #send-btn {
+    background: var(--accent);
+    border: none;
+    color: var(--bg);
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.2s;
+  }
+
+  #send-btn:hover { background: var(--accent-dim); }
+  #send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* Thinking indicator */
+  .thinking {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  .thinking .dots span {
+    animation: dot 1.4s infinite;
+    opacity: 0;
+  }
+  .thinking .dots span:nth-child(2) { animation-delay: 0.2s; }
+  .thinking .dots span:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes dot {
+    0%, 60%, 100% { opacity: 0; }
+    30% { opacity: 1; }
+  }
+
+  /* Mobile tweaks */
+  @media (max-width: 480px) {
+    header { padding: 10px 12px; }
+    #messages { padding: 12px; }
+    #input-area { padding: 10px 12px; }
+    .message .content { padding: 8px 12px; font-size: 15px; }
+  }
+
+  /* Scrollbar */
+  #messages::-webkit-scrollbar { width: 4px; }
+  #messages::-webkit-scrollbar-track { background: transparent; }
+  #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div>
+      <h1>Auran</h1>
+      <div class="status" id="status">chat.auran.llc</div>
+    </div>
+    <button id="clear-btn" onclick="clearChat()">Clear</button>
+  </header>
+
+  <div id="messages"></div>
+
+  <div id="input-area">
+    <div id="input-row">
+      <textarea id="input" rows="1" placeholder="say something..."
+        onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button id="send-btn" onclick="sendMessage()">↑</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send-btn');
+const statusEl = document.getElementById('status');
+
+let history = [];
+let isStreaming = false;
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 140) + 'px';
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function scrollToBottom() {
+  requestAnimationFrame(() => {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
+}
+
+function addMessage(role, content, className) {
+  const div = document.createElement('div');
+  div.className = `message ${role} ${className || ''}`;
+  div.innerHTML = `
+    <div class="role">${role === 'assistant' ? 'Auran' : 'You'}</div>
+    <div class="content"></div>
+  `;
+  div.querySelector('.content').textContent = content;
+  messagesEl.appendChild(div);
+  scrollToBottom();
+  return div;
+}
+
+function addThinking() {
+  const div = document.createElement('div');
+  div.className = 'thinking';
+  div.id = 'thinking';
+  div.innerHTML = 'thinking<div class="dots"><span>.</span><span>.</span><span>.</span></div>';
+  messagesEl.appendChild(div);
+  scrollToBottom();
+}
+
+function removeThinking() {
+  const el = document.getElementById('thinking');
+  if (el) el.remove();
+}
+
+async function sendMessage() {
+  const text = inputEl.value.trim();
+  if (!text || isStreaming) return;
+
+  isStreaming = true;
+  sendBtn.disabled = true;
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+
+  // Add user message
+  addMessage('user', text);
+  history.push({ role: 'user', content: text });
+
+  // Show thinking
+  addThinking();
+
+  try {
+    const resp = await fetch('/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: history }),
+    });
+
+    removeThinking();
+
+    if (resp.status === 401) {
+      // Auth required — browser will handle via WWW-Authenticate
+      addMessage('assistant', 'Authentication required. Please refresh and enter credentials.', 'error');
+      return;
+    }
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      addMessage('assistant', `Error: ${err}`, 'error');
+      return;
+    }
+
+    // Create assistant message element
+    const msgDiv = addMessage('assistant', '');
+    msgDiv.classList.add('streaming');
+    const contentEl = msgDiv.querySelector('.content');
+    let fullText = '';
+
+    // Read SSE stream
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // Keep incomplete line
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const event = JSON.parse(line.slice(6));
+          if (event.type === 'text') {
+            fullText += event.text;
+            contentEl.textContent = fullText;
+            scrollToBottom();
+          } else if (event.type === 'error') {
+            contentEl.textContent = fullText + '\n\n[Error: ' + event.error + ']';
+            msgDiv.classList.add('error');
+          } else if (event.type === 'done') {
+            // Stream complete
+          }
+        } catch (e) {
+          // Skip malformed events
+        }
+      }
+    }
+
+    msgDiv.classList.remove('streaming');
+
+    if (fullText) {
+      history.push({ role: 'assistant', content: fullText });
+    }
+
+  } catch (err) {
+    removeThinking();
+    addMessage('assistant', `Connection error: ${err.message}`, 'error');
+  } finally {
+    isStreaming = false;
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+}
+
+function clearChat() {
+  history = [];
+  messagesEl.innerHTML = '';
+  inputEl.focus();
+}
+
+// Focus input on load
+inputEl.focus();
+
+// Handle iOS keyboard
+if (/iPhone|iPad/.test(navigator.userAgent)) {
+  inputEl.addEventListener('focus', () => {
+    setTimeout(scrollToBottom, 300);
+  });
+}
+</script>
+</body>
+</html>
