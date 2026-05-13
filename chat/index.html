@@ -18,6 +18,9 @@
     --accent-dim: #8a6a4a;
     --user-bg: #1a1a2e;
     --error: #cc4444;
+    --thinking-bg: #1a1a1a;
+    --thinking-text: #666;
+    --thinking-border: #2a2a2a;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -114,13 +117,12 @@
   .message .content {
     padding: 10px 14px;
     border-radius: 8px;
-    white-space: pre-wrap;
     word-wrap: break-word;
     font-size: 15px;
     line-height: 1.65;
   }
-
   .message.user .content {
+    white-space: pre-wrap;
     background: var(--user-bg);
     border: 1px solid #252540;
   }
@@ -134,6 +136,30 @@
     background: #1a0a0a;
     border: 1px solid var(--error);
     color: var(--error);
+  }
+
+  /* Thinking block */
+  .thinking-block {
+    background: var(--thinking-bg);
+    border-left: 2px solid var(--thinking-border);
+    color: var(--thinking-text);
+    font-size: 0.85em;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+
+  .thinking-block summary {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 0.85em;
+    user-select: none;
+  }
+
+  .thinking-block .thinking-content {
+    margin-top: 6px;
   }
 
   /* Streaming cursor */
@@ -238,6 +264,88 @@
     .message .content { padding: 8px 12px; font-size: 15px; }
   }
 
+  /* Markdown styles */
+  .content strong { font-weight: 600; }
+  .content em { font-style: italic; color: var(--text); }
+  .content code {
+    background: rgba(255,255,255,0.06);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.9em;
+  }
+  .content pre {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 8px 0;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.88em;
+    line-height: 1.5;
+    white-space: pre;
+  }
+  .content pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+  }
+  .content ul, .content ol {
+    margin: 6px 0;
+    padding-left: 20px;
+  }
+  .content li { margin: 2px 0; }
+  .content h1, .content h2, .content h3 {
+    font-weight: 600;
+    margin: 12px 0 4px;
+  }
+  .content h1 { font-size: 1.2em; }
+  .content h2 { font-size: 1.1em; }
+  .content h3 { font-size: 1em; color: var(--accent); }
+  .content a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: var(--accent-dim);
+  }
+  .content blockquote {
+    border-left: 2px solid var(--accent-dim);
+    padding-left: 12px;
+    color: var(--text-dim);
+    margin: 8px 0;
+  }
+  .content p { margin: 0 0 8px; }
+  .content p:last-child { margin-bottom: 0; }
+
+  /* Context indicator */
+  #context-bar {
+    height: 2px;
+    background: var(--border);
+    position: relative;
+    flex-shrink: 0;
+  }
+  #context-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.3s ease;
+    border-radius: 0 1px 1px 0;
+  }
+  #context-fill.warn { background: #c49a2a; }
+  #context-fill.danger { background: var(--error); }
+  #context-label {
+    position: absolute;
+    right: 8px;
+    top: 4px;
+    font-size: 10px;
+    color: var(--text-dim);
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  #context-bar:hover #context-label { opacity: 1; }
+
+  /* New chat button */
+  .header-actions { display: flex; gap: 6px; }
+
   /* Scrollbar */
   #messages::-webkit-scrollbar { width: 4px; }
   #messages::-webkit-scrollbar-track { background: transparent; }
@@ -251,8 +359,11 @@
       <h1>Auran</h1>
       <div class="status" id="status">chat.auran.llc</div>
     </div>
-    <button id="clear-btn" onclick="clearChat()">Clear</button>
+    <div class="header-actions">
+      <button id="clear-btn" onclick="newChat()">New chat</button>
+    </div>
   </header>
+  <div id="context-bar"><div id="context-fill" style="width: 0%"></div><span id="context-label"></span></div>
 
   <div id="messages"></div>
 
@@ -270,9 +381,90 @@ const messagesEl = document.getElementById('messages');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('send-btn');
 const statusEl = document.getElementById('status');
+const contextFill = document.getElementById('context-fill');
+const contextLabel = document.getElementById('context-label');
 
 let history = [];
 let isStreaming = false;
+
+const STORAGE_KEY = 'auran-chat-history';
+const MAX_CONTEXT_TOKENS = 200000;
+const CHARS_PER_TOKEN = 4;
+
+function estimateTokens(messages) {
+  return messages.reduce((sum, m) => sum + Math.ceil(m.content.length / CHARS_PER_TOKEN), 0);
+}
+
+function updateContextBar() {
+  const tokens = estimateTokens(history);
+  const pct = Math.min((tokens / MAX_CONTEXT_TOKENS) * 100, 100);
+  contextFill.style.width = pct + '%';
+  contextFill.className = pct > 80 ? 'danger' : pct > 60 ? 'warn' : '';
+  contextLabel.textContent = `~${Math.round(tokens/1000)}k / ${MAX_CONTEXT_TOKENS/1000}k tokens`;
+}
+
+function saveHistory() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+  } catch(e) {}
+}
+
+function loadHistory() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      history = JSON.parse(saved);
+      history.forEach(msg => {
+        const div = addMessage(msg.role, '', null, true);
+        const contentEl = div.querySelector('.content');
+        if (msg.role === 'assistant') {
+          contentEl.innerHTML = renderMarkdown(msg.content);
+        } else {
+          contentEl.textContent = msg.content;
+        }
+      });
+      updateContextBar();
+    }
+  } catch(e) {
+    history = [];
+  }
+}
+
+function renderMarkdown(text) {
+  let html = text;
+  const codeBlocks = [];
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const i = codeBlocks.length;
+    codeBlocks.push('<pre><code>' + escapeHtml(code.trim()) + '</code></pre>');
+    return '\x00CODEBLOCK' + i + '\x00';
+  });
+  html = html.replace(/`([^`\n]+)`/g, '<code>' + '$1' + '</code>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, (match) => '<ul>' + match + '</ul>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const paragraphs = html.split(/\n\n+/);
+  html = paragraphs.map(p => {
+    p = p.trim();
+    if (!p) return '';
+    if (/^<(h[1-3]|ul|ol|pre|blockquote)/.test(p)) return p;
+    if (p.includes('\x00CODEBLOCK')) return p;
+    return '<p>' + p.replace(/\n/g, '<br>') + '</p>';
+  }).join('');
+  html = html.replace(/\x00CODEBLOCK(\d+)\x00/g, (_, i) => codeBlocks[i]);
+  return html;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
 
 function autoResize(el) {
   el.style.height = 'auto';
@@ -292,16 +484,18 @@ function scrollToBottom() {
   });
 }
 
-function addMessage(role, content, className) {
+function addMessage(role, content, className, skipScroll) {
   const div = document.createElement('div');
   div.className = `message ${role} ${className || ''}`;
   div.innerHTML = `
     <div class="role">${role === 'assistant' ? 'Auran' : 'You'}</div>
     <div class="content"></div>
   `;
-  div.querySelector('.content').textContent = content;
+  if (content) {
+    div.querySelector('.content').textContent = content;
+  }
   messagesEl.appendChild(div);
-  scrollToBottom();
+  if (!skipScroll) scrollToBottom();
   return div;
 }
 
@@ -328,11 +522,11 @@ async function sendMessage() {
   inputEl.value = '';
   inputEl.style.height = 'auto';
 
-  // Add user message
   addMessage('user', text);
   history.push({ role: 'user', content: text });
+  saveHistory();
+  updateContextBar();
 
-  // Show thinking
   addThinking();
 
   try {
@@ -345,7 +539,6 @@ async function sendMessage() {
     removeThinking();
 
     if (resp.status === 401) {
-      // Auth required — browser will handle via WWW-Authenticate
       addMessage('assistant', 'Authentication required. Please refresh and enter credentials.', 'error');
       return;
     }
@@ -356,13 +549,13 @@ async function sendMessage() {
       return;
     }
 
-    // Create assistant message element
     const msgDiv = addMessage('assistant', '');
     msgDiv.classList.add('streaming');
     const contentEl = msgDiv.querySelector('.content');
     let fullText = '';
+    let thinkingText = '';
+    let thinkingEl = null;
 
-    // Read SSE stream
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -373,15 +566,40 @@ async function sendMessage() {
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
-      buffer = lines.pop(); // Keep incomplete line
+      buffer = lines.pop();
 
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         try {
           const event = JSON.parse(line.slice(6));
-          if (event.type === 'text') {
+          if (event.type === 'thinking_start') {
+            thinkingText = '';
+            thinkingEl = document.createElement('details');
+            thinkingEl.className = 'thinking-block';
+            thinkingEl.innerHTML = '<summary>thinking...</summary><div class="thinking-content"></div>';
+            contentEl.appendChild(thinkingEl);
+            scrollToBottom();
+          } else if (event.type === 'thinking') {
+            thinkingText += event.text;
+            if (thinkingEl) {
+              thinkingEl.querySelector('.thinking-content').textContent = thinkingText;
+              scrollToBottom();
+            }
+          } else if (event.type === 'text_start') {
+            // transitioning from thinking to text
+          } else if (event.type === 'text') {
             fullText += event.text;
-            contentEl.textContent = fullText;
+            if (thinkingEl) {
+              let textNode = contentEl.querySelector('.response-text');
+              if (!textNode) {
+                textNode = document.createElement('div');
+                textNode.className = 'response-text';
+                contentEl.appendChild(textNode);
+              }
+              textNode.innerHTML = renderMarkdown(fullText);
+            } else {
+              contentEl.innerHTML = renderMarkdown(fullText);
+            }
             scrollToBottom();
           } else if (event.type === 'error') {
             contentEl.textContent = fullText + '\n\n[Error: ' + event.error + ']';
@@ -389,9 +607,7 @@ async function sendMessage() {
           } else if (event.type === 'done') {
             // Stream complete
           }
-        } catch (e) {
-          // Skip malformed events
-        }
+        } catch (e) {}
       }
     }
 
@@ -399,6 +615,8 @@ async function sendMessage() {
 
     if (fullText) {
       history.push({ role: 'assistant', content: fullText });
+      saveHistory();
+      updateContextBar();
     }
 
   } catch (err) {
@@ -411,16 +629,18 @@ async function sendMessage() {
   }
 }
 
-function clearChat() {
+function newChat() {
+  if (history.length > 0 && !confirm('Start a new conversation? Current chat will be cleared.')) return;
   history = [];
   messagesEl.innerHTML = '';
+  saveHistory();
+  updateContextBar();
   inputEl.focus();
 }
 
-// Focus input on load
+loadHistory();
 inputEl.focus();
 
-// Handle iOS keyboard
 if (/iPhone|iPad/.test(navigator.userAgent)) {
   inputEl.addEventListener('focus', () => {
     setTimeout(scrollToBottom, 300);

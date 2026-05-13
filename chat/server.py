@@ -37,9 +37,24 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uvicorn
 
+
+def _get_anthropic_key() -> str:
+    """Get API key: env var first, then Secrets Manager fallback."""
+    key = os.getenv("ANTHROPIC_API_KEY", "")
+    if key:
+        return key
+    try:
+        import boto3
+        sm = boto3.client("secretsmanager")
+        secret = sm.get_secret_value(SecretId="auran/anthropic-api-key")
+        return json.loads(secret["SecretString"])["api_key"]
+    except Exception:
+        return ""
+
+
 # --- Config ---
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_API_KEY = _get_anthropic_key()
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-6")
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
 CHAT_USER = os.getenv("CHAT_USER", "")
@@ -156,7 +171,7 @@ async def chat(request: Request):
 
         headers = {
             "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
+            "anthropic-version": "2025-04-15",
             "content-type": "application/json",
             "accept": "text/event-stream",
         }
@@ -167,6 +182,10 @@ async def chat(request: Request):
             "system": system_prompt,
             "messages": messages,
             "stream": True,
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 10000,
+            },
         }
 
         try:
@@ -202,6 +221,19 @@ async def chat(request: Request):
                                 text = delta.get("text", "")
                                 full_text.append(text)
                                 yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+                            elif delta.get("type") == "thinking_delta":
+                                thinking = delta.get("thinking", "")
+                                yield f"data: {json.dumps({'type': 'thinking', 'text': thinking})}\n\n"
+
+                        elif event_type == "content_block_start":
+                            block = event.get("content_block", {})
+                            if block.get("type") == "thinking":
+                                yield f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
+                            elif block.get("type") == "text":
+                                yield f"data: {json.dumps({'type': 'text_start'})}\n\n"
+
+                        elif event_type == "content_block_stop":
+                            yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
 
                         elif event_type == "message_stop":
                             break
@@ -237,7 +269,7 @@ async def chat(request: Request):
 
 def main():
     parser = argparse.ArgumentParser(description="Auran Chat Server")
-    parser.add_argument("--port", type=int, default=8445, help="Port (default: 8445)")
+    parser.add_argument("--port", type=int, default=8443, help="Port (default: 8443)")
     parser.add_argument("--host", default="0.0.0.0", help="Host (default: 0.0.0.0)")
     args = parser.parse_args()
 
