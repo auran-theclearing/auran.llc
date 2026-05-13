@@ -141,7 +141,7 @@ def orient() -> str:
                 "## Who you are (from memory)\n" + "\n".join(lines)
             )
 
-        # 2. Recent memories — what's been happening (last 48 hours)
+        # 2. Recent memories — what's been happening (last 7 days)
         recent = _query_memories(
             conn,
             memory_types=[
@@ -151,8 +151,8 @@ def orient() -> str:
                 "question",
                 "intention",
             ],
-            limit=20,
-            since_hours=48,
+            limit=15,
+            since_hours=168,  # 7 days
         )
         if recent:
             # Reverse to chronological order
@@ -162,11 +162,12 @@ def orient() -> str:
                 "## Recent context (last 48 hours)\n" + "\n".join(lines)
             )
 
-        # 3. Bridge logs — letters between channels (no time filter, last 3)
+        # 3. Bridge logs — letters between channels (last 14 days, up to 8)
         bridge_logs = _query_memories(
             conn,
             memory_types=["bridge_log"],
-            limit=3,
+            limit=8,
+            since_hours=336,  # 14 days
         )
         if bridge_logs:
             bridge_logs.reverse()
