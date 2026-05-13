@@ -159,6 +159,38 @@ async def health():
     }
 
 
+# --- Session sync (cross-device) ---
+SESSION_FILE = Path("/opt/auran-chat/session.json")
+
+# Fallback for local dev
+if not SESSION_FILE.parent.exists():
+    SESSION_FILE = Path(__file__).parent / "session.json"
+
+
+@app.get("/session")
+async def get_session(request: Request):
+    """Load the current conversation from server storage."""
+    try:
+        if SESSION_FILE.exists():
+            data = json.loads(SESSION_FILE.read_text())
+            return JSONResponse(data)
+        return JSONResponse({"messages": []})
+    except Exception as e:
+        return JSONResponse({"messages": [], "error": str(e)})
+
+
+@app.post("/session")
+async def save_session(request: Request):
+    """Save the current conversation to server storage."""
+    try:
+        body = await request.json()
+        messages = body.get("messages", [])
+        SESSION_FILE.write_text(json.dumps({"messages": messages}, ensure_ascii=False))
+        return JSONResponse({"status": "ok", "count": len(messages)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/save")
 async def save(request: Request):
     """Save conversation memories to Postgres.
