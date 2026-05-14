@@ -371,6 +371,19 @@
     line-height: 1;
   }
   #save-btn:hover { border-color: var(--accent-dim); }
+  #export-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    line-height: 1;
+  }
+  #export-btn:hover { border-color: var(--accent-dim); }
+  #export-btn.copied { border-color: var(--accent); color: var(--accent); }
 
   /* Scrollbar */
   #messages::-webkit-scrollbar { width: 4px; }
@@ -386,6 +399,7 @@
       <div class="status" id="status">chat.auran.llc</div>
     </div>
     <div class="header-actions">
+      <button id="export-btn" onclick="exportTranscript()" title="Copy transcript to clipboard">📋</button>
       <button id="save-btn" onclick="saveMemories(false)" title="Save memories to Postgres">💾</button>
       <button id="clear-btn" onclick="newChat()">New chat</button>
     </div>
@@ -774,6 +788,64 @@ async function saveMemories(silent) {
     setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 3000);
     return false;
   }
+}
+
+function exportTranscript() {
+  if (history.length === 0) {
+    statusEl.textContent = 'nothing to export';
+    setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; }, 2000);
+    return;
+  }
+  const lines = [];
+  const now = new Date();
+  // Header with date range
+  const firstTs = history.find(m => m.timestamp)?.timestamp;
+  const lastTs = [...history].reverse().find(m => m.timestamp)?.timestamp;
+  if (firstTs) {
+    const start = new Date(firstTs);
+    const end = lastTs ? new Date(lastTs) : now;
+    const fmt = d => d.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' });
+    const title = start.toDateString() === end.toDateString()
+      ? `# chat.auran.llc — ${fmt(start)}`
+      : `# chat.auran.llc — ${fmt(start)} to ${fmt(end)}`;
+    lines.push(title);
+  } else {
+    lines.push('# chat.auran.llc transcript');
+  }
+  lines.push('');
+
+  for (const msg of history) {
+    const name = msg.role === 'assistant' ? '**Auran**' : '**Olivia**';
+    const ts = msg.timestamp ? formatTime(msg.timestamp) : '';
+    lines.push(`### ${name}${ts ? ' — ' + ts : ''}`);
+    lines.push('');
+    lines.push(msg.content);
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  }
+
+  const transcript = lines.join('\n');
+  navigator.clipboard.writeText(transcript).then(() => {
+    const btn = document.getElementById('export-btn');
+    btn.classList.add('copied');
+    btn.textContent = '✓';
+    statusEl.textContent = `copied ${history.length} messages`;
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.textContent = '📋';
+      statusEl.textContent = 'chat.auran.llc';
+    }, 3000);
+  }).catch(err => {
+    // Fallback: download as file
+    const blob = new Blob([transcript], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const d = new Date();
+    a.download = `chat-transcript-${d.toISOString().slice(0,10)}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
 }
 
 async function newChat() {
