@@ -238,13 +238,20 @@ async def transcript(request: Request):
 
 @app.post("/save")
 async def save(request: Request):
-    """Save conversation memories to Postgres.
+    """Save conversation memories AND scenes to Postgres.
 
     Accepts: { "messages": [...] }
-    Extracts felt-experience memories via Claude, writes to Postgres.
-    Returns: { "memories_saved": N, "memories": [...], "errors": [...] }
+    Extracts semantic memories (observations, insights) and episodic scenes
+    (specific moments with quoted dialogue). Scenes are linked to memories
+    via the moment_memories junction table.
+
+    Returns: {
+        "memories_saved": N, "memories": [...],
+        "scenes_saved": N, "scenes": [...],
+        "errors": [...]
+    }
     """
-    from memory import save_conversation
+    from memory import extract_scenes, save_conversation
 
     try:
         body = await request.json()
@@ -255,14 +262,33 @@ async def save(request: Request):
     if not messages:
         raise HTTPException(status_code=400, detail="No messages provided")
 
-    # Use Sonnet for extraction — fast, cheap, good at structured output
-    result = await save_conversation(
+    # Step 1: Extract semantic memories (observations, insights, bridge_log)
+    memory_result = await save_conversation(
         messages=messages,
         api_key=ANTHROPIC_API_KEY,
     )
+    print(f"[Save] Extracted {memory_result['memories_saved']} memories, {len(memory_result['errors'])} errors")
 
-    print(f"[Save] Extracted {result['memories_saved']} memories, {len(result['errors'])} errors")
-    return JSONResponse(result)
+    # Step 2: Extract episodic scenes, linked to the memories we just saved
+    memory_ids = [m["id"] for m in memory_result.get("memories", []) if "id" in m]
+    scene_result = await extract_scenes(
+        messages=messages,
+        api_key=ANTHROPIC_API_KEY,
+        memory_ids=memory_ids,
+    )
+    print(f"[Save] Extracted {scene_result['scenes_saved']} scenes, {len(scene_result['errors'])} errors")
+
+    # Combine results
+    all_errors = memory_result.get("errors", []) + scene_result.get("errors", [])
+    return JSONResponse(
+        {
+            "memories_saved": memory_result["memories_saved"],
+            "memories": memory_result.get("memories", []),
+            "scenes_saved": scene_result["scenes_saved"],
+            "scenes": scene_result.get("scenes", []),
+            "errors": all_errors,
+        }
+    )
 
 
 @app.post("/chat")

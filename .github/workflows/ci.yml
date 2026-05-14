@@ -58,5 +58,6 @@ jobs:
           import server
           assert server.app is not None, 'FastAPI app not created'
           assert server.ANTHROPIC_API_URL == 'https://api.anthropic.com/v1/messages'
-          print('Smoke test passed: app creates, config loads')
+          from memory import write_moment, extract_scenes, link_moment_memories
+          print('Smoke test passed: app creates, config loads, scene memory imports')
           "
