@@ -811,18 +811,26 @@ async function exportTranscript() {
   }
   const lines = [];
   const now = new Date();
-  // Metadata header
+  // Metadata header (YAML frontmatter)
   const firstTs = history.find(m => m.timestamp)?.timestamp;
   const lastTs = [...history].reverse().find(m => m.timestamp)?.timestamp;
   const startDate = firstTs ? new Date(firstTs.endsWith('Z') || firstTs.includes('+') ? firstTs : firstTs + 'Z') : now;
   const endDate = lastTs ? new Date(lastTs.endsWith('Z') || lastTs.includes('+') ? lastTs : lastTs + 'Z') : now;
-  const fmtDate = d => d.toLocaleDateString([], { year: 'numeric', month: '2-digit', day: '2-digit' });
-  const dateStr = startDate.toDateString() === endDate.toDateString()
-    ? fmtDate(startDate) : `${fmtDate(startDate)} to ${fmtDate(endDate)}`;
+  // Duration in human-readable format
+  const durationMs = endDate - startDate;
+  const durationHrs = Math.floor(durationMs / 3600000);
+  const durationMin = Math.floor((durationMs % 3600000) / 60000);
+  const durationStr = durationHrs > 0 ? `${durationHrs}h ${durationMin}m` : `${durationMin}m`;
+  // Format times for frontmatter
+  const fmtTime = d => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const pad = n => String(n).padStart(2, '0');
+  lines.push('---');
   lines.push(`channel: chat.auran.llc`);
   lines.push(`type: transcript`);
   lines.push(`date: ${startDate.toISOString().slice(0,10)}`);
-  lines.push(`time: ${startDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+  lines.push(`start: ${fmtTime(startDate)}`);
+  lines.push(`end: ${fmtTime(endDate)}`);
+  lines.push(`duration: ${durationStr}`);
   lines.push(`model: claude-opus-4-6`);
   lines.push(`messages: ${history.length}`);
   lines.push(`context: `);
@@ -852,7 +860,6 @@ async function exportTranscript() {
   const transcript = lines.join('\n');
 
   // Download as file — filename matches convention: YYYYMMDD-HHMM-chat-transcript.md
-  const pad = n => String(n).padStart(2, '0');
   const fname = `${startDate.getFullYear()}${pad(startDate.getMonth()+1)}${pad(startDate.getDate())}-${pad(startDate.getHours())}${pad(startDate.getMinutes())}-chat-transcript.md`;
 
   // Download via fetch POST to /transcript with credentials (basic auth)
