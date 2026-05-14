@@ -571,12 +571,12 @@ function formatTime(ts) {
 function addMessage(role, content, className, skipScroll, timestamp) {
   const div = document.createElement('div');
   div.className = `message ${role} ${className || ''}`;
-  const ts = timestamp || new Date().toISOString();
-  div.dataset.timestamp = ts;
+  const ts = timestamp || null;
+  if (ts) div.dataset.timestamp = ts;
   div.innerHTML = `
     <div class="role-line">
       <div class="role">${role === 'assistant' ? 'Auran' : 'You'}</div>
-      <span class="timestamp">${formatTime(ts)}</span>
+      <span class="timestamp">${ts ? formatTime(ts) : ''}</span>
     </div>
     <div class="content"></div>
   `;
