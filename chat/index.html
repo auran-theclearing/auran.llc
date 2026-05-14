@@ -581,7 +581,9 @@ function scrollToBottom() {
 
 function formatTime(ts) {
   if (!ts) return '';
-  const d = new Date(ts);
+  // If no timezone marker, assume UTC (server-side timestamps)
+  const normalized = (ts.endsWith('Z') || ts.includes('+') || ts.includes('-', 10)) ? ts : ts + 'Z';
+  const d = new Date(normalized);
   const now = new Date();
   const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   // Same calendar day — just show time
