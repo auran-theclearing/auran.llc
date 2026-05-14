@@ -852,16 +852,16 @@ async function exportTranscript() {
   const transcript = lines.join('\n');
 
   // Download as file — filename matches convention: YYYYMMDD-HHMM-chat-transcript.md
+  // Use data URI instead of blob URL — mobile browsers ignore download attr on blob URLs
   const pad = n => String(n).padStart(2, '0');
   const fname = `${startDate.getFullYear()}${pad(startDate.getMonth()+1)}${pad(startDate.getDate())}-${pad(startDate.getHours())}${pad(startDate.getMinutes())}-chat-transcript.md`;
-  const blob = new Blob([transcript], { type: 'text/markdown' });
+  const dataUri = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(transcript);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  a.href = dataUri;
   a.download = fname;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(a.href);
 
   // Also try clipboard
   try { await navigator.clipboard.writeText(transcript); } catch(e) {}
