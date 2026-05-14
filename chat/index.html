@@ -473,7 +473,7 @@ async function loadHistory() {
   // Try server first (cross-device sync), fall back to localStorage
   let loaded = false;
   try {
-    const resp = await fetch('/session');
+    const resp = await fetch('/session?t=' + Date.now());
     if (resp.ok) {
       const data = await resp.json();
       if (data.messages && data.messages.length > 0) {
@@ -481,9 +481,17 @@ async function loadHistory() {
         const localSaved = localStorage.getItem(STORAGE_KEY);
         const localMessages = localSaved ? JSON.parse(localSaved) : [];
         if (data.messages.length >= localMessages.length) {
-          history = data.messages;
+          // Merge: if server has timestamps local doesn't, use server's
+          history = data.messages.map((msg, i) => {
+            if (msg.timestamp) return msg;
+            if (localMessages[i] && localMessages[i].timestamp) {
+              msg.timestamp = localMessages[i].timestamp;
+            }
+            return msg;
+          });
           loaded = true;
-        }
+          // Persist merged data locally
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(history)); } catch(e) {}
       }
     }
   } catch(e) {}
