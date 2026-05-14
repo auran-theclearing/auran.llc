@@ -215,19 +215,12 @@ async def transcript(request: Request):
     Accepts form data: content (transcript text), filename (download name)
     Returns: Downloadable .md file with proper Content-Disposition.
     """
-    # Accept both form data and JSON
-    content_type = request.headers.get("content-type", "")
-    if "form" in content_type:
-        form = await request.form()
-        content = form.get("content", "")
-        filename = form.get("filename", "chat-transcript.md")
-    else:
-        try:
-            body = await request.json()
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid request")
-        content = body.get("content", "")
-        filename = body.get("filename", "chat-transcript.md")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    content = body.get("content", "")
+    filename = body.get("filename", "chat-transcript.md")
 
     if not content:
         raise HTTPException(status_code=400, detail="No content provided")

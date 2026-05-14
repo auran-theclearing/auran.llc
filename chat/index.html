@@ -855,24 +855,34 @@ async function exportTranscript() {
   const pad = n => String(n).padStart(2, '0');
   const fname = `${startDate.getFullYear()}${pad(startDate.getMonth()+1)}${pad(startDate.getDate())}-${pad(startDate.getHours())}${pad(startDate.getMinutes())}-chat-transcript.md`;
 
-  // Download via hidden form POST to /transcript — works on all browsers including mobile
-  // Form submissions trigger native download handling, no popup blockers or blob URL issues
-  const form = document.createElement('form');
-  form.method = 'POST';
-  form.action = '/transcript';
-  form.style.display = 'none';
-  const addField = (name, value) => {
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = name;
-    input.value = value;
-    form.appendChild(input);
-  };
-  addField('content', transcript);
-  addField('filename', fname);
-  document.body.appendChild(form);
-  form.submit();
-  document.body.removeChild(form);
+  // Download via fetch POST to /transcript with credentials (basic auth)
+  // Server returns Content-Disposition: attachment which triggers native download
+  try {
+    const resp = await fetch('/transcript', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: transcript, filename: fname }),
+    });
+    if (!resp.ok) throw new Error(`${resp.status}`);
+    const blob = await resp.blob();
+    // Create a temporary link — Content-Disposition already set the filename server-side
+    // but we also set download attr as belt-and-suspenders
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+  } catch(e) {
+    // Fallback: open transcript in new tab as plain text (always works)
+    const blob = new Blob([transcript], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
 
   // Also try clipboard
   try { await navigator.clipboard.writeText(transcript); } catch(e) {}
