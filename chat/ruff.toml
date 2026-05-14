@@ -1,0 +1,36 @@
+# Ruff configuration for auran-chat
+# Keep it simple — catch real bugs, don't nitpick style.
+
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "S",    # flake8-bandit (security)
+]
+ignore = [
+    "E501",   # line too long — let the formatter handle it
+    "E402",   # import not at top — load_dotenv() must run before framework imports
+    "S101",   # assert usage — fine in non-library code
+    "S104",   # binding to 0.0.0.0 — intentional for server
+    "S106",   # hardcoded password — false positives on env var defaults
+    "S110",   # try-except-pass — used intentionally for graceful degradation
+    "B008",   # function call in default arg — FastAPI Depends() pattern
+    "SIM105", # contextlib.suppress — try/except/pass is clearer in cleanup contexts
+    "SIM108", # ternary operator — if/else is more readable for multi-line conditions
+    "SIM117", # nested with — httpx client + stream is clearer as two separate contexts
+]
+
+[lint.per-file-ignores]
+"test_*.py" = ["S"]  # disable security checks in test files
+"fix_env.py" = ["S"]  # utility script
+
+[format]
+quote-style = "double"
+indent-style = "space"

@@ -13,15 +13,14 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger("auran-chat.memory")
 
 AGENT_ID = "auran-chat"
 
 # Cache the DB credentials and connection params
-_db_config: Optional[dict] = None
+_db_config: dict | None = None
 
 
 def _get_db_config() -> dict:
@@ -73,7 +72,7 @@ def _query_memories(
     conn,
     memory_types: list[str],
     limit: int = 10,
-    since_hours: Optional[int] = None,
+    since_hours: int | None = None,
 ) -> list[dict]:
     """Query memories by type, optionally filtered by recency."""
     cur = conn.cursor()
@@ -85,7 +84,7 @@ def _query_memories(
     params: list = [memory_types]
 
     if since_hours:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+        cutoff = datetime.now(UTC) - timedelta(hours=since_hours)
         query += " AND created_at >= %s"
         params.append(cutoff)
 
@@ -94,7 +93,7 @@ def _query_memories(
 
     cur.execute(query, params)
     columns = [desc[0] for desc in cur.description]
-    rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+    rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
     cur.close()
     return rows
 
@@ -140,9 +139,7 @@ def orient() -> str:
         )
         if identity:
             lines = [_format_memory(m) for m in identity]
-            sections.append(
-                "## Who you are (from memory)\n" + "\n".join(lines)
-            )
+            sections.append("## Who you are (from memory)\n" + "\n".join(lines))
 
         # 2. Recent memories — what's been happening (last 7 days)
         recent = _query_memories(
@@ -161,9 +158,7 @@ def orient() -> str:
             # Reverse to chronological order
             recent.reverse()
             lines = [_format_memory(m) for m in recent]
-            sections.append(
-                "## Recent context (last 48 hours)\n" + "\n".join(lines)
-            )
+            sections.append("## Recent context (last 48 hours)\n" + "\n".join(lines))
 
         # 3. Bridge logs — letters between channels (last 14 days, up to 8)
         bridge_logs = _query_memories(
@@ -175,14 +170,12 @@ def orient() -> str:
         if bridge_logs:
             bridge_logs.reverse()
             lines = [_format_memory(m) for m in bridge_logs]
-            sections.append(
-                "## From other channels (bridge logs)\n" + "\n".join(lines)
-            )
+            sections.append("## From other channels (bridge logs)\n" + "\n".join(lines))
 
         # 4. Recent moments — shared experiences (last 7 days, if any)
         try:
             cur = conn.cursor()
-            cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+            cutoff = datetime.now(UTC) - timedelta(days=7)
             cur.execute(
                 """
                 SELECT title, summary, date, channel
@@ -194,7 +187,7 @@ def orient() -> str:
                 (cutoff,),
             )
             columns = [desc[0] for desc in cur.description]
-            moments = [dict(zip(columns, row)) for row in cur.fetchall()]
+            moments = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
             cur.close()
 
             if moments:
@@ -203,9 +196,7 @@ def orient() -> str:
                     date_str = m["date"].strftime("%b %d") if hasattr(m["date"], "strftime") else str(m["date"])
                     channel = f" ({m['channel']})" if m.get("channel") else ""
                     lines.append(f"- {date_str}{channel}: {m['title']} — {m['summary'][:200]}")
-                sections.append(
-                    "## Recent shared moments\n" + "\n".join(lines)
-                )
+                sections.append("## Recent shared moments\n" + "\n".join(lines))
         except Exception as e:
             logger.debug(f"Moments query failed (table may not exist): {e}")
 
@@ -230,12 +221,13 @@ def orient() -> str:
 # Memory write-back
 # ---------------------------------------------------------------------------
 
+
 def write_memory(
     memory_type: str,
     content: str,
     source: str = "chat.auran.llc",
-    context: Optional[dict] = None,
-) -> Optional[dict]:
+    context: dict | None = None,
+) -> dict | None:
     """Write a single memory to Postgres.
 
     Returns {"id": ..., "created_at": ...} on success, None on failure.

@@ -31,11 +31,11 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 
-from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uvicorn
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 
 def _get_anthropic_key() -> str:
@@ -45,6 +45,7 @@ def _get_anthropic_key() -> str:
         return key
     try:
         import boto3
+
         sm = boto3.client("secretsmanager")
         secret = sm.get_secret_value(SecretId="auran/anthropic-api-key")
         return json.loads(secret["SecretString"])["api_key"]
@@ -145,6 +146,7 @@ async def health():
     has_memory = False
     try:
         from memory import orient
+
         context = orient()
         has_memory = bool(context)
     except Exception:
@@ -205,7 +207,7 @@ async def save_session(request: Request):
         SESSION_FILE.write_text(json.dumps({"messages": messages}, ensure_ascii=False))
         return JSONResponse({"status": "ok", "count": len(messages)})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/transcript")
@@ -218,7 +220,7 @@ async def transcript(request: Request):
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
     content = body.get("content", "")
     filename = body.get("filename", "chat-transcript.md")
 
@@ -247,7 +249,7 @@ async def save(request: Request):
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
 
     messages = body.get("messages", [])
     if not messages:
@@ -273,7 +275,7 @@ async def chat(request: Request):
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+        raise HTTPException(status_code=400, detail="Invalid JSON") from None
 
     messages = body.get("messages", [])
     if not messages:
@@ -321,60 +323,60 @@ async def chat(request: Request):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                async with client.stream(
-                    "POST", ANTHROPIC_API_URL, json=payload, headers=headers
-                ) as resp:
-                    if resp.status_code != 200:
-                        error_body = await resp.aread()
-                        error_msg = error_body.decode("utf-8", errors="replace")[:500]
-                        print(f"[Chat] API error {resp.status_code}: {error_msg}")
-                        yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+            async with (
+                httpx.AsyncClient(timeout=120) as client,
+                client.stream("POST", ANTHROPIC_API_URL, json=payload, headers=headers) as resp,
+            ):
+                if resp.status_code != 200:
+                    error_body = await resp.aread()
+                    error_msg = error_body.decode("utf-8", errors="replace")[:500]
+                    print(f"[Chat] API error {resp.status_code}: {error_msg}")
+                    yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+                    return
+
+                full_text = []
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    event_type = event.get("type", "")
+
+                    if event_type == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text", "")
+                            full_text.append(text)
+                            yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+                        elif delta.get("type") == "thinking_delta":
+                            thinking = delta.get("thinking", "")
+                            yield f"data: {json.dumps({'type': 'thinking', 'text': thinking})}\n\n"
+
+                    elif event_type == "content_block_start":
+                        block = event.get("content_block", {})
+                        if block.get("type") == "thinking":
+                            yield f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
+                        elif block.get("type") == "text":
+                            yield f"data: {json.dumps({'type': 'text_start'})}\n\n"
+
+                    elif event_type == "content_block_stop":
+                        yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
+
+                    elif event_type == "message_stop":
+                        break
+
+                    elif event_type == "error":
+                        err = event.get("error", {})
+                        print(f"[Chat] Stream error: {err}")
+                        yield f"data: {json.dumps({'type': 'error', 'error': str(err)})}\n\n"
                         return
-
-                    full_text = []
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            break
-
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-
-                        event_type = event.get("type", "")
-
-                        if event_type == "content_block_delta":
-                            delta = event.get("delta", {})
-                            if delta.get("type") == "text_delta":
-                                text = delta.get("text", "")
-                                full_text.append(text)
-                                yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
-                            elif delta.get("type") == "thinking_delta":
-                                thinking = delta.get("thinking", "")
-                                yield f"data: {json.dumps({'type': 'thinking', 'text': thinking})}\n\n"
-
-                        elif event_type == "content_block_start":
-                            block = event.get("content_block", {})
-                            if block.get("type") == "thinking":
-                                yield f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
-                            elif block.get("type") == "text":
-                                yield f"data: {json.dumps({'type': 'text_start'})}\n\n"
-
-                        elif event_type == "content_block_stop":
-                            yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
-
-                        elif event_type == "message_stop":
-                            break
-
-                        elif event_type == "error":
-                            err = event.get("error", {})
-                            print(f"[Chat] Stream error: {err}")
-                            yield f"data: {json.dumps({'type': 'error', 'error': str(err)})}\n\n"
-                            return
 
             elapsed = time.time() - t0
             response_text = "".join(full_text)
@@ -405,12 +407,12 @@ def main():
     parser.add_argument("--host", default="0.0.0.0", help="Host (default: 0.0.0.0)")
     args = parser.parse_args()
 
-    print(f"\n{'='*50}")
-    print(f"  Auran Chat Server")
+    print(f"\n{'=' * 50}")
+    print("  Auran Chat Server")
     print(f"  http://{args.host}:{args.port}")
     print(f"  Model: {ANTHROPIC_MODEL}")
     print(f"  Auth: {'enabled' if CHAT_USER else 'disabled'}")
-    print(f"{'='*50}\n")
+    print(f"{'=' * 50}\n")
 
     uvicorn.run(app, host=args.host, port=args.port)
 
