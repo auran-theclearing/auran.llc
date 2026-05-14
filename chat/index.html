@@ -855,42 +855,24 @@ async function exportTranscript() {
   const pad = n => String(n).padStart(2, '0');
   const fname = `${startDate.getFullYear()}${pad(startDate.getMonth()+1)}${pad(startDate.getDate())}-${pad(startDate.getHours())}${pad(startDate.getMinutes())}-chat-transcript.md`;
 
-  // Use server endpoint for download — works reliably on all browsers including mobile
-  try {
-    const resp = await fetch('/transcript', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: transcript, filename: fname }),
-    });
-    if (resp.ok) {
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      // Use window.open for mobile compatibility, link click for desktop
-      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-      if (isMobile) {
-        window.open(url, '_blank');
-      } else {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fname;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-    } else {
-      throw new Error('Server transcript endpoint failed');
-    }
-  } catch(e) {
-    // Fallback: data URI (works on desktop at minimum)
-    const dataUri = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(transcript);
-    const a = document.createElement('a');
-    a.href = dataUri;
-    a.download = fname;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }
+  // Download via hidden form POST to /transcript — works on all browsers including mobile
+  // Form submissions trigger native download handling, no popup blockers or blob URL issues
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/transcript';
+  form.style.display = 'none';
+  const addField = (name, value) => {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  };
+  addField('content', transcript);
+  addField('filename', fname);
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
 
   // Also try clipboard
   try { await navigator.clipboard.writeText(transcript); } catch(e) {}

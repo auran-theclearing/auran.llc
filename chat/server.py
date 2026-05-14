@@ -212,23 +212,28 @@ async def save_session(request: Request):
 async def transcript(request: Request):
     """Generate and download a transcript as a markdown file.
 
-    Accepts: { "messages": [...], "filename": "optional.md" }
+    Accepts form data: content (transcript text), filename (download name)
     Returns: Downloadable .md file with proper Content-Disposition.
     """
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
+    # Accept both form data and JSON
+    content_type = request.headers.get("content-type", "")
+    if "form" in content_type:
+        form = await request.form()
+        content = form.get("content", "")
+        filename = form.get("filename", "chat-transcript.md")
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid request")
+        content = body.get("content", "")
+        filename = body.get("filename", "chat-transcript.md")
 
-    messages = body.get("messages", [])
-    filename = body.get("filename", "chat-transcript.md")
-    content = body.get("content", "")
-
-    if not content and not messages:
-        raise HTTPException(status_code=400, detail="No content or messages")
+    if not content:
+        raise HTTPException(status_code=400, detail="No content provided")
 
     return Response(
-        content=content.encode("utf-8") if content else b"",
+        content=content.encode("utf-8"),
         media_type="text/markdown; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
