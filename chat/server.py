@@ -355,7 +355,7 @@ async def chat(request: Request):
 
 def main():
     parser = argparse.ArgumentParser(description="Auran Chat Server")
-    parser.add_argument("--port", type=int, default=8443, help="Port (default: 8443)")
+    parser.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
     parser.add_argument("--host", default="0.0.0.0", help="Host (default: 0.0.0.0)")
     args = parser.parse_args()
 

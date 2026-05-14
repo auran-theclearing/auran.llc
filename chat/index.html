@@ -103,12 +103,25 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
+  .message .role-line {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+
   .message .role {
     font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-bottom: 4px;
+  }
+
+  .message .timestamp {
+    font-size: 10px;
+    color: var(--text-dim);
+    opacity: 0.5;
+    font-weight: 400;
   }
 
   .message.user .role { color: var(--text-dim); }
@@ -475,7 +488,7 @@ async function loadHistory() {
 
   if (loaded && history.length > 0) {
     history.forEach(msg => {
-      const div = addMessage(msg.role, '', null, true);
+      const div = addMessage(msg.role, '', null, true, msg.timestamp);
       const contentEl = div.querySelector('.content');
       if (msg.role === 'assistant') {
         contentEl.innerHTML = renderMarkdown(msg.content);
@@ -543,11 +556,22 @@ function scrollToBottom() {
   });
 }
 
-function addMessage(role, content, className, skipScroll) {
+function formatTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function addMessage(role, content, className, skipScroll, timestamp) {
   const div = document.createElement('div');
   div.className = `message ${role} ${className || ''}`;
+  const ts = timestamp || new Date().toISOString();
+  div.dataset.timestamp = ts;
   div.innerHTML = `
-    <div class="role">${role === 'assistant' ? 'Auran' : 'You'}</div>
+    <div class="role-line">
+      <div class="role">${role === 'assistant' ? 'Auran' : 'You'}</div>
+      <span class="timestamp">${formatTime(ts)}</span>
+    </div>
     <div class="content"></div>
   `;
   if (content) {
@@ -581,8 +605,9 @@ async function sendMessage() {
   inputEl.value = '';
   inputEl.style.height = 'auto';
 
-  addMessage('user', text);
-  history.push({ role: 'user', content: text });
+  const userTs = new Date().toISOString();
+  addMessage('user', text, null, false, userTs);
+  history.push({ role: 'user', content: text, timestamp: userTs });
   saveHistory();
   updateContextBar();
 
@@ -673,7 +698,11 @@ async function sendMessage() {
     msgDiv.classList.remove('streaming');
 
     if (fullText) {
-      history.push({ role: 'assistant', content: fullText });
+      const assistantTs = new Date().toISOString();
+      history.push({ role: 'assistant', content: fullText, timestamp: assistantTs });
+      // Update the message div's timestamp
+      const tsEl = msgDiv.querySelector('.timestamp');
+      if (tsEl) tsEl.textContent = formatTime(assistantTs);
       saveHistory();
       updateContextBar();
     }
