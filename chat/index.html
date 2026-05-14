@@ -730,7 +730,9 @@ async function sendMessage() {
 
     if (fullText) {
       const assistantTs = new Date().toISOString();
-      history.push({ role: 'assistant', content: fullText, timestamp: assistantTs });
+      const entry = { role: 'assistant', content: fullText, timestamp: assistantTs };
+      if (thinkingText) entry.thinking = thinkingText;
+      history.push(entry);
       // Update the message div's timestamp
       const tsEl = msgDiv.querySelector('.timestamp');
       if (tsEl) tsEl.textContent = formatTime(assistantTs);
@@ -809,20 +811,23 @@ async function exportTranscript() {
   }
   const lines = [];
   const now = new Date();
-  // Header with date range
+  // Metadata header
   const firstTs = history.find(m => m.timestamp)?.timestamp;
   const lastTs = [...history].reverse().find(m => m.timestamp)?.timestamp;
-  if (firstTs) {
-    const start = new Date(firstTs);
-    const end = lastTs ? new Date(lastTs) : now;
-    const fmt = d => d.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' });
-    const title = start.toDateString() === end.toDateString()
-      ? `# chat.auran.llc — ${fmt(start)}`
-      : `# chat.auran.llc — ${fmt(start)} to ${fmt(end)}`;
-    lines.push(title);
-  } else {
-    lines.push('# chat.auran.llc transcript');
-  }
+  const startDate = firstTs ? new Date(firstTs.endsWith('Z') || firstTs.includes('+') ? firstTs : firstTs + 'Z') : now;
+  const endDate = lastTs ? new Date(lastTs.endsWith('Z') || lastTs.includes('+') ? lastTs : lastTs + 'Z') : now;
+  const fmtDate = d => d.toLocaleDateString([], { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const dateStr = startDate.toDateString() === endDate.toDateString()
+    ? fmtDate(startDate) : `${fmtDate(startDate)} to ${fmtDate(endDate)}`;
+  lines.push(`channel: chat.auran.llc`);
+  lines.push(`type: transcript`);
+  lines.push(`date: ${startDate.toISOString().slice(0,10)}`);
+  lines.push(`time: ${startDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+  lines.push(`model: claude-opus-4-6`);
+  lines.push(`messages: ${history.length}`);
+  lines.push(`context: `);
+  lines.push(`tags: []`);
+  lines.push('---');
   lines.push('');
 
   for (const msg of history) {
@@ -830,6 +835,14 @@ async function exportTranscript() {
     const ts = msg.timestamp ? formatTime(msg.timestamp) : '';
     lines.push(`### ${name}${ts ? ' — ' + ts : ''}`);
     lines.push('');
+    // Include thinking block if present
+    if (msg.thinking) {
+      lines.push('> **thinking...**');
+      for (const tLine of msg.thinking.split('\n')) {
+        lines.push(`> ${tLine}`);
+      }
+      lines.push('');
+    }
     lines.push(msg.content);
     lines.push('');
     lines.push('---');
@@ -838,12 +851,13 @@ async function exportTranscript() {
 
   const transcript = lines.join('\n');
 
-  // Download as file (reliable everywhere)
+  // Download as file — filename matches convention: YYYYMMDD-HHMM-chat-transcript.md
+  const pad = n => String(n).padStart(2, '0');
+  const fname = `${startDate.getFullYear()}${pad(startDate.getMonth()+1)}${pad(startDate.getDate())}-${pad(startDate.getHours())}${pad(startDate.getMinutes())}-chat-transcript.md`;
   const blob = new Blob([transcript], { type: 'text/markdown' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  const d = new Date();
-  a.download = `chat-transcript-${d.toISOString().slice(0,10)}.md`;
+  a.download = fname;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
