@@ -246,6 +246,9 @@ async def chat(request: Request):
         if not msg.get("content", "").strip():
             raise HTTPException(status_code=400, detail="Empty message content")
 
+    # Strip to only fields the Anthropic API accepts
+    messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+
     model = body.get("model", ANTHROPIC_MODEL)
     system_prompt = load_system_prompt_with_memory()
 
