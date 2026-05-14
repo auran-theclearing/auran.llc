@@ -12,5 +12,10 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
 ]
 
+[dependency-groups]
+dev = [
+    "ruff>=0.8.0",
+]
+
 [project.scripts]
 auran-chat = "server:main"

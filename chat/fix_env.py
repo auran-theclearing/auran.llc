@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Write the correct API key from Secrets Manager into .env"""
-import boto3, json
+
+import json
+
+import boto3
 
 sm = boto3.client("secretsmanager")
-key = json.loads(
-    sm.get_secret_value(SecretId="auran/anthropic-api-key")["SecretString"]
-)["api_key"]
+key = json.loads(sm.get_secret_value(SecretId="auran/anthropic-api-key")["SecretString"])["api_key"]
 
 with open("/opt/auran-chat/.env") as f:
     lines = f.readlines()

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        working-directory: chat
+        run: uv sync
+
+      - name: Lint with ruff
+        working-directory: chat
+        run: uv run ruff check .
+
+      - name: Format check with ruff
+        working-directory: chat
+        run: uv run ruff format --check .
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        working-directory: chat
+        run: uv sync
+
+      - name: Smoke test — imports and app creation
+        working-directory: chat
+        run: |
+          uv run python -c "
+          import server
+          assert server.app is not None, 'FastAPI app not created'
+          assert server.ANTHROPIC_API_URL == 'https://api.anthropic.com/v1/messages'
+          print('Smoke test passed: app creates, config loads')
+          "

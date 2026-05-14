@@ -1,0 +1,42 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'chat/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Sync to S3
+        run: |
+          aws s3 sync chat/ s3://auran-chat-server/chat/ \
+            --exclude ".env" \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*" \
+            --exclude "session.json" \
+            --exclude ".venv/*"
+
+      - name: Restart service on EC2
+        run: |
+          aws ssm send-command \
+            --instance-ids "i-070dd19cbf382a171" \
+            --document-name "AWS-RunShellScript" \
+            --parameters '{"commands":["aws s3 sync s3://auran-chat-server/chat/ /opt/auran-chat/ --exclude .env","systemctl restart auran-chat"]}' \
+            --comment "Deploy from GitHub Actions ($(git rev-parse --short HEAD))" \
+            --output text
