@@ -852,16 +852,45 @@ async function exportTranscript() {
   const transcript = lines.join('\n');
 
   // Download as file — filename matches convention: YYYYMMDD-HHMM-chat-transcript.md
-  // Use data URI instead of blob URL — mobile browsers ignore download attr on blob URLs
   const pad = n => String(n).padStart(2, '0');
   const fname = `${startDate.getFullYear()}${pad(startDate.getMonth()+1)}${pad(startDate.getDate())}-${pad(startDate.getHours())}${pad(startDate.getMinutes())}-chat-transcript.md`;
-  const dataUri = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(transcript);
-  const a = document.createElement('a');
-  a.href = dataUri;
-  a.download = fname;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+
+  // Use server endpoint for download — works reliably on all browsers including mobile
+  try {
+    const resp = await fetch('/transcript', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: transcript, filename: fname }),
+    });
+    if (resp.ok) {
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      // Use window.open for mobile compatibility, link click for desktop
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isMobile) {
+        window.open(url, '_blank');
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fname;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } else {
+      throw new Error('Server transcript endpoint failed');
+    }
+  } catch(e) {
+    // Fallback: data URI (works on desktop at minimum)
+    const dataUri = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(transcript);
+    const a = document.createElement('a');
+    a.href = dataUri;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
 
   // Also try clipboard
   try { await navigator.clipboard.writeText(transcript); } catch(e) {}

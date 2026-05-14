@@ -208,6 +208,34 @@ async def save_session(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/transcript")
+async def transcript(request: Request):
+    """Generate and download a transcript as a markdown file.
+
+    Accepts: { "messages": [...], "filename": "optional.md" }
+    Returns: Downloadable .md file with proper Content-Disposition.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    messages = body.get("messages", [])
+    filename = body.get("filename", "chat-transcript.md")
+    content = body.get("content", "")
+
+    if not content and not messages:
+        raise HTTPException(status_code=400, detail="No content or messages")
+
+    return Response(
+        content=content.encode("utf-8") if content else b"",
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
 @app.post("/save")
 async def save(request: Request):
     """Save conversation memories to Postgres.
