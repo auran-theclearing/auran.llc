@@ -559,7 +559,13 @@ function scrollToBottom() {
 function formatTime(ts) {
   if (!ts) return '';
   const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const now = new Date();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  // Same calendar day — just show time
+  if (d.toDateString() === now.toDateString()) return time;
+  // This year — show month/day + time
+  const date = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return `${date} ${time}`;
 }
 
 function addMessage(role, content, className, skipScroll, timestamp) {
