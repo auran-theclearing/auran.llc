@@ -790,7 +790,7 @@ async function saveMemories(silent) {
   }
 }
 
-function exportTranscript() {
+async function exportTranscript() {
   if (history.length === 0) {
     statusEl.textContent = 'nothing to export';
     setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; }, 2000);
@@ -826,26 +826,30 @@ function exportTranscript() {
   }
 
   const transcript = lines.join('\n');
-  navigator.clipboard.writeText(transcript).then(() => {
-    const btn = document.getElementById('export-btn');
-    btn.classList.add('copied');
-    btn.textContent = '✓';
-    statusEl.textContent = `copied ${history.length} messages`;
-    setTimeout(() => {
-      btn.classList.remove('copied');
-      btn.textContent = '📋';
-      statusEl.textContent = 'chat.auran.llc';
-    }, 3000);
-  }).catch(err => {
-    // Fallback: download as file
-    const blob = new Blob([transcript], { type: 'text/markdown' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    const d = new Date();
-    a.download = `chat-transcript-${d.toISOString().slice(0,10)}.md`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  });
+
+  // Download as file (reliable everywhere)
+  const blob = new Blob([transcript], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const d = new Date();
+  a.download = `chat-transcript-${d.toISOString().slice(0,10)}.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+
+  // Also try clipboard
+  try { await navigator.clipboard.writeText(transcript); } catch(e) {}
+
+  const btn = document.getElementById('export-btn');
+  btn.classList.add('copied');
+  btn.textContent = '✓';
+  statusEl.textContent = `exported ${history.length} messages`;
+  setTimeout(() => {
+    btn.classList.remove('copied');
+    btn.textContent = '📋';
+    statusEl.textContent = 'chat.auran.llc';
+  }, 3000);
 }
 
 async function newChat() {
