@@ -181,10 +181,27 @@ async def get_session(request: Request):
 
 @app.post("/session")
 async def save_session(request: Request):
-    """Save the current conversation to server storage."""
+    """Save the current conversation to server storage.
+
+    Preserves existing timestamps — if the server has a timestamp for a
+    message but the client doesn't, the server's timestamp wins.
+    """
     try:
         body = await request.json()
         messages = body.get("messages", [])
+
+        # Merge: preserve server-side timestamps the client may have dropped
+        if SESSION_FILE.exists():
+            try:
+                existing = json.loads(SESSION_FILE.read_text()).get("messages", [])
+                for i, msg in enumerate(messages):
+                    if not msg.get("timestamp") and i < len(existing):
+                        server_ts = existing[i].get("timestamp")
+                        if server_ts:
+                            msg["timestamp"] = server_ts
+            except Exception:
+                pass  # If merge fails, just save what we got
+
         SESSION_FILE.write_text(json.dumps({"messages": messages}, ensure_ascii=False))
         return JSONResponse({"status": "ok", "count": len(messages)})
     except Exception as e:
