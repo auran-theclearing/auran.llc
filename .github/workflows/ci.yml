@@ -33,7 +33,7 @@ jobs:
         working-directory: chat
         run: uv run ruff format --check .
 
-  smoke-test:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -61,3 +61,7 @@ jobs:
           from memory import write_moment, extract_scenes, link_moment_memories
           print('Smoke test passed: app creates, config loads, scene memory imports')
           "
+
+      - name: Run tests
+        working-directory: chat
+        run: uv run pytest test_scene_memory.py -v
