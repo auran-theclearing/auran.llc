@@ -674,7 +674,8 @@ async def extract_scenes(
         if result:
             # Link to memories from the same save operation
             if memory_ids:
-                link_moment_memories(result["id"], memory_ids)
+                linked = link_moment_memories(result["id"], memory_ids)
+                logger.info(f"Linked scene '{title}' to {linked}/{len(memory_ids)} memories")
             saved.append({"title": title, "summary": summary, "tags": tags, **result})
         else:
             errors.append(f"Failed to write scene: {title}")
