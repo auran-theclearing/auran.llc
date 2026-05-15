@@ -680,3 +680,4 @@ async def extract_scenes(
 
     logger.info(f"Scene extraction: {len(saved)} scenes saved, {len(errors)} errors")
     return {"scenes_saved": len(saved), "scenes": saved, "errors": errors}
+
