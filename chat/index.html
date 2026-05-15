@@ -768,7 +768,7 @@ async function saveMemories(silent) {
     return true;  // Return true so newChat doesn't warn
   }
 
-  statusEl.textContent = 'saving memories...';
+  statusEl.textContent = 'saving memories + scenes...';
   statusEl.style.color = 'var(--accent)';
 
   try {
@@ -788,7 +788,11 @@ async function saveMemories(silent) {
     }
 
     const result = await resp.json();
-    statusEl.textContent = `saved ${result.memories_saved} memories`;
+    const scenes = result.scenes_saved || 0;
+    const mems = result.memories_saved || 0;
+    statusEl.textContent = scenes > 0
+      ? `saved ${mems} memories + ${scenes} scene${scenes > 1 ? 's' : ''}`
+      : `saved ${mems} memories`;
     statusEl.style.color = 'var(--accent)';
     console.log('Memories saved:', result);
     lastSaveHash = hash;  // Mark this conversation as saved
