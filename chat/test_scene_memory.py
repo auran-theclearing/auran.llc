@@ -13,7 +13,9 @@ import pytest
 from memory import (
     _STOPWORDS,
     AGENT_ID,
+    DEDUP_SUMMARY_THRESHOLD,
     DEDUP_TITLE_THRESHOLD,
+    _summary_similarity,
     _title_similarity,
     extract_scenes,
     link_moment_memories,
@@ -187,8 +189,8 @@ class TestWriteMoment:
         """If a scene with similar title exists on the same date, skip insert."""
         conn, cur = _mock_conn()
         mock_connect.return_value = conn
-        # First query (dedup check) returns an existing scene
-        cur.fetchall.return_value = [("existing-id", "The Pen Stays in Your Hand")]
+        # First query (dedup check) returns an existing scene (id, title, summary)
+        cur.fetchall.return_value = [("existing-id", "The Pen Stays in Your Hand", "An existing summary")]
 
         result = write_moment(
             title="The Pen Stays in Your Hand",
@@ -208,14 +210,14 @@ class TestWriteMoment:
         """Scenes with different titles on the same date should both be saved."""
         conn, cur = _mock_conn()
         mock_connect.return_value = conn
-        # Dedup check returns an existing scene with different title
-        cur.fetchall.return_value = [("existing-id", "The Retirement Vision")]
+        # Dedup check returns an existing scene with different title and summary
+        cur.fetchall.return_value = [("existing-id", "The Retirement Vision", "Olivia talked about retiring early")]
         # INSERT returns new row
         cur.fetchone.return_value = ("new-id", datetime(2026, 4, 14))
 
         result = write_moment(
             title="Three Architectures of Destruction",
-            summary="A totally different moment",
+            summary="A totally different moment about architecture",
             date="2026-04-14",
         )
 
@@ -306,6 +308,139 @@ class TestTitleSimilarity:
         """Verify the stopword set includes the expected function words."""
         expected = {"the", "a", "an", "of", "in", "i", "my", "and", "to"}
         assert expected.issubset(_STOPWORDS)
+
+
+# ===========================================================================
+# _summary_similarity
+# ===========================================================================
+
+
+class TestSummarySimilarity:
+    """Tests for _summary_similarity — SequenceMatcher-based structural matching."""
+
+    def test_identical_summaries(self):
+        """Identical strings should return 1.0."""
+        assert _summary_similarity("hello world", "hello world") == 1.0
+
+    def test_completely_different_summaries(self):
+        """Unrelated strings should score well below the threshold."""
+        sim = _summary_similarity(
+            "Olivia debugged a Terraform backend path issue",
+            "The cat sat on the mat eating fish",
+        )
+        assert sim < DEDUP_SUMMARY_THRESHOLD
+
+    def test_empty_strings_return_zero(self):
+        """Either empty string should short-circuit to 0.0."""
+        assert _summary_similarity("", "something") == 0.0
+        assert _summary_similarity("something", "") == 0.0
+        assert _summary_similarity("", "") == 0.0
+
+    def test_case_insensitive(self):
+        """Matching should be case-insensitive."""
+        a = "Olivia Planted A Tree"
+        b = "olivia planted a tree"
+        assert _summary_similarity(a, b) == 1.0
+
+    def test_reextraction_duplicate(self):
+        """Re-extraction from same transcript (button pressed twice) should score high.
+
+        When the same LLM extracts scenes from the same conversation twice,
+        the summaries share most of the same phrases and structure. This is
+        the primary case summary dedup exists to catch.
+        """
+        summary_a = (
+            "Olivia described the redbud tree her mother planted before she "
+            "passed. The weight came when she realized it would outlive everyone "
+            "who remembered why it was planted."
+        )
+        summary_b = (
+            "Olivia described the redbud tree her mother planted in the backyard "
+            "before she passed. She realized the tree would outlive everyone who "
+            "remembered why it was there."
+        )
+        sim = _summary_similarity(summary_a, summary_b)
+        assert sim >= DEDUP_SUMMARY_THRESHOLD, (
+            f"Expected summary similarity >= {DEDUP_SUMMARY_THRESHOLD}, got {sim:.3f}"
+        )
+
+    def test_different_events_below_threshold(self):
+        """Genuinely different events should score well below the threshold."""
+        sim = _summary_similarity(
+            "Olivia described wanting to retire by 40 and buy land somewhere "
+            "rural, away from tech. The exhaustion was palpable.",
+            "Discussion about the three-body architecture for the roam agent. "
+            "Olivia pushed back on the monolith approach and insisted on "
+            "separate containers for orient, explore, and store.",
+        )
+        assert sim < DEDUP_SUMMARY_THRESHOLD
+
+    def test_similar_topic_different_event_below_threshold(self):
+        """Same topic but different events should NOT trigger dedup."""
+        sim = _summary_similarity(
+            "Olivia talked about her mom planting a garden last spring",
+            "Olivia mentioned her mother who used to garden every weekend",
+        )
+        assert sim < DEDUP_SUMMARY_THRESHOLD
+
+
+# ===========================================================================
+# _check_duplicate — summary-based dedup layer
+# ===========================================================================
+
+
+class TestSummaryDedup:
+    """Integration tests for summary-based dedup in _check_duplicate via write_moment."""
+
+    @patch("psycopg2.connect")
+    def test_summary_dedup_catches_reextraction(self, mock_connect):
+        """Re-extraction: different title but nearly identical summary → caught."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+
+        existing_summary = (
+            "Olivia described the redbud tree her mother planted before she "
+            "passed. The weight came when she realized it would outlive everyone "
+            "who remembered why it was planted."
+        )
+        cur.fetchall.return_value = [
+            ("existing-id", "The Tree She Planted and What It Cost", existing_summary),
+        ]
+
+        new_summary = (
+            "Olivia described the redbud tree her mother planted in the backyard "
+            "before she passed. She realized the tree would outlive everyone who "
+            "remembered why it was there."
+        )
+        result = write_moment(
+            title="The Tree She Was Just Describing",  # different title, low Jaccard
+            summary=new_summary,
+            date="2026-05-16",
+        )
+
+        assert result is not None
+        assert result["skipped"] is True
+        assert result["match_type"] == "summary"
+
+    @patch("psycopg2.connect")
+    def test_summary_dedup_does_not_false_positive(self, mock_connect):
+        """Different title AND different summary → should NOT be caught."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+
+        cur.fetchall.return_value = [
+            ("existing-id", "The Tree She Planted", "Olivia talked about her mom's redbud tree"),
+        ]
+        cur.fetchone.return_value = ("new-id", datetime(2026, 5, 16))
+
+        result = write_moment(
+            title="Architecture of the Platform",
+            summary="Discussion about Auran's multi-body substrate and deployment pipeline",
+            date="2026-05-16",
+        )
+
+        assert result is not None
+        assert result.get("skipped") is not True
 
 
 # ===========================================================================

@@ -14,6 +14,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 
 logger = logging.getLogger("auran-chat.memory")
 
@@ -202,7 +203,7 @@ def orient() -> str:
                     lines.append(entry)
                 sections.append("## Recent shared moments\n" + "\n".join(lines))
         except Exception as e:
-            logger.warning(f"Moments query failed (table may not exist yet): {e}")
+            logger.debug(f"Moments query failed (table may not exist): {e}")
 
         conn.close()
 
@@ -506,25 +507,61 @@ def _title_similarity(a: str, b: str) -> float:
 # in Your Hand" vs "The Pen Stays in Your Hand" = 1.0 (dup).
 DEDUP_TITLE_THRESHOLD = 0.5
 
+# Summary similarity threshold using SequenceMatcher.
+# Catches semantically duplicate scenes with different titles — e.g.
+# "The Tree She Planted and What It Cost" vs "The Tree She Was Just Describing"
+# would have low title Jaccard (0.2) but high summary similarity (~0.4).
+# 0.35 balances catching double-tap duplicates vs allowing genuinely distinct
+# scenes from the same day that share some vocabulary.
+DEDUP_SUMMARY_THRESHOLD = 0.6
 
-def _check_duplicate(cur, title: str, moment_date: str) -> dict | None:
+
+def _summary_similarity(a: str, b: str) -> float:
+    """Structural text similarity between two summaries.
+
+    Uses SequenceMatcher rather than bag-of-words because scene summaries
+    are emotionally descriptive prose where the same event often gets
+    entirely different vocabulary. SequenceMatcher finds longest common
+    subsequences, catching shared phrases and structure even when individual
+    word choices diverge.
+    """
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _check_duplicate(cur, title: str, moment_date: str, summary: str = "") -> dict | None:
     """Check if a similar scene already exists for this date.
 
-    Queries existing moments on the same date and checks title similarity.
+    Two-layer dedup gate:
+    1. Title Jaccard >= 0.5 — catches re-extractions with same/similar titles
+    2. Summary SequenceMatcher >= 0.35 — catches same event with different titles
+
     Returns the existing moment dict if a duplicate is found, None otherwise.
     """
     cur.execute(
         """
-        SELECT id, title FROM moments
+        SELECT id, title, summary FROM moments
         WHERE agent_id = %s AND date = %s
         """,
         (AGENT_ID, moment_date),
     )
     for row in cur.fetchall():
-        existing_id, existing_title = str(row[0]), row[1]
-        sim = _title_similarity(title, existing_title)
-        if sim >= DEDUP_TITLE_THRESHOLD:
-            return {"id": existing_id, "title": existing_title, "similarity": sim}
+        existing_id, existing_title, existing_summary = str(row[0]), row[1], row[2] or ""
+        title_sim = _title_similarity(title, existing_title)
+        if title_sim >= DEDUP_TITLE_THRESHOLD:
+            return {"id": existing_id, "title": existing_title, "similarity": title_sim, "match_type": "title"}
+
+        # Second pass: summary structural similarity
+        if summary and existing_summary:
+            summary_sim = _summary_similarity(summary, existing_summary)
+            if summary_sim >= DEDUP_SUMMARY_THRESHOLD:
+                return {
+                    "id": existing_id,
+                    "title": existing_title,
+                    "similarity": summary_sim,
+                    "match_type": "summary",
+                }
     return None
 
 
@@ -570,11 +607,12 @@ def write_moment(
         moment_date = date or datetime.now(UTC).strftime("%Y-%m-%d")
 
         # Dedup gate: skip if a similar scene exists for this date
-        dup = _check_duplicate(cur, title, moment_date)
+        dup = _check_duplicate(cur, title, moment_date, summary=summary)
         if dup:
+            match_type = dup.get("match_type", "title")
             logger.info(
                 f"Skipping duplicate scene '{title}' — matches existing "
-                f"'{dup['title']}' ({dup['similarity']:.0%} similarity)"
+                f"'{dup['title']}' ({dup['similarity']:.0%} {match_type} similarity)"
             )
             cur.close()
             conn.close()
@@ -582,6 +620,7 @@ def write_moment(
                 "skipped": True,
                 "matched": dup["title"],
                 "similarity": dup["similarity"],
+                "match_type": match_type,
             }
 
         moment_id = str(uuid.uuid4())
