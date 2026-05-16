@@ -13,6 +13,7 @@ import pytest
 from memory import (
     AGENT_ID,
     DEDUP_TITLE_THRESHOLD,
+    _STOPWORDS,
     _check_duplicate,
     _title_similarity,
     extract_scenes,
@@ -196,7 +197,9 @@ class TestWriteMoment:
             date="2026-04-14",
         )
 
-        assert result is None
+        assert result is not None
+        assert result["skipped"] is True
+        assert result["matched"] == "The Pen Stays in Your Hand"
         # INSERT should never have been called — only the SELECT for dedup
         sql_calls = [call[0][0].strip() for call in cur.execute.call_args_list]
         assert not any("INSERT" in s for s in sql_calls)
@@ -253,9 +256,14 @@ class TestTitleSimilarity:
         assert _title_similarity("Morning Light", "Evening Darkness") == 0.0
 
     def test_partial_overlap(self):
-        # "The" overlaps, 1 out of 4 unique words
+        # After stopword stripping: {"morning"} vs {"evening"} — no overlap
         sim = _title_similarity("The Morning", "The Evening")
-        assert 0.2 < sim < 0.5
+        assert sim == 0.0
+
+    def test_real_content_overlap(self):
+        # "Quiet" overlaps, "Morning"/"Evening" don't: 1/3 = 0.33
+        sim = _title_similarity("Quiet Morning", "Quiet Evening")
+        assert 0.3 < sim < 0.4
 
     def test_case_insensitive(self):
         assert _title_similarity("The PEN stays", "the pen STAYS") == 1.0
@@ -279,6 +287,26 @@ class TestTitleSimilarity:
             "Three Architectures of Destruction",
         )
         assert sim < DEDUP_TITLE_THRESHOLD
+
+    def test_stopwords_stripped(self):
+        """Function words like 'the', 'a', 'in' should not inflate similarity."""
+        # Without stopwords: {"the","quiet","walk"} vs {"the","loud","walk"} = 2/4 = 0.5
+        # With stopwords: {"quiet","walk"} vs {"loud","walk"} = 1/3 = 0.33
+        sim_with = _title_similarity("The Quiet Walk", "The Loud Walk")
+        # And pure stopword overlap should give 0:
+        sim_pure = _title_similarity("The A", "The An")
+        assert sim_pure == 0.0
+        assert sim_with < 0.5  # lower than it would be without stripping
+
+    def test_stopword_only_titles(self):
+        """Titles made entirely of stopwords should return 0.0."""
+        sim = _title_similarity("The", "A")
+        assert sim == 0.0
+
+    def test_stopword_list_contains_common_function_words(self):
+        """Verify the stopword set includes the expected function words."""
+        expected = {"the", "a", "an", "of", "in", "i", "my", "and", "to"}
+        assert expected.issubset(_STOPWORDS)
 
 
 # ===========================================================================
@@ -598,3 +626,97 @@ class TestExtractScenes:
 
         assert captured_kwargs["headers"]["x-api-key"] == "sk-test-12345"
         assert captured_kwargs["headers"]["anthropic-version"] == "2023-06-01"
+
+    async def test_dedup_skip_tracked_separately_from_errors(self):
+        """Dedup skip should appear in scenes_skipped, NOT in errors."""
+        mock_response = _make_api_response(SAMPLE_SCENES_JSON)
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("memory.write_moment") as mock_write:
+                mock_write.return_value = {"skipped": True, "matched": "Existing Scene", "similarity": 0.8}
+
+                result = await extract_scenes(messages=SAMPLE_MESSAGES, api_key="test-key")
+
+        assert result["scenes_saved"] == 0
+        assert result["scenes_skipped"] == 1
+        assert len(result["errors"]) == 0
+
+    async def test_invalid_date_falls_back_to_message_timestamp(self):
+        """Bad date format from extraction should fall back to first message timestamp."""
+        scenes_with_bad_date = json.dumps(
+            [
+                {
+                    "title": "Test Scene",
+                    "summary": "A test",
+                    "tags": ["test"],
+                    "date": "May 15, 2026",  # wrong format
+                    "channel": "chat",
+                }
+            ]
+        )
+        mock_response = _make_api_response(scenes_with_bad_date)
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+
+        messages_with_ts = [
+            {"role": "user", "content": "hey", "timestamp": "2026-05-15T02:30:00Z"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "thinking about stuff"},
+            {"role": "assistant", "content": "me too"},
+        ]
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("memory.write_moment") as mock_write:
+                mock_write.return_value = {"id": "s-1", "created_at": "2026-05-15T00:00:00"}
+
+                await extract_scenes(messages=messages_with_ts, api_key="test-key")
+
+        # write_moment should have been called with the fallback date from messages
+        call_kwargs = mock_write.call_args[1]
+        assert call_kwargs["date"] == "2026-05-15"
+
+    async def test_missing_date_falls_back_to_message_timestamp(self):
+        """None date from extraction should fall back to first message timestamp."""
+        scenes_no_date = json.dumps(
+            [
+                {
+                    "title": "Test Scene",
+                    "summary": "A test",
+                    "tags": ["test"],
+                    "channel": "chat",
+                }
+            ]
+        )
+        mock_response = _make_api_response(scenes_no_date)
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+
+        messages_with_ts = [
+            {"role": "user", "content": "hey", "timestamp": "2026-05-15T02:30:00Z"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "thinking about stuff"},
+            {"role": "assistant", "content": "me too"},
+        ]
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("memory.write_moment") as mock_write:
+                mock_write.return_value = {"id": "s-1", "created_at": "2026-05-15T00:00:00"}
+
+                await extract_scenes(messages=messages_with_ts, api_key="test-key")
+
+        call_kwargs = mock_write.call_args[1]
+        assert call_kwargs["date"] == "2026-05-15"

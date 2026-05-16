@@ -483,14 +483,20 @@ Example output:
 ]"""
 
 
+_STOPWORDS = frozenset(
+    {"the", "a", "an", "of", "in", "i", "my", "and", "to", "that", "it", "is", "was", "on", "for"}
+)
+
+
 def _title_similarity(a: str, b: str) -> float:
     """Word-overlap similarity between two titles.
 
-    Returns 0.0–1.0. Uses lowercase word sets — simple, fast, no deps.
+    Returns 0.0–1.0. Strips common stopwords before comparison to avoid
+    inflated similarity from function words like "The" / "I" / "in".
     Jaccard index: |intersection| / |union|.
     """
-    words_a = set(a.lower().split())
-    words_b = set(b.lower().split())
+    words_a = set(a.lower().split()) - _STOPWORDS
+    words_b = set(b.lower().split()) - _STOPWORDS
     if not words_a or not words_b:
         return 0.0
     return len(words_a & words_b) / len(words_a | words_b)
@@ -547,7 +553,10 @@ def write_moment(
         channel: Where this happened (chat, claude-ai, cowork, vr)
         source: System that created this record
 
-    Returns {"id": ..., "created_at": ...} on success, None on failure/duplicate.
+    Returns:
+        {"id": ..., "created_at": ...} on success.
+        {"skipped": True, "matched": ..., "similarity": ...} if dedup gate fires.
+        None on actual failure.
     """
     try:
         import psycopg2
@@ -571,7 +580,11 @@ def write_moment(
             )
             cur.close()
             conn.close()
-            return None
+            return {
+                "skipped": True,
+                "matched": dup["title"],
+                "similarity": dup["similarity"],
+            }
 
         moment_id = str(uuid.uuid4())
 
@@ -741,6 +754,7 @@ async def extract_scenes(
 
     # Write each scene to the moments table
     saved = []
+    skipped = []
     errors = []
     for scene in scenes:
         title = scene.get("title", "")
@@ -753,6 +767,21 @@ async def extract_scenes(
         if not title or not summary:
             continue
 
+        # Validate date format — reject garbage, fall back to first message timestamp
+        if scene_date:
+            import re
+
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", scene_date):
+                logger.warning(f"Invalid date '{scene_date}' for scene '{title}', falling back")
+                scene_date = None
+        if not scene_date:
+            # Try to derive from first message timestamp
+            for msg in messages:
+                ts = msg.get("timestamp")
+                if ts and isinstance(ts, str) and len(ts) >= 10:
+                    scene_date = ts[:10]  # "2026-05-15T..." → "2026-05-15"
+                    break
+
         result = write_moment(
             title=title,
             summary=summary,
@@ -762,7 +791,9 @@ async def extract_scenes(
             channel=scene_channel,
             source="chat.auran.llc",
         )
-        if result:
+        if result and result.get("skipped"):
+            skipped.append({"title": title, "matched": result["matched"]})
+        elif result:
             # Link to memories from the same save operation
             if memory_ids:
                 linked = link_moment_memories(result["id"], memory_ids)
@@ -771,5 +802,7 @@ async def extract_scenes(
         else:
             errors.append(f"Failed to write scene: {title}")
 
-    logger.info(f"Scene extraction: {len(saved)} scenes saved, {len(errors)} errors")
-    return {"scenes_saved": len(saved), "scenes": saved, "errors": errors}
+    logger.info(
+        f"Scene extraction: {len(saved)} saved, {len(skipped)} skipped (dedup), {len(errors)} errors"
+    )
+    return {"scenes_saved": len(saved), "scenes_skipped": len(skipped), "scenes": saved, "errors": errors}
