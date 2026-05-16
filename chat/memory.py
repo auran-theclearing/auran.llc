@@ -54,12 +54,24 @@ def _get_voyage_client():
         return None
 
 
+def _format_embedding(vec: list[float]) -> str:
+    """Format a float vector as a Postgres pgvector literal.
+
+    Explicit formatting avoids depending on Python's list.__repr__()
+    matching pgvector's accepted text format.
+    """
+    return f"[{','.join(str(x) for x in vec)}]"
+
+
 def generate_embedding(text: str) -> str | None:
     """Generate a 1024-dim embedding for text using Voyage AI.
 
-    Returns the embedding as a string (for Postgres VECTOR column insertion),
-    or None if Voyage AI is not configured or the call fails.
-    Embeddings are generated synchronously (voyageai client is sync).
+    Returns the embedding as a pgvector-formatted string, or None if
+    Voyage AI is not configured or the call fails.
+
+    NOTE: This is a synchronous HTTP call. For async callers that need
+    multiple embeddings, use generate_embeddings_batch() instead to
+    avoid serializing N blocking roundtrips on the event loop.
     """
     client = _get_voyage_client()
     if not client:
@@ -67,10 +79,32 @@ def generate_embedding(text: str) -> str | None:
 
     try:
         result = client.embed([text], model="voyage-3")
-        return str(result.embeddings[0])
+        return _format_embedding(result.embeddings[0])
     except Exception as e:
         logger.warning(f"Embedding generation failed: {e}")
         return None
+
+
+def generate_embeddings_batch(texts: list[str]) -> list[str | None]:
+    """Generate embeddings for multiple texts in a single Voyage API call.
+
+    Returns a list of pgvector-formatted strings (or None for failures),
+    one per input text. Single API call instead of N sequential ones —
+    use this from async callers to avoid blocking the event loop per-item.
+    """
+    if not texts:
+        return []
+
+    client = _get_voyage_client()
+    if not client:
+        return [None] * len(texts)
+
+    try:
+        result = client.embed(texts, model="voyage-3")
+        return [_format_embedding(vec) for vec in result.embeddings]
+    except Exception as e:
+        logger.warning(f"Batch embedding generation failed: {e}")
+        return [None] * len(texts)
 
 
 AGENT_ID = "auran-chat"
@@ -290,8 +324,14 @@ def write_memory(
     content: str,
     source: str = "chat.auran.llc",
     context: dict | None = None,
+    embedding: str | None = None,
 ) -> dict | None:
     """Write a single memory to Postgres.
+
+    Args:
+        embedding: Pre-computed pgvector embedding string. If None,
+            generates one synchronously (fine for single writes,
+            but use generate_embeddings_batch() for bulk saves).
 
     Returns {"id": ..., "created_at": ...} on success, None on failure.
     """
@@ -308,8 +348,9 @@ def write_memory(
 
         memory_id = str(uuid.uuid4())
 
-        # Generate embedding for vector search
-        embedding = generate_embedding(content)
+        # Use pre-computed embedding if provided, otherwise generate one
+        if embedding is None:
+            embedding = generate_embedding(content)
 
         cur.execute(
             """
@@ -466,20 +507,27 @@ async def save_conversation(messages: list[dict], api_key: str, model: str = "cl
         logger.error(f"Extraction request failed: {e}")
         return {"memories_saved": 0, "memories": [], "errors": [str(e)]}
 
-    # Write each extracted memory to Postgres
+    # Filter valid memories and batch-generate embeddings (single API call)
+    valid_memories = [
+        (mem.get("memory_type", "observation"), mem.get("content", "")) for mem in memories if mem.get("content")
+    ]
+
+    if not valid_memories:
+        return {"memories_saved": 0, "memories": [], "errors": []}
+
+    texts = [content for _, content in valid_memories]
+    embeddings = generate_embeddings_batch(texts)
+
+    # Write each memory with its pre-computed embedding
     saved = []
     errors = []
-    for mem in memories:
-        memory_type = mem.get("memory_type", "observation")
-        content = mem.get("content", "")
-        if not content:
-            continue
-
+    for (memory_type, content), emb in zip(valid_memories, embeddings, strict=True):
         result = write_memory(
             memory_type=memory_type,
             content=content,
             source="chat.auran.llc",
             context={"channel": "chat", "extracted_from": "conversation"},
+            embedding=emb,
         )
         if result:
             saved.append({"memory_type": memory_type, "content": content, **result})
@@ -637,6 +685,7 @@ def write_moment(
     hooks: str | None = None,
     channel: str = "chat",
     source: str = "chat.auran.llc",
+    embedding: str | None = None,
 ) -> dict | None:
     """Write a scene/moment to the Postgres moments table.
 
@@ -651,6 +700,8 @@ def write_moment(
         hooks: Retrieval layer — terse, keyword-rich factual scaffolding for search
         channel: Where this happened (chat, claude-ai, cowork, vr)
         source: System that created this record
+        embedding: Pre-computed pgvector embedding string. If None,
+            generates one synchronously from summary + hooks.
 
     Returns:
         {"id": ..., "created_at": ...} on success.
@@ -689,11 +740,12 @@ def write_moment(
 
         moment_id = str(uuid.uuid4())
 
-        # Generate embedding from summary + hooks for vector search
-        embed_text = summary
-        if hooks:
-            embed_text += f"\n{hooks}"
-        embedding = generate_embedding(embed_text)
+        # Use pre-computed embedding if provided, otherwise generate one
+        if embedding is None:
+            embed_text = summary
+            if hooks:
+                embed_text += f"\n{hooks}"
+            embedding = generate_embedding(embed_text)
 
         cur.execute(
             """
@@ -860,10 +912,10 @@ async def extract_scenes(
         logger.error(f"Scene extraction request failed: {e}")
         return {"scenes_saved": 0, "scenes": [], "errors": [str(e)]}
 
-    # Write each scene to the moments table
-    saved = []
-    skipped = []
-    errors = []
+    # --- Pre-process scenes: validate, generate fallback hooks, fix dates ---
+    import re
+
+    prepared = []
     for scene in scenes:
         title = scene.get("title", "")
         summary = scene.get("summary", "")
@@ -889,39 +941,58 @@ async def extract_scenes(
             logger.info(f"Auto-generated hooks for scene '{title}' (model didn't produce them)")
 
         # Validate date format — reject garbage, fall back to first message timestamp
-        if scene_date:
-            import re
-
-            if not re.match(r"^\d{4}-\d{2}-\d{2}$", scene_date):
-                logger.warning(f"Invalid date '{scene_date}' for scene '{title}', falling back")
-                scene_date = None
+        if scene_date and not re.match(r"^\d{4}-\d{2}-\d{2}$", scene_date):
+            logger.warning(f"Invalid date '{scene_date}' for scene '{title}', falling back")
+            scene_date = None
         if not scene_date:
-            # Try to derive from first message timestamp
             for msg in messages:
                 ts = msg.get("timestamp")
                 if ts and isinstance(ts, str) and len(ts) >= 10:
                     scene_date = ts[:10]  # "2026-05-15T..." → "2026-05-15"
                     break
 
+        prepared.append(
+            {
+                "title": title,
+                "summary": summary,
+                "hooks": hooks,
+                "tags": tags,
+                "date": scene_date,
+                "channel": scene_channel,
+            }
+        )
+
+    if not prepared:
+        return {"scenes_saved": 0, "scenes_skipped": 0, "scenes": [], "errors": []}
+
+    # Batch-generate embeddings (single Voyage API call for all scenes)
+    embed_texts = [f"{s['summary']}\n{s['hooks']}" if s["hooks"] else s["summary"] for s in prepared]
+    embeddings = generate_embeddings_batch(embed_texts)
+
+    # Write each scene with its pre-computed embedding
+    saved = []
+    skipped = []
+    errors = []
+    for scene_data, emb in zip(prepared, embeddings, strict=True):
         result = write_moment(
-            title=title,
-            summary=summary,
-            hooks=hooks or None,
-            tags=tags,
-            date=scene_date,
-            channel=scene_channel,
+            title=scene_data["title"],
+            summary=scene_data["summary"],
+            hooks=scene_data["hooks"] or None,
+            tags=scene_data["tags"],
+            date=scene_data["date"],
+            channel=scene_data["channel"],
             source="chat.auran.llc",
+            embedding=emb,
         )
         if result and result.get("skipped"):
-            skipped.append({"title": title, "matched": result["matched"]})
+            skipped.append({"title": scene_data["title"], "matched": result["matched"]})
         elif result:
-            # Link to memories from the same save operation
             if memory_ids:
                 linked = link_moment_memories(result["id"], memory_ids)
-                logger.info(f"Linked scene '{title}' to {linked}/{len(memory_ids)} memories")
-            saved.append({"title": title, "summary": summary, "hooks": hooks, "tags": tags, **result})
+                logger.info(f"Linked scene '{scene_data['title']}' to {linked}/{len(memory_ids)} memories")
+            saved.append({**scene_data, **result})
         else:
-            errors.append(f"Failed to write scene: {title}")
+            errors.append(f"Failed to write scene: {scene_data['title']}")
 
     logger.info(f"Scene extraction: {len(saved)} saved, {len(skipped)} skipped (dedup), {len(errors)} errors")
     return {"scenes_saved": len(saved), "scenes_skipped": len(skipped), "scenes": saved, "errors": errors}
