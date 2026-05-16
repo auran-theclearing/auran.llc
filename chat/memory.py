@@ -10,6 +10,7 @@ env vars for local dev (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD).
 Embeddings: VOYAGE_API_KEY env var, voyage-3 model, 1024 dimensions.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -106,6 +107,11 @@ def generate_embeddings_batch(texts: list[str]) -> list[str | None]:
         logger.warning(f"Batch embedding generation failed: {e}")
         return [None] * len(texts)
 
+
+# Sentinel: batched callers pass this to say "embedding was already attempted,
+# don't retry on failure." Prevents fallback from undoing the batching optimization
+# when Voyage is flaky (N sequential retries against a failing endpoint).
+_SKIP_EMBEDDING = "__skip__"
 
 AGENT_ID = "auran-chat"
 
@@ -332,6 +338,8 @@ def write_memory(
         embedding: Pre-computed pgvector embedding string. If None,
             generates one synchronously (fine for single writes,
             but use generate_embeddings_batch() for bulk saves).
+            Pass _SKIP_EMBEDDING to skip embedding entirely (used by
+            batched callers when the batch already failed).
 
     Returns {"id": ..., "created_at": ...} on success, None on failure.
     """
@@ -348,8 +356,11 @@ def write_memory(
 
         memory_id = str(uuid.uuid4())
 
-        # Use pre-computed embedding if provided, otherwise generate one
-        if embedding is None:
+        # Use pre-computed embedding if provided, generate if None,
+        # or skip entirely if sentinel (batch already tried and failed)
+        if embedding == _SKIP_EMBEDDING:
+            embedding = None
+        elif embedding is None:
             embedding = generate_embedding(content)
 
         cur.execute(
@@ -516,9 +527,11 @@ async def save_conversation(messages: list[dict], api_key: str, model: str = "cl
         return {"memories_saved": 0, "memories": [], "errors": []}
 
     texts = [content for _, content in valid_memories]
-    embeddings = generate_embeddings_batch(texts)
+    embeddings = await asyncio.to_thread(generate_embeddings_batch, texts)
 
-    # Write each memory with its pre-computed embedding
+    # Write each memory with its pre-computed embedding.
+    # Map None → _SKIP_EMBEDDING so write_memory() doesn't retry
+    # per-item against a failing Voyage endpoint.
     saved = []
     errors = []
     for (memory_type, content), emb in zip(valid_memories, embeddings, strict=True):
@@ -527,7 +540,7 @@ async def save_conversation(messages: list[dict], api_key: str, model: str = "cl
             content=content,
             source="chat.auran.llc",
             context={"channel": "chat", "extracted_from": "conversation"},
-            embedding=emb,
+            embedding=emb if emb is not None else _SKIP_EMBEDDING,
         )
         if result:
             saved.append({"memory_type": memory_type, "content": content, **result})
@@ -702,6 +715,7 @@ def write_moment(
         source: System that created this record
         embedding: Pre-computed pgvector embedding string. If None,
             generates one synchronously from summary + hooks.
+            Pass _SKIP_EMBEDDING to skip (batch already tried).
 
     Returns:
         {"id": ..., "created_at": ...} on success.
@@ -740,8 +754,11 @@ def write_moment(
 
         moment_id = str(uuid.uuid4())
 
-        # Use pre-computed embedding if provided, otherwise generate one
-        if embedding is None:
+        # Use pre-computed embedding if provided, generate if None,
+        # or skip entirely if sentinel (batch already tried and failed)
+        if embedding == _SKIP_EMBEDDING:
+            embedding = None
+        elif embedding is None:
             embed_text = summary
             if hooks:
                 embed_text += f"\n{hooks}"
@@ -965,11 +982,14 @@ async def extract_scenes(
     if not prepared:
         return {"scenes_saved": 0, "scenes_skipped": 0, "scenes": [], "errors": []}
 
-    # Batch-generate embeddings (single Voyage API call for all scenes)
+    # Batch-generate embeddings (single Voyage API call for all scenes).
+    # Runs in a thread so the sync Voyage client doesn't block the event loop.
     embed_texts = [f"{s['summary']}\n{s['hooks']}" if s["hooks"] else s["summary"] for s in prepared]
-    embeddings = generate_embeddings_batch(embed_texts)
+    embeddings = await asyncio.to_thread(generate_embeddings_batch, embed_texts)
 
-    # Write each scene with its pre-computed embedding
+    # Write each scene with its pre-computed embedding.
+    # Map None → _SKIP_EMBEDDING so write_moment() doesn't retry
+    # per-item against a failing Voyage endpoint.
     saved = []
     skipped = []
     errors = []
@@ -982,7 +1002,7 @@ async def extract_scenes(
             date=scene_data["date"],
             channel=scene_data["channel"],
             source="chat.auran.llc",
-            embedding=emb,
+            embedding=emb if emb is not None else _SKIP_EMBEDDING,
         )
         if result and result.get("skipped"):
             skipped.append({"title": scene_data["title"], "matched": result["matched"]})
