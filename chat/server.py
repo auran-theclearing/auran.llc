@@ -176,9 +176,9 @@ async def get_session(request: Request):
         if SESSION_FILE.exists():
             data = json.loads(SESSION_FILE.read_text())
             return JSONResponse(data)
-        return JSONResponse({"messages": []})
+        return JSONResponse({"messages": [], "version": 0})
     except Exception as e:
-        return JSONResponse({"messages": [], "error": str(e)})
+        return JSONResponse({"messages": [], "version": 0, "error": str(e)})
 
 
 @app.post("/session")
@@ -191,20 +191,24 @@ async def save_session(request: Request):
     try:
         body = await request.json()
         messages = body.get("messages", [])
+        version = body.get("version", 0)
 
         # Merge: preserve server-side timestamps the client may have dropped
         if SESSION_FILE.exists():
             try:
-                existing = json.loads(SESSION_FILE.read_text()).get("messages", [])
+                existing = json.loads(SESSION_FILE.read_text())
+                existing_msgs = existing.get("messages", [])
                 for i, msg in enumerate(messages):
-                    if not msg.get("timestamp") and i < len(existing):
-                        server_ts = existing[i].get("timestamp")
+                    if not msg.get("timestamp") and i < len(existing_msgs):
+                        server_ts = existing_msgs[i].get("timestamp")
                         if server_ts:
                             msg["timestamp"] = server_ts
             except Exception:
                 pass  # If merge fails, just save what we got
 
-        SESSION_FILE.write_text(json.dumps({"messages": messages}, ensure_ascii=False))
+        SESSION_FILE.write_text(
+            json.dumps({"messages": messages, "version": version}, ensure_ascii=False)
+        )
         return JSONResponse({"status": "ok", "count": len(messages)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
