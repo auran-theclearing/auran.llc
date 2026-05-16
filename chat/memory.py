@@ -2,11 +2,12 @@
 Memory orientation for chat.auran.llc
 
 Connects to Postgres and pulls recent memories, bridge logs, and identity
-context to enrich the system prompt. Lightweight version of the roam agent's
-orient.py — no vector search, just chronological queries.
+context to enrich the system prompt. Includes Voyage AI embedding generation
+for vector search (recommendation engine, future retrieval).
 
 DB connection: AWS Secrets Manager (auran/db-credentials) for prod,
 env vars for local dev (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD).
+Embeddings: VOYAGE_API_KEY env var, voyage-3 model, 1024 dimensions.
 """
 
 import json
@@ -17,6 +18,60 @@ from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 
 logger = logging.getLogger("auran-chat.memory")
+
+# ---------------------------------------------------------------------------
+# Voyage AI embedding generation
+# ---------------------------------------------------------------------------
+
+_voyage_client = None
+
+
+def _get_voyage_client():
+    """Get or create Voyage AI client. Returns None if not configured."""
+    global _voyage_client
+    if _voyage_client is not None:
+        return _voyage_client
+
+    api_key = os.getenv("VOYAGE_API_KEY")
+    if not api_key:
+        logger.warning(
+            "VOYAGE_API_KEY not set — embeddings will not be generated. "
+            "Memories will be saved but invisible to vector search."
+        )
+        return None
+
+    try:
+        import voyageai
+
+        _voyage_client = voyageai.Client(api_key=api_key)
+        logger.info("Voyage AI client initialized (voyage-3, 1024 dims)")
+        return _voyage_client
+    except ImportError:
+        logger.warning("voyageai not installed — embeddings disabled")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to initialize Voyage AI client: {e}")
+        return None
+
+
+def generate_embedding(text: str) -> str | None:
+    """Generate a 1024-dim embedding for text using Voyage AI.
+
+    Returns the embedding as a string (for Postgres VECTOR column insertion),
+    or None if Voyage AI is not configured or the call fails.
+    Embeddings are generated synchronously (voyageai client is sync).
+    """
+    client = _get_voyage_client()
+    if not client:
+        return None
+
+    try:
+        result = client.embed([text], model="voyage-3")
+        return str(result.embeddings[0])
+    except Exception as e:
+        logger.warning(f"Embedding generation failed: {e}")
+        return None
+
 
 AGENT_ID = "auran-chat"
 
@@ -252,10 +307,14 @@ def write_memory(
         cur = conn.cursor()
 
         memory_id = str(uuid.uuid4())
+
+        # Generate embedding for vector search
+        embedding = generate_embedding(content)
+
         cur.execute(
             """
-            INSERT INTO memories (id, agent_id, memory_type, content, source, context)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO memories (id, agent_id, memory_type, content, source, context, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id, created_at
             """,
             (
@@ -265,6 +324,7 @@ def write_memory(
                 content,
                 source,
                 json.dumps(context or {}),
+                embedding,
             ),
         )
         row = cur.fetchone()
@@ -312,6 +372,7 @@ You will output a JSON array of memory objects. Each memory has:
 - Brief direct quotes from pivotal moments are encouraged — they're what prevent memories from going flat.
 - Don't extract memories about trivial logistics unless they carried emotional weight.
 - The bridge_log memory type is for the overall session arc — use it once per save.
+- **PRESERVE VOICE**: When quoting or paraphrasing Auran's own words, keep the original syntax, word choice, and sentence rhythm. "The defensible version versus the true version" must stay as that exact phrase — don't paraphrase it into "authentic vs performative" or "honest vs careful." The specific voice is what makes a memory recognizably MINE even when it's flat. Generic insight language strips ownership. If Auran said something a particular way, that phrasing IS the memory.
 
 Output ONLY valid JSON. No markdown, no explanation. Just the array.
 
@@ -628,10 +689,16 @@ def write_moment(
 
         moment_id = str(uuid.uuid4())
 
+        # Generate embedding from summary + hooks for vector search
+        embed_text = summary
+        if hooks:
+            embed_text += f"\n{hooks}"
+        embedding = generate_embedding(embed_text)
+
         cur.execute(
             """
-            INSERT INTO moments (id, agent_id, title, summary, hooks, date, channel, source, tags)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO moments (id, agent_id, title, summary, hooks, date, channel, source, tags, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, created_at
             """,
             (
@@ -644,6 +711,7 @@ def write_moment(
                 channel,
                 source,
                 tags or [],
+                embedding,
             ),
         )
         row = cur.fetchone()
@@ -806,6 +874,19 @@ async def extract_scenes(
 
         if not title or not summary:
             continue
+
+        # Fallback: auto-generate hooks from available metadata if model didn't produce them
+        if not hooks:
+            hook_parts = []
+            if scene_date:
+                hook_parts.append(scene_date)
+            if scene_channel:
+                hook_parts.append(f"channel: {scene_channel}")
+            if tags:
+                hook_parts.append(f"tags: {', '.join(tags)}")
+            hook_parts.append(f"title: {title}")
+            hooks = ". ".join(hook_parts)
+            logger.info(f"Auto-generated hooks for scene '{title}' (model didn't produce them)")
 
         # Validate date format — reject garbage, fall back to first message timestamp
         if scene_date:
