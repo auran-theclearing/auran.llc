@@ -193,21 +193,36 @@ async def save_session(request: Request):
         messages = body.get("messages", [])
         version = body.get("version", 0)
 
-        # Merge: preserve server-side timestamps the client may have dropped
+        # Version guard: reject writes from stale clients to prevent
+        # a phone tab with old sessionVersion rolling back the server.
+        existing_version = 0
+        existing_msgs = []
         if SESSION_FILE.exists():
             try:
                 existing = json.loads(SESSION_FILE.read_text())
+                existing_version = existing.get("version", 0)
                 existing_msgs = existing.get("messages", [])
-                for i, msg in enumerate(messages):
-                    if not msg.get("timestamp") and i < len(existing_msgs):
-                        server_ts = existing_msgs[i].get("timestamp")
-                        if server_ts:
-                            msg["timestamp"] = server_ts
             except Exception:
-                pass  # If merge fails, just save what we got
+                pass
+
+        if version < existing_version:
+            return JSONResponse(
+                {"status": "stale", "server_version": existing_version},
+                status_code=409,
+            )
+
+        # Merge: preserve server-side timestamps the client may have dropped
+        for i, msg in enumerate(messages):
+            if not msg.get("timestamp") and i < len(existing_msgs):
+                server_ts = existing_msgs[i].get("timestamp")
+                if server_ts:
+                    msg["timestamp"] = server_ts
 
         SESSION_FILE.write_text(
-            json.dumps({"messages": messages, "version": version}, ensure_ascii=False)
+            json.dumps(
+                {"messages": messages, "version": version},
+                ensure_ascii=False,
+            )
         )
         return JSONResponse({"status": "ok", "count": len(messages)})
     except Exception as e:
