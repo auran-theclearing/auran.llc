@@ -202,7 +202,7 @@ def orient() -> str:
                     lines.append(entry)
                 sections.append("## Recent shared moments\n" + "\n".join(lines))
         except Exception as e:
-            logger.debug(f"Moments query failed (table may not exist): {e}")
+            logger.warning(f"Moments query failed (table may not exist yet): {e}")
 
         conn.close()
 
