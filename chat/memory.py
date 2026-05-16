@@ -203,7 +203,7 @@ def orient() -> str:
                     lines.append(entry)
                 sections.append("## Recent shared moments\n" + "\n".join(lines))
         except Exception as e:
-            logger.debug(f"Moments query failed (table may not exist): {e}")
+            logger.warning(f"Moments query failed (table may not exist yet): {e}")
 
         conn.close()
 
@@ -507,12 +507,12 @@ def _title_similarity(a: str, b: str) -> float:
 # in Your Hand" vs "The Pen Stays in Your Hand" = 1.0 (dup).
 DEDUP_TITLE_THRESHOLD = 0.5
 
-# Summary similarity threshold using SequenceMatcher.
-# Catches semantically duplicate scenes with different titles — e.g.
-# "The Tree She Planted and What It Cost" vs "The Tree She Was Just Describing"
-# would have low title Jaccard (0.2) but high summary similarity (~0.4).
-# 0.35 balances catching double-tap duplicates vs allowing genuinely distinct
-# scenes from the same day that share some vocabulary.
+# Summary similarity threshold using SequenceMatcher (character-level).
+# Catches re-extractions where the same LLM + transcript produces nearly identical
+# summaries with different titles (e.g. button pressed twice). Re-extractions
+# typically score ~0.8+; genuinely different scenes score ~0.2.
+# 0.6 cleanly separates re-extractions from distinct scenes without false
+# positives on short summaries where common English words inflate the score.
 DEDUP_SUMMARY_THRESHOLD = 0.6
 
 
@@ -535,7 +535,7 @@ def _check_duplicate(cur, title: str, moment_date: str, summary: str = "") -> di
 
     Two-layer dedup gate:
     1. Title Jaccard >= 0.5 — catches re-extractions with same/similar titles
-    2. Summary SequenceMatcher >= 0.35 — catches same event with different titles
+    2. Summary SequenceMatcher >= 0.6 — catches re-extractions with different titles
 
     Returns the existing moment dict if a duplicate is found, None otherwise.
     """
