@@ -196,10 +196,13 @@ def orient() -> str:
                 for m in moments:
                     date_str = m["date"].strftime("%b %d") if hasattr(m["date"], "strftime") else str(m["date"])
                     channel = f" ({m['channel']})" if m.get("channel") else ""
-                    # Summary is the felt experience; hooks provide retrieval context
-                    entry = f"- {date_str}{channel}: **{m['title']}** — {m['summary'][:300]}"
+                    # Summary is the felt experience — full scene, with sanity ceiling
+                    # to guard against pathological rows inflating prompt size
+                    summary = m["summary"][:2000] if len(m["summary"]) > 2000 else m["summary"]
+                    entry = f"- {date_str}{channel}: **{m['title']}** — {summary}"
                     if m.get("hooks"):
-                        entry += f"\n  Context: {m['hooks'][:200]}"
+                        hooks_text = m["hooks"][:500] if len(m["hooks"]) > 500 else m["hooks"]
+                        entry += f"\n  Context: {hooks_text}"
                     lines.append(entry)
                 sections.append("## Recent shared moments\n" + "\n".join(lines))
         except Exception as e:
