@@ -9,12 +9,10 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from memory import (
+    _STOPWORDS,
     AGENT_ID,
     DEDUP_TITLE_THRESHOLD,
-    _STOPWORDS,
-    _check_duplicate,
     _title_similarity,
     extract_scenes,
     link_moment_memories,

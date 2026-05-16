@@ -483,9 +483,7 @@ Example output:
 ]"""
 
 
-_STOPWORDS = frozenset(
-    {"the", "a", "an", "of", "in", "i", "my", "and", "to", "that", "it", "is", "was", "on", "for"}
-)
+_STOPWORDS = frozenset({"the", "a", "an", "of", "in", "i", "my", "and", "to", "that", "it", "is", "was", "on", "for"})
 
 
 def _title_similarity(a: str, b: str) -> float:
@@ -802,7 +800,5 @@ async def extract_scenes(
         else:
             errors.append(f"Failed to write scene: {title}")
 
-    logger.info(
-        f"Scene extraction: {len(saved)} saved, {len(skipped)} skipped (dedup), {len(errors)} errors"
-    )
+    logger.info(f"Scene extraction: {len(saved)} saved, {len(skipped)} skipped (dedup), {len(errors)} errors")
     return {"scenes_saved": len(saved), "scenes_skipped": len(skipped), "scenes": saved, "errors": errors}
