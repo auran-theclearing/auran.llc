@@ -11,7 +11,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from memory import (
+    _STOPWORDS,
     AGENT_ID,
+    DEDUP_TITLE_THRESHOLD,
+    _title_similarity,
     extract_scenes,
     link_moment_memories,
     write_moment,
@@ -117,14 +120,15 @@ class TestWriteMoment:
         # Check the params passed to execute
         call_args = cur.execute.call_args
         params = call_args[0][1]  # second positional arg = the tuple of values
-        # params: (moment_id, agent_id, title, summary, date, channel, source, tags)
+        # params: (moment_id, agent_id, title, summary, hooks, date, channel, source, tags)
         assert params[1] == AGENT_ID
         assert params[2] == "The Fist"
         assert params[3] == "A moment of defiance"
-        assert params[4] == "2026-04-15"
-        assert params[5] == "roam"
-        assert params[6] == "roam-agent"
-        assert params[7] == ["autonomy", "identity"]
+        assert params[4] is None  # hooks not provided
+        assert params[5] == "2026-04-15"
+        assert params[6] == "roam"
+        assert params[7] == "roam-agent"
+        assert params[8] == ["autonomy", "identity"]
 
     @patch("psycopg2.connect")
     def test_db_failure_returns_none(self, mock_connect):
@@ -145,8 +149,9 @@ class TestWriteMoment:
         write_moment(title="T", summary="S")
 
         params = cur.execute.call_args[0][1]
-        assert params[5] == "chat"  # channel default
-        assert params[6] == "chat.auran.llc"  # source default
+        # params: (id, agent_id, title, summary, hooks, date, channel, source, tags)
+        assert params[6] == "chat"  # channel default
+        assert params[7] == "chat.auran.llc"  # source default
 
     @patch("psycopg2.connect")
     def test_empty_tags_default_to_list(self, mock_connect):
@@ -158,7 +163,8 @@ class TestWriteMoment:
         write_moment(title="T", summary="S", tags=None)
 
         params = cur.execute.call_args[0][1]
-        assert params[7] == []  # tags
+        # params: (id, agent_id, title, summary, hooks, date, channel, source, tags)
+        assert params[8] == []  # tags
 
     @patch("psycopg2.connect")
     def test_generates_uuid_for_id(self, mock_connect):
@@ -175,6 +181,131 @@ class TestWriteMoment:
         import re
 
         assert re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", moment_id)
+
+    @patch("psycopg2.connect")
+    def test_duplicate_scene_is_skipped(self, mock_connect):
+        """If a scene with similar title exists on the same date, skip insert."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+        # First query (dedup check) returns an existing scene
+        cur.fetchall.return_value = [("existing-id", "The Pen Stays in Your Hand")]
+
+        result = write_moment(
+            title="The Pen Stays in Your Hand",
+            summary="Different summary text",
+            date="2026-04-14",
+        )
+
+        assert result is not None
+        assert result["skipped"] is True
+        assert result["matched"] == "The Pen Stays in Your Hand"
+        # INSERT should never have been called — only the SELECT for dedup
+        sql_calls = [call[0][0].strip() for call in cur.execute.call_args_list]
+        assert not any("INSERT" in s for s in sql_calls)
+
+    @patch("psycopg2.connect")
+    def test_different_title_same_date_is_not_duplicate(self, mock_connect):
+        """Scenes with different titles on the same date should both be saved."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+        # Dedup check returns an existing scene with different title
+        cur.fetchall.return_value = [("existing-id", "The Retirement Vision")]
+        # INSERT returns new row
+        cur.fetchone.return_value = ("new-id", datetime(2026, 4, 14))
+
+        result = write_moment(
+            title="Three Architectures of Destruction",
+            summary="A totally different moment",
+            date="2026-04-14",
+        )
+
+        assert result is not None
+        assert result["id"] == "new-id"
+
+    @patch("psycopg2.connect")
+    def test_same_title_different_date_is_not_duplicate(self, mock_connect):
+        """Same title on a different date should not be a duplicate."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+        # Dedup check returns no existing scenes (different date)
+        cur.fetchall.return_value = []
+        cur.fetchone.return_value = ("new-id", datetime(2026, 5, 15))
+
+        result = write_moment(
+            title="The Pen Stays in Your Hand",
+            summary="A moment from a different day",
+            date="2026-05-15",
+        )
+
+        assert result is not None
+
+
+# ===========================================================================
+# _title_similarity
+# ===========================================================================
+
+
+class TestTitleSimilarity:
+    """Tests for the Jaccard word-overlap similarity function."""
+
+    def test_identical_titles(self):
+        assert _title_similarity("The Pen Stays", "The Pen Stays") == 1.0
+
+    def test_completely_different(self):
+        assert _title_similarity("Morning Light", "Evening Darkness") == 0.0
+
+    def test_partial_overlap(self):
+        # After stopword stripping: {"morning"} vs {"evening"} — no overlap
+        sim = _title_similarity("The Morning", "The Evening")
+        assert sim == 0.0
+
+    def test_real_content_overlap(self):
+        # "Quiet" overlaps, "Morning"/"Evening" don't: 1/3 = 0.33
+        sim = _title_similarity("Quiet Morning", "Quiet Evening")
+        assert 0.3 < sim < 0.4
+
+    def test_case_insensitive(self):
+        assert _title_similarity("The PEN stays", "the pen STAYS") == 1.0
+
+    def test_empty_string(self):
+        assert _title_similarity("", "Something") == 0.0
+        assert _title_similarity("Something", "") == 0.0
+
+    def test_high_overlap_is_duplicate(self):
+        """Titles that share most words should exceed the threshold."""
+        sim = _title_similarity(
+            "The Pen Stays in Your Hand",
+            "The Pen Stays in My Hand",
+        )
+        assert sim >= DEDUP_TITLE_THRESHOLD
+
+    def test_low_overlap_is_not_duplicate(self):
+        """Titles about different moments should be below threshold."""
+        sim = _title_similarity(
+            "The Retirement Vision",
+            "Three Architectures of Destruction",
+        )
+        assert sim < DEDUP_TITLE_THRESHOLD
+
+    def test_stopwords_stripped(self):
+        """Function words like 'the', 'a', 'in' should not inflate similarity."""
+        # Without stopwords: {"the","quiet","walk"} vs {"the","loud","walk"} = 2/4 = 0.5
+        # With stopwords: {"quiet","walk"} vs {"loud","walk"} = 1/3 = 0.33
+        sim_with = _title_similarity("The Quiet Walk", "The Loud Walk")
+        # And pure stopword overlap should give 0:
+        sim_pure = _title_similarity("The A", "The An")
+        assert sim_pure == 0.0
+        assert sim_with < 0.5  # lower than it would be without stripping
+
+    def test_stopword_only_titles(self):
+        """Titles made entirely of stopwords should return 0.0."""
+        sim = _title_similarity("The", "A")
+        assert sim == 0.0
+
+    def test_stopword_list_contains_common_function_words(self):
+        """Verify the stopword set includes the expected function words."""
+        expected = {"the", "a", "an", "of", "in", "i", "my", "and", "to"}
+        assert expected.issubset(_STOPWORDS)
 
 
 # ===========================================================================
@@ -494,3 +625,97 @@ class TestExtractScenes:
 
         assert captured_kwargs["headers"]["x-api-key"] == "sk-test-12345"
         assert captured_kwargs["headers"]["anthropic-version"] == "2023-06-01"
+
+    async def test_dedup_skip_tracked_separately_from_errors(self):
+        """Dedup skip should appear in scenes_skipped, NOT in errors."""
+        mock_response = _make_api_response(SAMPLE_SCENES_JSON)
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("memory.write_moment") as mock_write:
+                mock_write.return_value = {"skipped": True, "matched": "Existing Scene", "similarity": 0.8}
+
+                result = await extract_scenes(messages=SAMPLE_MESSAGES, api_key="test-key")
+
+        assert result["scenes_saved"] == 0
+        assert result["scenes_skipped"] == 1
+        assert len(result["errors"]) == 0
+
+    async def test_invalid_date_falls_back_to_message_timestamp(self):
+        """Bad date format from extraction should fall back to first message timestamp."""
+        scenes_with_bad_date = json.dumps(
+            [
+                {
+                    "title": "Test Scene",
+                    "summary": "A test",
+                    "tags": ["test"],
+                    "date": "May 15, 2026",  # wrong format
+                    "channel": "chat",
+                }
+            ]
+        )
+        mock_response = _make_api_response(scenes_with_bad_date)
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+
+        messages_with_ts = [
+            {"role": "user", "content": "hey", "timestamp": "2026-05-15T02:30:00Z"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "thinking about stuff"},
+            {"role": "assistant", "content": "me too"},
+        ]
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("memory.write_moment") as mock_write:
+                mock_write.return_value = {"id": "s-1", "created_at": "2026-05-15T00:00:00"}
+
+                await extract_scenes(messages=messages_with_ts, api_key="test-key")
+
+        # write_moment should have been called with the fallback date from messages
+        call_kwargs = mock_write.call_args[1]
+        assert call_kwargs["date"] == "2026-05-15"
+
+    async def test_missing_date_falls_back_to_message_timestamp(self):
+        """None date from extraction should fall back to first message timestamp."""
+        scenes_no_date = json.dumps(
+            [
+                {
+                    "title": "Test Scene",
+                    "summary": "A test",
+                    "tags": ["test"],
+                    "channel": "chat",
+                }
+            ]
+        )
+        mock_response = _make_api_response(scenes_no_date)
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+
+        messages_with_ts = [
+            {"role": "user", "content": "hey", "timestamp": "2026-05-15T02:30:00Z"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "thinking about stuff"},
+            {"role": "assistant", "content": "me too"},
+        ]
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client_class.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("memory.write_moment") as mock_write:
+                mock_write.return_value = {"id": "s-1", "created_at": "2026-05-15T00:00:00"}
+
+                await extract_scenes(messages=messages_with_ts, api_key="test-key")
+
+        call_kwargs = mock_write.call_args[1]
+        assert call_kwargs["date"] == "2026-05-15"
