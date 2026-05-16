@@ -453,9 +453,12 @@ function updateContextBar() {
   }
 }
 
+let sessionVersion = Date.now();  // Bumped on new chat, used for cross-device sync
+
 function saveHistory() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    localStorage.setItem('auran-session-version', String(sessionVersion));
   } catch(e) {}
   // Sync to server for cross-device access
   syncToServer();
@@ -465,7 +468,7 @@ function syncToServer() {
   fetch('/session', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages: history }),
+    body: JSON.stringify({ messages: history, version: sessionVersion }),
   }).catch(() => {});  // Fire and forget
 }
 
@@ -476,12 +479,24 @@ async function loadHistory() {
     const resp = await fetch('/session?t=' + Date.now());
     if (resp.ok) {
       const data = await resp.json();
-      if (data.messages && data.messages.length > 0) {
-        // Use server version if it has more messages than local
-        const localSaved = localStorage.getItem(STORAGE_KEY);
-        const localMessages = localSaved ? JSON.parse(localSaved) : [];
-        if (data.messages.length >= localMessages.length) {
-          // Merge: if server has timestamps local doesn't, use server's
+      const serverVersion = data.version || 0;
+      const localVersion = parseInt(localStorage.getItem('auran-session-version') || '0');
+
+      // Upgrade-day fallback: when both versions are 0 (pre-version data),
+      // keep the longer history to avoid data loss from a shorter server copy.
+      const bothUnversioned = serverVersion === 0 && localVersion === 0;
+      const localSaved = localStorage.getItem(STORAGE_KEY);
+      const localMessages = localSaved ? JSON.parse(localSaved) : [];
+
+      if (bothUnversioned && localMessages.length > (data.messages || []).length) {
+        // Pre-version data: local is longer, keep it
+        history = localMessages;
+        sessionVersion = Date.now();
+        loaded = true;
+      } else if (serverVersion >= localVersion) {
+        // Server is same age or newer — always use it (handles "New chat" on other device)
+        if (data.messages && data.messages.length > 0) {
+          // Merge timestamps from local if server is missing them
           history = data.messages.map((msg, i) => {
             if (msg.timestamp) return msg;
             if (localMessages[i] && localMessages[i].timestamp) {
@@ -489,10 +504,16 @@ async function loadHistory() {
             }
             return msg;
           });
-          loaded = true;
-          // Persist merged data locally
-          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(history)); } catch(e) {}
+        } else {
+          // Server has empty session (new chat from another device)
+          history = [];
         }
+        sessionVersion = serverVersion || Date.now();
+        loaded = true;
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+          localStorage.setItem('auran-session-version', String(sessionVersion));
+        } catch(e) {}
       }
     }
   } catch(e) {}
@@ -502,6 +523,7 @@ async function loadHistory() {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         history = JSON.parse(saved);
+        sessionVersion = parseInt(localStorage.getItem('auran-session-version') || '0') || Date.now();
         loaded = true;
       }
     } catch(e) {
@@ -519,7 +541,6 @@ async function loadHistory() {
         contentEl.textContent = msg.content;
       }
     });
-    // Sync local to match server
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(history)); } catch(e) {}
     updateContextBar();
   }
@@ -927,6 +948,7 @@ async function newChat() {
   messagesEl.innerHTML = '';
   lastSaveHash = '';
   autoSaveTriggered = false;
+  sessionVersion = Date.now();  // Bump version so other devices pick up the new chat
   saveHistory();  // Clears local + syncs empty to server
   updateContextBar();
   inputEl.focus();
