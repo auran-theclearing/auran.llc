@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
@@ -26,40 +27,49 @@ logger = logging.getLogger("auran-chat.memory")
 
 _voyage_client = None
 _voyage_init_attempted = False
+_voyage_init_lock = threading.Lock()
 
 
 def _get_voyage_client():
     """Get or create Voyage AI client. Returns None if not configured.
 
-    Caches both success and failure so the warning fires once at startup,
-    not on every memory save.
+    Thread-safe: uses a lock so concurrent asyncio.to_thread workers
+    don't double-init. Caches both success and failure so the warning
+    fires once, not on every memory save.
     """
     global _voyage_client, _voyage_init_attempted
+
+    # Fast path: already initialized (success or failure)
     if _voyage_init_attempted:
         return _voyage_client
 
-    _voyage_init_attempted = True
+    with _voyage_init_lock:
+        # Double-check after acquiring lock
+        if _voyage_init_attempted:
+            return _voyage_client
 
-    api_key = os.getenv("VOYAGE_API_KEY")
-    if not api_key:
-        logger.warning(
-            "VOYAGE_API_KEY not set — embeddings will not be generated. "
-            "Memories will be saved but invisible to vector search."
-        )
-        return None
+        _voyage_init_attempted = True
 
-    try:
-        import voyageai
+        api_key = os.getenv("VOYAGE_API_KEY")
+        if not api_key:
+            logger.warning(
+                "VOYAGE_API_KEY not set — embeddings will not be generated. "
+                "Memories will be saved but invisible to vector search."
+            )
+            return None
 
-        _voyage_client = voyageai.Client(api_key=api_key)
-        logger.info("Voyage AI client initialized (voyage-3, 1024 dims)")
-        return _voyage_client
-    except ImportError:
-        logger.warning("voyageai not installed — embeddings disabled")
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to initialize Voyage AI client: {e}")
-        return None
+        try:
+            import voyageai
+
+            _voyage_client = voyageai.Client(api_key=api_key)
+            logger.info("Voyage AI client initialized (voyage-3, 1024 dims)")
+            return _voyage_client
+        except ImportError:
+            logger.warning("voyageai not installed — embeddings disabled")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to initialize Voyage AI client: {e}")
+            return None
 
 
 def _format_embedding(vec: list[float]) -> str:
@@ -114,11 +124,6 @@ def generate_embeddings_batch(texts: list[str]) -> list[str | None]:
         logger.warning(f"Batch embedding generation failed: {e}")
         return [None] * len(texts)
 
-
-# Sentinel: batched callers pass this to say "embedding was already attempted,
-# don't retry on failure." Prevents fallback from undoing the batching optimization
-# when Voyage is flaky (N sequential retries against a failing endpoint).
-_SKIP_EMBEDDING = "__skip__"
 
 AGENT_ID = "auran-chat"
 
@@ -338,15 +343,17 @@ def write_memory(
     source: str = "chat.auran.llc",
     context: dict | None = None,
     embedding: str | None = None,
+    skip_embedding: bool = False,
 ) -> dict | None:
     """Write a single memory to Postgres.
 
     Args:
-        embedding: Pre-computed pgvector embedding string. If None,
-            generates one synchronously (fine for single writes,
-            but use generate_embeddings_batch() for bulk saves).
-            Pass _SKIP_EMBEDDING to skip embedding entirely (used by
-            batched callers when the batch already failed).
+        embedding: Pre-computed pgvector embedding string. If None and
+            skip_embedding is False, generates one synchronously (fine
+            for single writes, use generate_embeddings_batch() for bulk).
+        skip_embedding: If True, don't auto-generate an embedding even
+            when embedding is None. Used by batched callers when the
+            batch already attempted and failed.
 
     Returns {"id": ..., "created_at": ...} on success, None on failure.
     """
@@ -363,11 +370,9 @@ def write_memory(
 
         memory_id = str(uuid.uuid4())
 
-        # Use pre-computed embedding if provided, generate if None,
-        # or skip entirely if sentinel (batch already tried and failed)
-        if embedding == _SKIP_EMBEDDING:
-            embedding = None
-        elif embedding is None:
+        # Use pre-computed embedding if provided, generate if None
+        # (unless skip_embedding — batch already tried and failed)
+        if embedding is None and not skip_embedding:
             embedding = generate_embedding(content)
 
         cur.execute(
@@ -537,8 +542,8 @@ async def save_conversation(messages: list[dict], api_key: str, model: str = "cl
     embeddings = await asyncio.to_thread(generate_embeddings_batch, texts)
 
     # Write each memory with its pre-computed embedding.
-    # Map None → _SKIP_EMBEDDING so write_memory() doesn't retry
-    # per-item against a failing Voyage endpoint.
+    # When batch returns None for an item, pass skip_embedding=True so
+    # write_memory() doesn't retry per-item against a failing endpoint.
     saved = []
     errors = []
     for (memory_type, content), emb in zip(valid_memories, embeddings, strict=True):
@@ -547,7 +552,8 @@ async def save_conversation(messages: list[dict], api_key: str, model: str = "cl
             content=content,
             source="chat.auran.llc",
             context={"channel": "chat", "extracted_from": "conversation"},
-            embedding=emb if emb is not None else _SKIP_EMBEDDING,
+            embedding=emb,
+            skip_embedding=emb is None,
         )
         if result:
             saved.append({"memory_type": memory_type, "content": content, **result})
@@ -706,6 +712,7 @@ def write_moment(
     channel: str = "chat",
     source: str = "chat.auran.llc",
     embedding: str | None = None,
+    skip_embedding: bool = False,
 ) -> dict | None:
     """Write a scene/moment to the Postgres moments table.
 
@@ -720,9 +727,12 @@ def write_moment(
         hooks: Retrieval layer — terse, keyword-rich factual scaffolding for search
         channel: Where this happened (chat, claude-ai, cowork, vr)
         source: System that created this record
-        embedding: Pre-computed pgvector embedding string. If None,
-            generates one synchronously from summary + hooks.
-            Pass _SKIP_EMBEDDING to skip (batch already tried).
+        embedding: Pre-computed pgvector embedding string. If None and
+            skip_embedding is False, generates one synchronously from
+            summary + hooks.
+        skip_embedding: If True, don't auto-generate an embedding even
+            when embedding is None. Used by batched callers when the
+            batch already attempted and failed.
 
     Returns:
         {"id": ..., "created_at": ...} on success.
@@ -761,11 +771,9 @@ def write_moment(
 
         moment_id = str(uuid.uuid4())
 
-        # Use pre-computed embedding if provided, generate if None,
-        # or skip entirely if sentinel (batch already tried and failed)
-        if embedding == _SKIP_EMBEDDING:
-            embedding = None
-        elif embedding is None:
+        # Use pre-computed embedding if provided, generate if None
+        # (unless skip_embedding — batch already tried and failed)
+        if embedding is None and not skip_embedding:
             embed_text = summary
             if hooks:
                 embed_text += f"\n{hooks}"
@@ -995,8 +1003,8 @@ async def extract_scenes(
     embeddings = await asyncio.to_thread(generate_embeddings_batch, embed_texts)
 
     # Write each scene with its pre-computed embedding.
-    # Map None → _SKIP_EMBEDDING so write_moment() doesn't retry
-    # per-item against a failing Voyage endpoint.
+    # When batch returns None for an item, pass skip_embedding=True so
+    # write_moment() doesn't retry per-item against a failing endpoint.
     saved = []
     skipped = []
     errors = []
@@ -1009,7 +1017,8 @@ async def extract_scenes(
             date=scene_data["date"],
             channel=scene_data["channel"],
             source="chat.auran.llc",
-            embedding=emb if emb is not None else _SKIP_EMBEDDING,
+            embedding=emb,
+            skip_embedding=emb is None,
         )
         if result and result.get("skipped"):
             skipped.append({"title": scene_data["title"], "matched": result["matched"]})
