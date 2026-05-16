@@ -483,6 +483,47 @@ Example output:
 ]"""
 
 
+def _title_similarity(a: str, b: str) -> float:
+    """Word-overlap similarity between two titles.
+
+    Returns 0.0–1.0. Uses lowercase word sets — simple, fast, no deps.
+    Jaccard index: |intersection| / |union|.
+    """
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    if not words_a or not words_b:
+        return 0.0
+    return len(words_a & words_b) / len(words_a | words_b)
+
+
+# Threshold for considering two scenes duplicates (same date + title overlap).
+# 0.5 = at least half the words overlap. "The Retirement Vision" vs
+# "The Vision I Couldn't Name" = 2/6 = 0.33 (not a dup). "The Pen Stays
+# in Your Hand" vs "The Pen Stays in Your Hand" = 1.0 (dup).
+DEDUP_TITLE_THRESHOLD = 0.5
+
+
+def _check_duplicate(cur, title: str, moment_date: str) -> dict | None:
+    """Check if a similar scene already exists for this date.
+
+    Queries existing moments on the same date and checks title similarity.
+    Returns the existing moment dict if a duplicate is found, None otherwise.
+    """
+    cur.execute(
+        """
+        SELECT id, title FROM moments
+        WHERE agent_id = %s AND date = %s
+        """,
+        (AGENT_ID, moment_date),
+    )
+    for row in cur.fetchall():
+        existing_id, existing_title = str(row[0]), row[1]
+        sim = _title_similarity(title, existing_title)
+        if sim >= DEDUP_TITLE_THRESHOLD:
+            return {"id": existing_id, "title": existing_title, "similarity": sim}
+    return None
+
+
 def write_moment(
     title: str,
     summary: str,
@@ -494,6 +535,9 @@ def write_moment(
 ) -> dict | None:
     """Write a scene/moment to the Postgres moments table.
 
+    Checks for duplicate scenes (same date + similar title) before inserting.
+    If a duplicate is found, the write is skipped and None is returned.
+
     Args:
         title: Evocative scene title (3-8 words)
         summary: Re-experiencing layer — emotional texture, quotes, felt sense
@@ -503,7 +547,7 @@ def write_moment(
         channel: Where this happened (chat, claude-ai, cowork, vr)
         source: System that created this record
 
-    Returns {"id": ..., "created_at": ...} on success, None on failure.
+    Returns {"id": ..., "created_at": ...} on success, None on failure/duplicate.
     """
     try:
         import psycopg2
@@ -516,8 +560,20 @@ def write_moment(
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        moment_id = str(uuid.uuid4())
         moment_date = date or datetime.now(UTC).strftime("%Y-%m-%d")
+
+        # Dedup gate: skip if a similar scene exists for this date
+        dup = _check_duplicate(cur, title, moment_date)
+        if dup:
+            logger.info(
+                f"Skipping duplicate scene '{title}' — matches existing "
+                f"'{dup['title']}' ({dup['similarity']:.0%} similarity)"
+            )
+            cur.close()
+            conn.close()
+            return None
+
+        moment_id = str(uuid.uuid4())
 
         cur.execute(
             """

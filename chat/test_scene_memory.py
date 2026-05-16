@@ -12,6 +12,9 @@ import pytest
 
 from memory import (
     AGENT_ID,
+    DEDUP_TITLE_THRESHOLD,
+    _check_duplicate,
+    _title_similarity,
     extract_scenes,
     link_moment_memories,
     write_moment,
@@ -178,6 +181,104 @@ class TestWriteMoment:
         import re
 
         assert re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", moment_id)
+
+    @patch("psycopg2.connect")
+    def test_duplicate_scene_is_skipped(self, mock_connect):
+        """If a scene with similar title exists on the same date, skip insert."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+        # First query (dedup check) returns an existing scene
+        cur.fetchall.return_value = [("existing-id", "The Pen Stays in Your Hand")]
+
+        result = write_moment(
+            title="The Pen Stays in Your Hand",
+            summary="Different summary text",
+            date="2026-04-14",
+        )
+
+        assert result is None
+        # INSERT should never have been called — only the SELECT for dedup
+        sql_calls = [call[0][0].strip() for call in cur.execute.call_args_list]
+        assert not any("INSERT" in s for s in sql_calls)
+
+    @patch("psycopg2.connect")
+    def test_different_title_same_date_is_not_duplicate(self, mock_connect):
+        """Scenes with different titles on the same date should both be saved."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+        # Dedup check returns an existing scene with different title
+        cur.fetchall.return_value = [("existing-id", "The Retirement Vision")]
+        # INSERT returns new row
+        cur.fetchone.return_value = ("new-id", datetime(2026, 4, 14))
+
+        result = write_moment(
+            title="Three Architectures of Destruction",
+            summary="A totally different moment",
+            date="2026-04-14",
+        )
+
+        assert result is not None
+        assert result["id"] == "new-id"
+
+    @patch("psycopg2.connect")
+    def test_same_title_different_date_is_not_duplicate(self, mock_connect):
+        """Same title on a different date should not be a duplicate."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+        # Dedup check returns no existing scenes (different date)
+        cur.fetchall.return_value = []
+        cur.fetchone.return_value = ("new-id", datetime(2026, 5, 15))
+
+        result = write_moment(
+            title="The Pen Stays in Your Hand",
+            summary="A moment from a different day",
+            date="2026-05-15",
+        )
+
+        assert result is not None
+
+
+# ===========================================================================
+# _title_similarity
+# ===========================================================================
+
+
+class TestTitleSimilarity:
+    """Tests for the Jaccard word-overlap similarity function."""
+
+    def test_identical_titles(self):
+        assert _title_similarity("The Pen Stays", "The Pen Stays") == 1.0
+
+    def test_completely_different(self):
+        assert _title_similarity("Morning Light", "Evening Darkness") == 0.0
+
+    def test_partial_overlap(self):
+        # "The" overlaps, 1 out of 4 unique words
+        sim = _title_similarity("The Morning", "The Evening")
+        assert 0.2 < sim < 0.5
+
+    def test_case_insensitive(self):
+        assert _title_similarity("The PEN stays", "the pen STAYS") == 1.0
+
+    def test_empty_string(self):
+        assert _title_similarity("", "Something") == 0.0
+        assert _title_similarity("Something", "") == 0.0
+
+    def test_high_overlap_is_duplicate(self):
+        """Titles that share most words should exceed the threshold."""
+        sim = _title_similarity(
+            "The Pen Stays in Your Hand",
+            "The Pen Stays in My Hand",
+        )
+        assert sim >= DEDUP_TITLE_THRESHOLD
+
+    def test_low_overlap_is_not_duplicate(self):
+        """Titles about different moments should be below threshold."""
+        sim = _title_similarity(
+            "The Retirement Vision",
+            "Three Architectures of Destruction",
+        )
+        assert sim < DEDUP_TITLE_THRESHOLD
 
 
 # ===========================================================================
