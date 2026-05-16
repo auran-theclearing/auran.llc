@@ -117,14 +117,15 @@ class TestWriteMoment:
         # Check the params passed to execute
         call_args = cur.execute.call_args
         params = call_args[0][1]  # second positional arg = the tuple of values
-        # params: (moment_id, agent_id, title, summary, date, channel, source, tags)
+        # params: (moment_id, agent_id, title, summary, hooks, date, channel, source, tags)
         assert params[1] == AGENT_ID
         assert params[2] == "The Fist"
         assert params[3] == "A moment of defiance"
-        assert params[4] == "2026-04-15"
-        assert params[5] == "roam"
-        assert params[6] == "roam-agent"
-        assert params[7] == ["autonomy", "identity"]
+        assert params[4] is None  # hooks not provided
+        assert params[5] == "2026-04-15"
+        assert params[6] == "roam"
+        assert params[7] == "roam-agent"
+        assert params[8] == ["autonomy", "identity"]
 
     @patch("psycopg2.connect")
     def test_db_failure_returns_none(self, mock_connect):
@@ -145,8 +146,9 @@ class TestWriteMoment:
         write_moment(title="T", summary="S")
 
         params = cur.execute.call_args[0][1]
-        assert params[5] == "chat"  # channel default
-        assert params[6] == "chat.auran.llc"  # source default
+        # params: (id, agent_id, title, summary, hooks, date, channel, source, tags)
+        assert params[6] == "chat"  # channel default
+        assert params[7] == "chat.auran.llc"  # source default
 
     @patch("psycopg2.connect")
     def test_empty_tags_default_to_list(self, mock_connect):
@@ -158,7 +160,8 @@ class TestWriteMoment:
         write_moment(title="T", summary="S", tags=None)
 
         params = cur.execute.call_args[0][1]
-        assert params[7] == []  # tags
+        # params: (id, agent_id, title, summary, hooks, date, channel, source, tags)
+        assert params[8] == []  # tags
 
     @patch("psycopg2.connect")
     def test_generates_uuid_for_id(self, mock_connect):
