@@ -25,13 +25,20 @@ logger = logging.getLogger("auran-chat.memory")
 # ---------------------------------------------------------------------------
 
 _voyage_client = None
+_voyage_init_attempted = False
 
 
 def _get_voyage_client():
-    """Get or create Voyage AI client. Returns None if not configured."""
-    global _voyage_client
-    if _voyage_client is not None:
+    """Get or create Voyage AI client. Returns None if not configured.
+
+    Caches both success and failure so the warning fires once at startup,
+    not on every memory save.
+    """
+    global _voyage_client, _voyage_init_attempted
+    if _voyage_init_attempted:
         return _voyage_client
+
+    _voyage_init_attempted = True
 
     api_key = os.getenv("VOYAGE_API_KEY")
     if not api_key:
