@@ -30,6 +30,7 @@ ignore = [
 [lint.per-file-ignores]
 "test_*.py" = ["S"]  # disable security checks in test files
 "fix_env.py" = ["S"]  # utility script
+"conftest.py" = ["UP017", "UP036"]  # compat shim for py3.10 sandbox — intentionally targets old API
 
 [format]
 quote-style = "double"
