@@ -127,6 +127,10 @@ def generate_embeddings_batch(texts: list[str]) -> list[str | None]:
 
 AGENT_ID = "auran-chat"
 
+# Soft cap on scene transcript size — skip transcript if the LLM picked
+# absurdly broad boundaries.  60 turns is generous; most real scenes are 3-20.
+MAX_SCENE_TURNS = 60
+
 # Cache the DB credentials and connection params
 _db_config: dict | None = None
 
@@ -1008,8 +1012,16 @@ async def extract_scenes(
 
         if start_idx is not None and end_idx is not None:
             try:
-                start_idx = max(0, int(start_idx))
-                end_idx = min(len(messages) - 1, int(end_idx))
+                raw_start, raw_end = int(start_idx), int(end_idx)
+                start_idx = max(0, raw_start)
+                end_idx = min(len(messages) - 1, raw_end)
+                # Log when clamping actually changed the values — signals LLM drift
+                if start_idx != raw_start or end_idx != raw_end:
+                    logger.warning(
+                        f"Clamped indices for scene '{title}': "
+                        f"raw=({raw_start}, {raw_end}) → clamped=({start_idx}, {end_idx}) "
+                        f"(message count: {len(messages)})"
+                    )
             except (ValueError, TypeError):
                 logger.warning(
                     f"Non-numeric indices for scene '{title}': "
@@ -1017,11 +1029,6 @@ async def extract_scenes(
                 )
                 start_idx = None
                 end_idx = None
-
-        # Soft cap: if the LLM picked absurdly broad boundaries (>60 turns),
-        # warn and skip transcript rather than storing a massive excerpt.
-        # 60 turns is generous — most real scenes are 3-20 turns.
-        MAX_SCENE_TURNS = 60
 
         if start_idx is not None and end_idx is not None and start_idx <= end_idx:
             scene_turn_count = end_idx - start_idx + 1
@@ -1050,8 +1057,11 @@ async def extract_scenes(
                     f"Captured transcript for '{title}': {turn_count} turns, "
                     f"~{estimated_tokens} tokens (messages {start_idx}-{end_idx})"
                 )
-        elif start_idx is not None:
-            pass  # already logged above for bad coercion
+        elif start_idx is not None and end_idx is not None:
+            # Inverted bounds (start > end) — LLM gave backwards range
+            logger.warning(
+                f"Inverted indices for scene '{title}': start={start_idx} > end={end_idx} — skipping transcript"
+            )
         else:
             logger.info(f"No message indices for scene '{title}' — transcript not captured")
 
