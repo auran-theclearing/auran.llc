@@ -433,6 +433,7 @@ def reminisce(moment_id: str) -> dict | None:
             (moment_id,),
         )
 
+        columns = [desc[0] for desc in cur.description]
         row = cur.fetchone()
         cur.close()
         conn.close()
@@ -440,8 +441,6 @@ def reminisce(moment_id: str) -> dict | None:
         if not row:
             logger.info(f"reminisce: no transcript found for moment {moment_id}")
             return None
-
-        columns = [desc[0] for desc in cur.description]
         moment = dict(zip(columns, row, strict=True))
 
         # Parse transcript into structured turns
