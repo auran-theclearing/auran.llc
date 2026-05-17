@@ -496,7 +496,7 @@ async def save_conversation(messages: list[dict], api_key: str, model: str = "cl
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 json=payload,
@@ -527,8 +527,8 @@ async def save_conversation(messages: list[dict], api_key: str, model: str = "cl
                 return {"memories_saved": 0, "memories": [], "errors": ["Extraction returned non-list"]}
 
     except Exception as e:
-        logger.error(f"Extraction request failed: {e}")
-        return {"memories_saved": 0, "memories": [], "errors": [str(e)]}
+        logger.error(f"Extraction request failed: {type(e).__name__}: {e}")
+        return {"memories_saved": 0, "memories": [], "errors": [f"{type(e).__name__}: {e}"]}
 
     # Filter valid memories and batch-generate embeddings (single API call)
     valid_memories = [
@@ -912,7 +912,7 @@ async def extract_scenes(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 json=payload,
@@ -941,8 +941,8 @@ async def extract_scenes(
                 return {"scenes_saved": 0, "scenes": [], "errors": ["Extraction returned non-list"]}
 
     except Exception as e:
-        logger.error(f"Scene extraction request failed: {e}")
-        return {"scenes_saved": 0, "scenes": [], "errors": [str(e)]}
+        logger.error(f"Scene extraction request failed: {type(e).__name__}: {e}")
+        return {"scenes_saved": 0, "scenes": [], "errors": [f"{type(e).__name__}: {e}"]}
 
     # --- Pre-process scenes: validate, generate fallback hooks, fix dates ---
     import re
