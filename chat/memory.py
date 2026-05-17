@@ -538,10 +538,16 @@ def surface_relevant_moments(
                 f"Let it inform your tone and emotional resonance, but don't "
                 f"quote it back unless Olivia asks.*\n\n"
             )
-            # Truncate if necessary — hard cap at ~2000 tokens worth
+            # Truncate if necessary — hard cap at ~2000 tokens worth.
+            # Cut on a \n\n turn boundary so we never slice mid-sentence.
             excerpt = vivid["transcript_excerpt"]
             if len(excerpt) > 8000:  # ~2000 tokens
-                excerpt = excerpt[:8000] + "\n\n[...truncated for context budget]"
+                cut = excerpt[:8000].rfind("\n\n")
+                if cut > 0:
+                    excerpt = excerpt[:cut]
+                else:
+                    excerpt = excerpt[:8000]
+                excerpt += "\n\n[...truncated for context budget]"
 
             sections.append(vivid_header + excerpt)
 

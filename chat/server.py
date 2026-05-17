@@ -21,6 +21,7 @@ Requires .env with:
 """
 
 import argparse
+import asyncio
 import base64
 import json
 import os
@@ -507,8 +508,10 @@ async def chat(request: Request):
 
     model = body.get("model", ANTHROPIC_MODEL)
     # Pass the user's latest message for semantic recall (Phase 3)
+    # Recall does sync Voyage API + DB calls — run in a thread to avoid
+    # blocking the event loop and delaying the first SSE byte.
     user_message = messages[-1]["content"] if messages and messages[-1]["role"] == "user" else None
-    system_prompt = load_system_prompt_with_memory(user_message=user_message)
+    system_prompt = await asyncio.to_thread(load_system_prompt_with_memory, user_message)
 
     print(f"[Chat] {messages[-1]['content'][:80]}...")
 
