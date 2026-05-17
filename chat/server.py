@@ -197,6 +197,7 @@ async def save_session(request: Request):
         # a phone tab with old sessionVersion rolling back the server.
         existing_version = 0
         existing_msgs = []
+        existing = {}
         if SESSION_FILE.exists():
             try:
                 existing = json.loads(SESSION_FILE.read_text())
@@ -218,9 +219,24 @@ async def save_session(request: Request):
                 if server_ts:
                     msg["timestamp"] = server_ts
 
+        # Preserve save watermarks across session writes (reuse existing dict)
+        memory_watermark = existing.get("memory_watermark", 0) if existing_msgs else 0
+        scene_watermark = existing.get("scene_watermark", 0) if existing_msgs else 0
+
+        # Reset watermarks if message count dropped (new chat started)
+        if len(messages) < memory_watermark:
+            memory_watermark = 0
+        if len(messages) < scene_watermark:
+            scene_watermark = 0
+
         SESSION_FILE.write_text(
             json.dumps(
-                {"messages": messages, "version": version},
+                {
+                    "messages": messages,
+                    "version": version,
+                    "memory_watermark": memory_watermark,
+                    "scene_watermark": scene_watermark,
+                },
                 ensure_ascii=False,
             )
         )
@@ -255,6 +271,46 @@ async def transcript(request: Request):
     )
 
 
+def _read_watermarks() -> dict[str, int]:
+    """Read memory and scene watermarks from session.json.
+
+    Each extractor (memories, scenes) tracks its own watermark independently.
+    This prevents a failure in one extractor from advancing past messages
+    the other extractor hasn't processed yet.
+
+    Returns {"memory": N, "scene": N} where N is the message index up to
+    which extraction has already succeeded. Returns 0 for missing watermarks.
+    """
+    try:
+        if SESSION_FILE.exists():
+            data = json.loads(SESSION_FILE.read_text())
+            return {
+                "memory": data.get("memory_watermark", 0),
+                "scene": data.get("scene_watermark", 0),
+            }
+    except Exception:
+        pass
+    return {"memory": 0, "scene": 0}
+
+
+def _write_watermarks(*, memory: int | None = None, scene: int | None = None):
+    """Update one or both watermarks in session.json without touching messages.
+
+    Only updates the watermarks that are explicitly passed — the other is preserved.
+    This allows each extractor to advance independently on success.
+    """
+    try:
+        if SESSION_FILE.exists():
+            data = json.loads(SESSION_FILE.read_text())
+            if memory is not None:
+                data["memory_watermark"] = memory
+            if scene is not None:
+                data["scene_watermark"] = scene
+            SESSION_FILE.write_text(json.dumps(data, ensure_ascii=False))
+    except Exception as e:
+        print(f"[Save] Warning: failed to write watermarks: {e}")
+
+
 @app.post("/save")
 async def save(request: Request):
     """Save conversation memories AND scenes to Postgres.
@@ -263,6 +319,14 @@ async def save(request: Request):
     Extracts semantic memories (observations, insights) and episodic scenes
     (specific moments with quoted dialogue). Scenes are linked to memories
     via the moment_memories junction table.
+
+    Each extractor tracks its own watermark independently in session.json
+    (memory_watermark, scene_watermark). A failure in one extractor doesn't
+    advance the other's watermark, so failed messages get retried on next save.
+
+    Scene extraction includes a 30-message overlap window before its watermark
+    for context — scenes often reference earlier exchanges. The dedup gate in
+    extract_scenes prevents re-inserting scenes from the overlap zone.
 
     Returns: {
         "memories_saved": N, "memories": [...],
@@ -281,24 +345,112 @@ async def save(request: Request):
     if not messages:
         raise HTTPException(status_code=400, detail="No messages provided")
 
-    # Step 1: Extract semantic memories (observations, insights, bridge_log)
-    memory_result = await save_conversation(
-        messages=messages,
-        api_key=ANTHROPIC_API_KEY,
-    )
-    print(f"[Save] Extracted {memory_result['memories_saved']} memories, {len(memory_result['errors'])} errors")
+    # Each extractor tracks its own watermark independently so a failure
+    # in one doesn't skip messages for the other.
+    watermarks = _read_watermarks()
+    mem_watermark = watermarks["memory"]
+    scene_watermark = watermarks["scene"]
 
-    # Step 2: Extract episodic scenes, linked to the memories we just saved
-    memory_ids = [m["id"] for m in memory_result.get("memories", []) if "id" in m]
-    scene_result = await extract_scenes(
-        messages=messages,
-        api_key=ANTHROPIC_API_KEY,
-        memory_ids=memory_ids,
+    # Reset watermarks if message count dropped (new chat without /session sync)
+    if len(messages) < mem_watermark:
+        mem_watermark = 0
+    if len(messages) < scene_watermark:
+        scene_watermark = 0
+
+    # Slice messages for each extractor independently
+    unsaved_for_memory = messages[mem_watermark:]
+    unsaved_for_scenes = messages[scene_watermark:]
+
+    if not unsaved_for_memory and not unsaved_for_scenes:
+        return JSONResponse(
+            {
+                "memories_saved": 0,
+                "memories": [],
+                "scenes_saved": 0,
+                "scenes": [],
+                "errors": [],
+                "already_saved": True,
+            }
+        )
+
+    print(
+        f"[Save] Processing: {len(unsaved_for_memory)} unsaved for memories "
+        f"(watermark={mem_watermark}), {len(unsaved_for_scenes)} unsaved for scenes "
+        f"(watermark={scene_watermark}), total={len(messages)}"
     )
-    print(f"[Save] Extracted {scene_result['scenes_saved']} scenes, {len(scene_result['errors'])} errors")
+
+    # Step 1: Extract semantic memories (observations, insights, bridge_log)
+    # Memories are per-message, so a hard slice is fine — no context needed.
+    memory_result = {"memories_saved": 0, "memories": [], "errors": []}
+    if unsaved_for_memory:
+        memory_result = await save_conversation(
+            messages=unsaved_for_memory,
+            api_key=ANTHROPIC_API_KEY,
+        )
+        print(f"[Save] Extracted {memory_result['memories_saved']} memories, {len(memory_result['errors'])} errors")
+
+    # Step 2: Extract episodic scenes with overlap window for context.
+    # Scenes often reference earlier conversation, so we include a lead-in
+    # window before the watermark. The dedup gate in extract_scenes prevents
+    # re-inserting scenes from the overlap zone.
+    SCENE_OVERLAP = 30  # messages of context before the scene watermark
+    scene_start = max(0, scene_watermark - SCENE_OVERLAP)
+    scene_messages = messages[scene_start:]
+
+    memory_ids = [m["id"] for m in memory_result.get("memories", []) if "id" in m]
+    scene_result = {"scenes_saved": 0, "scenes": [], "errors": []}
+    if unsaved_for_scenes:
+        scene_result = await extract_scenes(
+            messages=scene_messages,
+            api_key=ANTHROPIC_API_KEY,
+            memory_ids=memory_ids,
+        )
+        print(f"[Save] Extracted {scene_result['scenes_saved']} scenes, {len(scene_result['errors'])} errors")
+
+    # Advance each watermark independently.
+    # Key distinction: API-level failure (extraction didn't run) vs per-row DB
+    # write failure (extraction worked, some writes failed). We advance on the
+    # latter because memories don't have a dedup gate — holding the watermark
+    # back would re-extract and re-insert the successfully-saved memories with
+    # fresh UUIDs, silently polluting the table. A few lost writes from a flaky
+    # DB connection are preferable to unbounded duplication.
+    mem_errors = memory_result.get("errors", [])
+    scene_errors = scene_result.get("errors", [])
+    mem_saved = memory_result.get("memories_saved", 0)
+    scenes_saved = scene_result.get("scenes_saved", 0)
+
+    # API failure = nothing extracted at all (saved=0 AND errors present)
+    mem_api_failed = mem_saved == 0 and bool(mem_errors)
+    scene_api_failed = scenes_saved == 0 and bool(scene_errors)
+
+    new_mem_wm = None
+    new_scene_wm = None
+
+    if unsaved_for_memory and not mem_api_failed:
+        new_mem_wm = len(messages)
+        if mem_errors:
+            print(
+                f"[Save] Memory watermark → {new_mem_wm} ({mem_saved} saved, {len(mem_errors)} write errors — advancing to prevent duplication)"
+            )
+        else:
+            print(f"[Save] Memory watermark → {new_mem_wm}")
+    elif mem_api_failed:
+        print(f"[Save] Memory extraction failed — watermark stays at {mem_watermark}")
+
+    if unsaved_for_scenes and not scene_api_failed:
+        new_scene_wm = len(messages)
+        if scene_errors:
+            print(f"[Save] Scene watermark → {new_scene_wm} ({scenes_saved} saved, {len(scene_errors)} write errors)")
+        else:
+            print(f"[Save] Scene watermark → {new_scene_wm}")
+    elif scene_api_failed:
+        print(f"[Save] Scene extraction failed — watermark stays at {scene_watermark}")
+
+    if new_mem_wm is not None or new_scene_wm is not None:
+        _write_watermarks(memory=new_mem_wm, scene=new_scene_wm)
 
     # Combine results
-    all_errors = memory_result.get("errors", []) + scene_result.get("errors", [])
+    all_errors = mem_errors + scene_errors
     return JSONResponse(
         {
             "memories_saved": memory_result["memories_saved"],
