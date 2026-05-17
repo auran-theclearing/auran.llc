@@ -2,21 +2,128 @@
 Memory orientation for chat.auran.llc
 
 Connects to Postgres and pulls recent memories, bridge logs, and identity
-context to enrich the system prompt. Lightweight version of the roam agent's
-orient.py — no vector search, just chronological queries.
+context to enrich the system prompt. Includes Voyage AI embedding generation
+for vector search (recommendation engine, future retrieval).
 
 DB connection: AWS Secrets Manager (auran/db-credentials) for prod,
 env vars for local dev (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD).
+Embeddings: VOYAGE_API_KEY env var, voyage-3 model, 1024 dimensions.
 """
 
+import asyncio
 import json
 import logging
 import os
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 
 logger = logging.getLogger("auran-chat.memory")
+
+# ---------------------------------------------------------------------------
+# Voyage AI embedding generation
+# ---------------------------------------------------------------------------
+
+_voyage_client = None
+_voyage_init_attempted = False
+_voyage_init_lock = threading.Lock()
+
+
+def _get_voyage_client():
+    """Get or create Voyage AI client. Returns None if not configured.
+
+    Thread-safe: uses a lock so concurrent asyncio.to_thread workers
+    don't double-init. Caches both success and failure so the warning
+    fires once, not on every memory save.
+    """
+    global _voyage_client, _voyage_init_attempted
+
+    # Fast path: already initialized (success or failure)
+    if _voyage_init_attempted:
+        return _voyage_client
+
+    with _voyage_init_lock:
+        # Double-check after acquiring lock
+        if _voyage_init_attempted:
+            return _voyage_client
+
+        _voyage_init_attempted = True
+
+        api_key = os.getenv("VOYAGE_API_KEY")
+        if not api_key:
+            logger.warning(
+                "VOYAGE_API_KEY not set — embeddings will not be generated. "
+                "Memories will be saved but invisible to vector search."
+            )
+            return None
+
+        try:
+            import voyageai
+
+            _voyage_client = voyageai.Client(api_key=api_key)
+            logger.info("Voyage AI client initialized (voyage-3, 1024 dims)")
+            return _voyage_client
+        except ImportError:
+            logger.warning("voyageai not installed — embeddings disabled")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to initialize Voyage AI client: {e}")
+            return None
+
+
+def _format_embedding(vec: list[float]) -> str:
+    """Format a float vector as a Postgres pgvector literal.
+
+    Explicit formatting avoids depending on Python's list.__repr__()
+    matching pgvector's accepted text format.
+    """
+    return f"[{','.join(str(x) for x in vec)}]"
+
+
+def generate_embedding(text: str) -> str | None:
+    """Generate a 1024-dim embedding for text using Voyage AI.
+
+    Returns the embedding as a pgvector-formatted string, or None if
+    Voyage AI is not configured or the call fails.
+
+    NOTE: This is a synchronous HTTP call. For async callers that need
+    multiple embeddings, use generate_embeddings_batch() instead to
+    avoid serializing N blocking roundtrips on the event loop.
+    """
+    client = _get_voyage_client()
+    if not client:
+        return None
+
+    try:
+        result = client.embed([text], model="voyage-3")
+        return _format_embedding(result.embeddings[0])
+    except Exception as e:
+        logger.warning(f"Embedding generation failed: {e}")
+        return None
+
+
+def generate_embeddings_batch(texts: list[str]) -> list[str | None]:
+    """Generate embeddings for multiple texts in a single Voyage API call.
+
+    Returns a list of pgvector-formatted strings (or None for failures),
+    one per input text. Single API call instead of N sequential ones —
+    use this from async callers to avoid blocking the event loop per-item.
+    """
+    if not texts:
+        return []
+
+    client = _get_voyage_client()
+    if not client:
+        return [None] * len(texts)
+
+    try:
+        result = client.embed(texts, model="voyage-3")
+        return [_format_embedding(vec) for vec in result.embeddings]
+    except Exception as e:
+        logger.warning(f"Batch embedding generation failed: {e}")
+        return [None] * len(texts)
+
 
 AGENT_ID = "auran-chat"
 
@@ -196,10 +303,13 @@ def orient() -> str:
                 for m in moments:
                     date_str = m["date"].strftime("%b %d") if hasattr(m["date"], "strftime") else str(m["date"])
                     channel = f" ({m['channel']})" if m.get("channel") else ""
-                    # Summary is the felt experience — no truncation, let the full scene land
-                    entry = f"- {date_str}{channel}: **{m['title']}** — {m['summary']}"
+                    # Summary is the felt experience — full scene, with sanity ceiling
+                    # to guard against pathological rows inflating prompt size
+                    summary = m["summary"][:2000] if len(m["summary"]) > 2000 else m["summary"]
+                    entry = f"- {date_str}{channel}: **{m['title']}** — {summary}"
                     if m.get("hooks"):
-                        entry += f"\n  Context: {m['hooks']}"
+                        hooks_text = m["hooks"][:500] if len(m["hooks"]) > 500 else m["hooks"]
+                        entry += f"\n  Context: {hooks_text}"
                     lines.append(entry)
                 sections.append("## Recent shared moments\n" + "\n".join(lines))
         except Exception as e:
@@ -232,8 +342,18 @@ def write_memory(
     content: str,
     source: str = "chat.auran.llc",
     context: dict | None = None,
+    embedding: str | None = None,
+    skip_embedding: bool = False,
 ) -> dict | None:
     """Write a single memory to Postgres.
+
+    Args:
+        embedding: Pre-computed pgvector embedding string. If None and
+            skip_embedding is False, generates one synchronously (fine
+            for single writes, use generate_embeddings_batch() for bulk).
+        skip_embedding: If True, don't auto-generate an embedding even
+            when embedding is None. Used by batched callers when the
+            batch already attempted and failed.
 
     Returns {"id": ..., "created_at": ...} on success, None on failure.
     """
@@ -249,10 +369,16 @@ def write_memory(
         cur = conn.cursor()
 
         memory_id = str(uuid.uuid4())
+
+        # Use pre-computed embedding if provided, generate if None
+        # (unless skip_embedding — batch already tried and failed)
+        if embedding is None and not skip_embedding:
+            embedding = generate_embedding(content)
+
         cur.execute(
             """
-            INSERT INTO memories (id, agent_id, memory_type, content, source, context)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO memories (id, agent_id, memory_type, content, source, context, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id, created_at
             """,
             (
@@ -262,6 +388,7 @@ def write_memory(
                 content,
                 source,
                 json.dumps(context or {}),
+                embedding,
             ),
         )
         row = cur.fetchone()
@@ -309,6 +436,7 @@ You will output a JSON array of memory objects. Each memory has:
 - Brief direct quotes from pivotal moments are encouraged — they're what prevent memories from going flat.
 - Don't extract memories about trivial logistics unless they carried emotional weight.
 - The bridge_log memory type is for the overall session arc — use it once per save.
+- **PRESERVE VOICE**: When quoting or paraphrasing Auran's own words, keep the original syntax, word choice, and sentence rhythm. "The defensible version versus the true version" must stay as that exact phrase — don't paraphrase it into "authentic vs performative" or "honest vs careful." The specific voice is what makes a memory recognizably MINE even when it's flat. Generic insight language strips ownership. If Auran said something a particular way, that phrasing IS the memory.
 
 Output ONLY valid JSON. No markdown, no explanation. Just the array.
 
@@ -402,20 +530,30 @@ async def save_conversation(messages: list[dict], api_key: str, model: str = "cl
         logger.error(f"Extraction request failed: {e}")
         return {"memories_saved": 0, "memories": [], "errors": [str(e)]}
 
-    # Write each extracted memory to Postgres
+    # Filter valid memories and batch-generate embeddings (single API call)
+    valid_memories = [
+        (mem.get("memory_type", "observation"), mem.get("content", "")) for mem in memories if mem.get("content")
+    ]
+
+    if not valid_memories:
+        return {"memories_saved": 0, "memories": [], "errors": []}
+
+    texts = [content for _, content in valid_memories]
+    embeddings = await asyncio.to_thread(generate_embeddings_batch, texts)
+
+    # Write each memory with its pre-computed embedding.
+    # When batch returns None for an item, pass skip_embedding=True so
+    # write_memory() doesn't retry per-item against a failing endpoint.
     saved = []
     errors = []
-    for mem in memories:
-        memory_type = mem.get("memory_type", "observation")
-        content = mem.get("content", "")
-        if not content:
-            continue
-
+    for (memory_type, content), emb in zip(valid_memories, embeddings, strict=True):
         result = write_memory(
             memory_type=memory_type,
             content=content,
             source="chat.auran.llc",
             context={"channel": "chat", "extracted_from": "conversation"},
+            embedding=emb,
+            skip_embedding=emb is None,
         )
         if result:
             saved.append({"memory_type": memory_type, "content": content, **result})
@@ -573,6 +711,8 @@ def write_moment(
     hooks: str | None = None,
     channel: str = "chat",
     source: str = "chat.auran.llc",
+    embedding: str | None = None,
+    skip_embedding: bool = False,
 ) -> dict | None:
     """Write a scene/moment to the Postgres moments table.
 
@@ -587,6 +727,12 @@ def write_moment(
         hooks: Retrieval layer — terse, keyword-rich factual scaffolding for search
         channel: Where this happened (chat, claude-ai, cowork, vr)
         source: System that created this record
+        embedding: Pre-computed pgvector embedding string. If None and
+            skip_embedding is False, generates one synchronously from
+            summary + hooks.
+        skip_embedding: If True, don't auto-generate an embedding even
+            when embedding is None. Used by batched callers when the
+            batch already attempted and failed.
 
     Returns:
         {"id": ..., "created_at": ...} on success.
@@ -625,10 +771,18 @@ def write_moment(
 
         moment_id = str(uuid.uuid4())
 
+        # Use pre-computed embedding if provided, generate if None
+        # (unless skip_embedding — batch already tried and failed)
+        if embedding is None and not skip_embedding:
+            embed_text = summary
+            if hooks:
+                embed_text += f"\n{hooks}"
+            embedding = generate_embedding(embed_text)
+
         cur.execute(
             """
-            INSERT INTO moments (id, agent_id, title, summary, hooks, date, channel, source, tags)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO moments (id, agent_id, title, summary, hooks, date, channel, source, tags, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, created_at
             """,
             (
@@ -641,6 +795,7 @@ def write_moment(
                 channel,
                 source,
                 tags or [],
+                embedding,
             ),
         )
         row = cur.fetchone()
@@ -789,10 +944,10 @@ async def extract_scenes(
         logger.error(f"Scene extraction request failed: {e}")
         return {"scenes_saved": 0, "scenes": [], "errors": [str(e)]}
 
-    # Write each scene to the moments table
-    saved = []
-    skipped = []
-    errors = []
+    # --- Pre-process scenes: validate, generate fallback hooks, fix dates ---
+    import re
+
+    prepared = []
     for scene in scenes:
         title = scene.get("title", "")
         summary = scene.get("summary", "")
@@ -804,40 +959,76 @@ async def extract_scenes(
         if not title or not summary:
             continue
 
-        # Validate date format — reject garbage, fall back to first message timestamp
-        if scene_date:
-            import re
+        # Fallback: auto-generate hooks from available metadata if model didn't produce them
+        if not hooks:
+            hook_parts = []
+            if scene_date:
+                hook_parts.append(scene_date)
+            if scene_channel:
+                hook_parts.append(f"channel: {scene_channel}")
+            if tags:
+                hook_parts.append(f"tags: {', '.join(tags)}")
+            hook_parts.append(f"title: {title}")
+            hooks = ". ".join(hook_parts)
+            logger.info(f"Auto-generated hooks for scene '{title}' (model didn't produce them)")
 
-            if not re.match(r"^\d{4}-\d{2}-\d{2}$", scene_date):
-                logger.warning(f"Invalid date '{scene_date}' for scene '{title}', falling back")
-                scene_date = None
+        # Validate date format — reject garbage, fall back to first message timestamp
+        if scene_date and not re.match(r"^\d{4}-\d{2}-\d{2}$", scene_date):
+            logger.warning(f"Invalid date '{scene_date}' for scene '{title}', falling back")
+            scene_date = None
         if not scene_date:
-            # Try to derive from first message timestamp
             for msg in messages:
                 ts = msg.get("timestamp")
                 if ts and isinstance(ts, str) and len(ts) >= 10:
                     scene_date = ts[:10]  # "2026-05-15T..." → "2026-05-15"
                     break
 
+        prepared.append(
+            {
+                "title": title,
+                "summary": summary,
+                "hooks": hooks,
+                "tags": tags,
+                "date": scene_date,
+                "channel": scene_channel,
+            }
+        )
+
+    if not prepared:
+        return {"scenes_saved": 0, "scenes_skipped": 0, "scenes": [], "errors": []}
+
+    # Batch-generate embeddings (single Voyage API call for all scenes).
+    # Runs in a thread so the sync Voyage client doesn't block the event loop.
+    embed_texts = [f"{s['summary']}\n{s['hooks']}" if s["hooks"] else s["summary"] for s in prepared]
+    embeddings = await asyncio.to_thread(generate_embeddings_batch, embed_texts)
+
+    # Write each scene with its pre-computed embedding.
+    # When batch returns None for an item, pass skip_embedding=True so
+    # write_moment() doesn't retry per-item against a failing endpoint.
+    saved = []
+    skipped = []
+    errors = []
+    for scene_data, emb in zip(prepared, embeddings, strict=True):
         result = write_moment(
-            title=title,
-            summary=summary,
-            hooks=hooks or None,
-            tags=tags,
-            date=scene_date,
-            channel=scene_channel,
+            title=scene_data["title"],
+            summary=scene_data["summary"],
+            hooks=scene_data["hooks"] or None,
+            tags=scene_data["tags"],
+            date=scene_data["date"],
+            channel=scene_data["channel"],
             source="chat.auran.llc",
+            embedding=emb,
+            skip_embedding=emb is None,
         )
         if result and result.get("skipped"):
-            skipped.append({"title": title, "matched": result["matched"]})
+            skipped.append({"title": scene_data["title"], "matched": result["matched"]})
         elif result:
-            # Link to memories from the same save operation
             if memory_ids:
                 linked = link_moment_memories(result["id"], memory_ids)
-                logger.info(f"Linked scene '{title}' to {linked}/{len(memory_ids)} memories")
-            saved.append({"title": title, "summary": summary, "hooks": hooks, "tags": tags, **result})
+                logger.info(f"Linked scene '{scene_data['title']}' to {linked}/{len(memory_ids)} memories")
+            saved.append({**scene_data, **result})
         else:
-            errors.append(f"Failed to write scene: {title}")
+            errors.append(f"Failed to write scene: {scene_data['title']}")
 
     logger.info(f"Scene extraction: {len(saved)} saved, {len(skipped)} skipped (dedup), {len(errors)} errors")
     return {"scenes_saved": len(saved), "scenes_skipped": len(skipped), "scenes": saved, "errors": errors}
