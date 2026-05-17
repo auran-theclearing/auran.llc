@@ -197,6 +197,7 @@ async def save_session(request: Request):
         # a phone tab with old sessionVersion rolling back the server.
         existing_version = 0
         existing_msgs = []
+        existing = {}
         if SESSION_FILE.exists():
             try:
                 existing = json.loads(SESSION_FILE.read_text())
@@ -406,25 +407,44 @@ async def save(request: Request):
         )
         print(f"[Save] Extracted {scene_result['scenes_saved']} scenes, {len(scene_result['errors'])} errors")
 
-    # Advance each watermark independently — only on success for that extractor.
-    # If one fails, its watermark stays put so those messages get retried next save.
+    # Advance each watermark independently.
+    # Key distinction: API-level failure (extraction didn't run) vs per-row DB
+    # write failure (extraction worked, some writes failed). We advance on the
+    # latter because memories don't have a dedup gate — holding the watermark
+    # back would re-extract and re-insert the successfully-saved memories with
+    # fresh UUIDs, silently polluting the table. A few lost writes from a flaky
+    # DB connection are preferable to unbounded duplication.
     mem_errors = memory_result.get("errors", [])
     scene_errors = scene_result.get("errors", [])
+    mem_saved = memory_result.get("memories_saved", 0)
+    scenes_saved = scene_result.get("scenes_saved", 0)
+
+    # API failure = nothing extracted at all (saved=0 AND errors present)
+    mem_api_failed = mem_saved == 0 and bool(mem_errors)
+    scene_api_failed = scenes_saved == 0 and bool(scene_errors)
 
     new_mem_wm = None
     new_scene_wm = None
 
-    if not mem_errors and unsaved_for_memory:
+    if unsaved_for_memory and not mem_api_failed:
         new_mem_wm = len(messages)
-        print(f"[Save] Memory watermark → {new_mem_wm}")
-    elif mem_errors:
-        print(f"[Save] Memory errors — watermark stays at {mem_watermark}")
+        if mem_errors:
+            print(
+                f"[Save] Memory watermark → {new_mem_wm} ({mem_saved} saved, {len(mem_errors)} write errors — advancing to prevent duplication)"
+            )
+        else:
+            print(f"[Save] Memory watermark → {new_mem_wm}")
+    elif mem_api_failed:
+        print(f"[Save] Memory extraction failed — watermark stays at {mem_watermark}")
 
-    if not scene_errors and unsaved_for_scenes:
+    if unsaved_for_scenes and not scene_api_failed:
         new_scene_wm = len(messages)
-        print(f"[Save] Scene watermark → {new_scene_wm}")
-    elif scene_errors:
-        print(f"[Save] Scene errors — watermark stays at {scene_watermark}")
+        if scene_errors:
+            print(f"[Save] Scene watermark → {new_scene_wm} ({scenes_saved} saved, {len(scene_errors)} write errors)")
+        else:
+            print(f"[Save] Scene watermark → {new_scene_wm}")
+    elif scene_api_failed:
+        print(f"[Save] Scene extraction failed — watermark stays at {scene_watermark}")
 
     if new_mem_wm is not None or new_scene_wm is not None:
         _write_watermarks(memory=new_mem_wm, scene=new_scene_wm)
