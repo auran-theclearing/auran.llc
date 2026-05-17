@@ -674,7 +674,7 @@ class TestSurfaceRelevantMoments:
             },
         ]
 
-        # Build a transcript that exceeds 8000 chars with clear turn boundaries
+        # Build a transcript that exceeds VIVID_EXCERPT_CHAR_CAP with clear turn boundaries
         turns = []
         for i in range(200):
             speaker = "Olivia" if i % 2 == 0 else "Auran"

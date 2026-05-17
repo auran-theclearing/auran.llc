@@ -130,6 +130,7 @@ AGENT_ID = "auran-chat"
 # Soft cap on scene transcript size — skip transcript if the LLM picked
 # absurdly broad boundaries.  60 turns is generous; most real scenes are 3-20.
 MAX_SCENE_TURNS = 60
+VIVID_EXCERPT_CHAR_CAP = 8000  # ~2000 tokens — hard cap for vivid recall injection
 
 # Cache the DB credentials and connection params
 _db_config: dict | None = None
@@ -446,7 +447,10 @@ def reminisce(moment_id: str) -> dict | None:
             return None
         moment = dict(zip(columns, row, strict=True))
 
-        # Parse transcript into structured turns
+        # Parse transcript into structured turns.
+        # Currently unused by surface_relevant_moments() which injects the raw
+        # transcript_excerpt string.  This is scaffolding for Phase 4 structured
+        # injection where individual turns get injected as conversation messages.
         turns = []
         for line in moment["transcript_excerpt"].split("\n\n"):
             line = line.strip()
@@ -551,12 +555,12 @@ def surface_relevant_moments(
             # Truncate if necessary — hard cap at ~2000 tokens worth.
             # Cut on a \n\n turn boundary so we never slice mid-sentence.
             excerpt = vivid["transcript_excerpt"]
-            if len(excerpt) > 8000:  # ~2000 tokens
-                cut = excerpt[:8000].rfind("\n\n")
+            if len(excerpt) > VIVID_EXCERPT_CHAR_CAP:
+                cut = excerpt[:VIVID_EXCERPT_CHAR_CAP].rfind("\n\n")
                 if cut > 0:
                     excerpt = excerpt[:cut]
                 else:
-                    excerpt = excerpt[:8000]
+                    excerpt = excerpt[:VIVID_EXCERPT_CHAR_CAP]
                 excerpt += "\n\n[...truncated for context budget]"
 
             sections.append(vivid_header + excerpt)
