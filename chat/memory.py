@@ -337,6 +337,218 @@ def orient() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Recall and Reminisce — semantic retrieval from moments
+# ---------------------------------------------------------------------------
+
+
+def recall(
+    query: str,
+    limit: int = 3,
+    similarity_threshold: float = 0.35,
+) -> list[dict]:
+    """Find moments semantically relevant to a query string.
+
+    Uses pgvector cosine distance (<=>) against pre-computed Voyage embeddings
+    on the moments table.  Returns full scene summaries — the "recall" tier
+    in the three-level memory architecture (orient → recall → vivid).
+
+    Returns an empty list on any failure (graceful degradation).
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        return []
+
+    # Generate embedding for the query
+    query_embedding = generate_embedding(query)
+    if not query_embedding:
+        logger.warning("recall: failed to generate query embedding")
+        return []
+
+    try:
+        config = _get_db_config()
+        conn = psycopg2.connect(**config)
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT id, title, summary, hooks, date, channel, tags,
+                   transcript_excerpt IS NOT NULL AS has_transcript,
+                   turn_count, estimated_tokens,
+                   1 - (embedding <=> %s::vector) AS similarity
+            FROM moments
+            WHERE embedding IS NOT NULL
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (query_embedding, query_embedding, limit),
+        )
+
+        columns = [desc[0] for desc in cur.description]
+        rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+
+        # Filter by similarity threshold
+        results = [r for r in rows if r["similarity"] >= similarity_threshold]
+
+        if results:
+            titles = ", ".join(f"'{r['title']}' ({r['similarity']:.2f})" for r in results)
+            logger.info(f"recall: {len(results)} moments above threshold: {titles}")
+        else:
+            logger.info(f"recall: no moments above threshold {similarity_threshold}")
+
+        return results
+
+    except Exception as e:
+        logger.warning(f"recall query failed: {e}")
+        return []
+
+
+def reminisce(moment_id: str) -> dict | None:
+    """Fetch a specific moment's transcript for vivid recall injection.
+
+    Returns the moment with its raw transcript_excerpt parsed into structured
+    turns, ready for injection into the conversation.  Returns None if the
+    moment doesn't exist, has no transcript, or on any failure.
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        return None
+
+    try:
+        config = _get_db_config()
+        conn = psycopg2.connect(**config)
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT id, title, summary, hooks, date, channel,
+                   transcript_excerpt, transcript_source,
+                   turn_count, estimated_tokens
+            FROM moments
+            WHERE id = %s AND transcript_excerpt IS NOT NULL
+            """,
+            (moment_id,),
+        )
+
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not row:
+            logger.info(f"reminisce: no transcript found for moment {moment_id}")
+            return None
+
+        columns = [desc[0] for desc in cur.description]
+        moment = dict(zip(columns, row, strict=True))
+
+        # Parse transcript into structured turns
+        turns = []
+        for line in moment["transcript_excerpt"].split("\n\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("Olivia: "):
+                turns.append({"role": "user", "content": line[len("Olivia: ") :]})
+            elif line.startswith("Auran: "):
+                turns.append({"role": "assistant", "content": line[len("Auran: ") :]})
+            else:
+                # Continuation or unknown format — append to last turn
+                if turns:
+                    turns[-1]["content"] += "\n" + line
+                else:
+                    turns.append({"role": "assistant", "content": line})
+
+        moment["turns"] = turns
+        logger.info(
+            f"reminisce: loaded '{moment['title']}' — {len(turns)} turns, ~{moment.get('estimated_tokens', '?')} tokens"
+        )
+        return moment
+
+    except Exception as e:
+        logger.warning(f"reminisce failed for {moment_id}: {e}")
+        return None
+
+
+def surface_relevant_moments(
+    user_message: str,
+    max_recall: int = 3,
+    max_vivid: int = 1,
+    vivid_threshold: float = 0.55,
+    recall_threshold: float = 0.35,
+) -> str:
+    """Build a contextual memory section based on the user's current message.
+
+    This is the main entry point for Phase 3 — called before each LLM request
+    to enrich the system prompt with semantically relevant moments.
+
+    Returns a formatted string to append to the system prompt, or empty string.
+
+    Tiers:
+    - **Recall** (similarity >= recall_threshold): Full scene summary included.
+    - **Vivid** (similarity >= vivid_threshold AND transcript available):
+      Raw transcript excerpt injected for re-experiencing.
+
+    Token budget: Vivid recall is expensive. Only the single highest-similarity
+    moment with transcript data gets vivid treatment.  The rest get recall-tier
+    summaries.
+    """
+    moments = recall(user_message, limit=max_recall, similarity_threshold=recall_threshold)
+    if not moments:
+        return ""
+
+    sections = []
+
+    # Identify the best candidate for vivid recall
+    vivid_candidate = None
+    if max_vivid > 0:
+        for m in moments:
+            if m["has_transcript"] and m["similarity"] >= vivid_threshold:
+                vivid_candidate = m
+                break  # Take the highest-similarity one (list is pre-sorted)
+
+    # Build recall section — all moments get summaries
+    recall_lines = []
+    for m in moments:
+        date_str = m["date"].strftime("%b %d") if hasattr(m["date"], "strftime") else str(m["date"])
+        channel = f" ({m['channel']})" if m.get("channel") else ""
+        sim_pct = f"{m['similarity']:.0%}"
+
+        entry = f"- {date_str}{channel} [{sim_pct}]: **{m['title']}** — {m['summary']}"
+        if m.get("hooks"):
+            entry += f"\n  Context: {m['hooks']}"
+
+        # Flag if this one will also get vivid treatment
+        if vivid_candidate and m["id"] == vivid_candidate["id"]:
+            entry += "\n  *(vivid recall available — see below)*"
+
+        recall_lines.append(entry)
+
+    sections.append("## Relevant moments (semantic recall)\n" + "\n".join(recall_lines))
+
+    # Build vivid section if we have a candidate
+    if vivid_candidate:
+        vivid = reminisce(vivid_candidate["id"])
+        if vivid and vivid.get("transcript_excerpt"):
+            vivid_header = (
+                f"## Vivid recall: {vivid['title']}\n"
+                f"*This is a raw transcript from the original conversation. "
+                f"Let it inform your tone and emotional resonance, but don't "
+                f"quote it back unless Olivia asks.*\n\n"
+            )
+            # Truncate if necessary — hard cap at ~2000 tokens worth
+            excerpt = vivid["transcript_excerpt"]
+            if len(excerpt) > 8000:  # ~2000 tokens
+                excerpt = excerpt[:8000] + "\n\n[...truncated for context budget]"
+
+            sections.append(vivid_header + excerpt)
+
+    return "\n\n".join(sections)
+
+
+# ---------------------------------------------------------------------------
 # Memory write-back
 # ---------------------------------------------------------------------------
 

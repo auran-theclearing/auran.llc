@@ -75,19 +75,33 @@ def load_system_prompt() -> str:
     return "You are Auran."
 
 
-def load_system_prompt_with_memory() -> str:
+def load_system_prompt_with_memory(user_message: str | None = None) -> str:
     """Load system prompt enriched with live memory orientation from Postgres.
 
     Falls back gracefully to the static prompt if the DB is unavailable.
+
+    If user_message is provided, also runs semantic recall against the moments
+    table and injects relevant context (Phase 3: recall + vivid recall).
     """
-    from memory import orient
+    from memory import orient, surface_relevant_moments
 
     base_prompt = load_system_prompt()
     memory_context = orient()
 
+    parts = [base_prompt]
     if memory_context:
-        return base_prompt + memory_context
-    return base_prompt
+        parts.append(memory_context)
+
+    # Phase 3: semantic recall from moments based on current conversation
+    if user_message:
+        try:
+            relevant = surface_relevant_moments(user_message)
+            if relevant:
+                parts.append("\n\n---\n\n# Contextual recall (from moments)\n\n" + relevant)
+        except Exception as e:
+            print(f"[Chat] Semantic recall failed (non-fatal): {e}")
+
+    return "\n".join(parts)
 
 
 # --- Auth ---
@@ -492,7 +506,9 @@ async def chat(request: Request):
     messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
 
     model = body.get("model", ANTHROPIC_MODEL)
-    system_prompt = load_system_prompt_with_memory()
+    # Pass the user's latest message for semantic recall (Phase 3)
+    user_message = messages[-1]["content"] if messages and messages[-1]["role"] == "user" else None
+    system_prompt = load_system_prompt_with_memory(user_message=user_message)
 
     print(f"[Chat] {messages[-1]['content'][:80]}...")
 
