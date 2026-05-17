@@ -1007,11 +1007,30 @@ async def extract_scenes(
         transcript_source = None
 
         if start_idx is not None and end_idx is not None:
-            # Clamp to valid range
-            start_idx = max(0, int(start_idx))
-            end_idx = min(len(messages) - 1, int(end_idx))
+            try:
+                start_idx = max(0, int(start_idx))
+                end_idx = min(len(messages) - 1, int(end_idx))
+            except (ValueError, TypeError):
+                logger.warning(
+                    f"Non-numeric indices for scene '{title}': "
+                    f"start={scene.get('start_index')!r}, end={scene.get('end_index')!r} — skipping transcript"
+                )
+                start_idx = None
+                end_idx = None
 
-            if start_idx <= end_idx:
+        # Soft cap: if the LLM picked absurdly broad boundaries (>60 turns),
+        # warn and skip transcript rather than storing a massive excerpt.
+        # 60 turns is generous — most real scenes are 3-20 turns.
+        MAX_SCENE_TURNS = 60
+
+        if start_idx is not None and end_idx is not None and start_idx <= end_idx:
+            scene_turn_count = end_idx - start_idx + 1
+            if scene_turn_count > MAX_SCENE_TURNS:
+                logger.warning(
+                    f"Scene '{title}' spans {scene_turn_count} turns (messages {start_idx}-{end_idx}) "
+                    f"— exceeds {MAX_SCENE_TURNS} cap, skipping transcript"
+                )
+            else:
                 scene_messages = messages[start_idx : end_idx + 1]
                 # Build the raw transcript — alternating turns as they happened
                 transcript_lines = []
@@ -1031,6 +1050,8 @@ async def extract_scenes(
                     f"Captured transcript for '{title}': {turn_count} turns, "
                     f"~{estimated_tokens} tokens (messages {start_idx}-{end_idx})"
                 )
+        elif start_idx is not None:
+            pass  # already logged above for bad coercion
         else:
             logger.info(f"No message indices for scene '{title}' — transcript not captured")
 
