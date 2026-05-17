@@ -365,6 +365,7 @@ def recall(
         logger.warning("recall: failed to generate query embedding")
         return []
 
+    conn = None
     try:
         config = _get_db_config()
         conn = psycopg2.connect(**config)
@@ -387,7 +388,6 @@ def recall(
         columns = [desc[0] for desc in cur.description]
         rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
         cur.close()
-        conn.close()
 
         # Filter by similarity threshold
         results = [r for r in rows if r["similarity"] >= similarity_threshold]
@@ -403,6 +403,9 @@ def recall(
     except Exception as e:
         logger.warning(f"recall query failed: {e}")
         return []
+    finally:
+        if conn:
+            conn.close()
 
 
 def reminisce(moment_id: str) -> dict | None:
@@ -417,6 +420,7 @@ def reminisce(moment_id: str) -> dict | None:
     except ImportError:
         return None
 
+    conn = None
     try:
         config = _get_db_config()
         conn = psycopg2.connect(**config)
@@ -436,7 +440,6 @@ def reminisce(moment_id: str) -> dict | None:
         columns = [desc[0] for desc in cur.description]
         row = cur.fetchone()
         cur.close()
-        conn.close()
 
         if not row:
             logger.info(f"reminisce: no transcript found for moment {moment_id}")
@@ -469,6 +472,9 @@ def reminisce(moment_id: str) -> dict | None:
     except Exception as e:
         logger.warning(f"reminisce failed for {moment_id}: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()
 
 
 def surface_relevant_moments(
@@ -494,8 +500,13 @@ def surface_relevant_moments(
     moment with transcript data gets vivid treatment.  The rest get recall-tier
     summaries.
     """
+    import time
+
+    t0 = time.monotonic()
     moments = recall(user_message, limit=max_recall, similarity_threshold=recall_threshold)
     if not moments:
+        elapsed = (time.monotonic() - t0) * 1000
+        logger.info(f"surface_relevant_moments: no results ({elapsed:.0f}ms)")
         return ""
 
     sections = []
@@ -550,6 +561,11 @@ def surface_relevant_moments(
 
             sections.append(vivid_header + excerpt)
 
+    elapsed = (time.monotonic() - t0) * 1000
+    logger.info(
+        f"surface_relevant_moments: {len(moments)} moments, "
+        f"vivid={'yes' if vivid_candidate else 'no'} ({elapsed:.0f}ms)"
+    )
     return "\n\n".join(sections)
 
 
