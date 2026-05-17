@@ -350,6 +350,12 @@ async def save(request: Request):
     mem_watermark = watermarks["memory"]
     scene_watermark = watermarks["scene"]
 
+    # Reset watermarks if message count dropped (new chat without /session sync)
+    if len(messages) < mem_watermark:
+        mem_watermark = 0
+    if len(messages) < scene_watermark:
+        scene_watermark = 0
+
     # Slice messages for each extractor independently
     unsaved_for_memory = messages[mem_watermark:]
     unsaved_for_scenes = messages[scene_watermark:]
