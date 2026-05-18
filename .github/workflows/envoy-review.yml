@@ -21,7 +21,7 @@ jobs:
 
       - name: Run envoy review
         id: envoy-review
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@51ea8ea73a139f2a74ff649e3092c25a904aed7e  # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |

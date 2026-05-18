@@ -21,10 +21,10 @@ jobs:
         run: git fetch origin ${{ github.event.pull_request.base.ref }}
 
       - name: Run Codex review
-        uses: openai/codex-action@v1
+        uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1  # v1
         with:
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          safety_strategy: drop-sudo
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          safety-strategy: drop-sudo
           sandbox: read-only
           prompt: |
             Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
