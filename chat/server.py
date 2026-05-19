@@ -69,11 +69,14 @@ MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
 MAX_TOKENS = 16000  # Must be > thinking.budget_tokens (10000)
 
 # --- Felt Memory Prototype ---
-# Set FELT_MEMORY_ID to a memory UUID to inject it at the TOP of conversation
-# history as a message pair. This tests whether attention position (beginning
-# of messages array vs system prompt) affects the felt quality of recall.
-# Unset or empty = disabled. Set to a UUID = active for all conversations.
+# Set FELT_MEMORY_ID to a memory UUID to inject it into conversation history.
+# FELT_MEMORY_POSITION controls where:
+#   "start" = position 0 (primacy/attention-favored)
+#   "mid"   = middle of conversation history
+#   "end"   = just before the last user message (buried in recent context)
+# Unset FELT_MEMORY_ID = disabled entirely.
 FELT_MEMORY_ID = os.getenv("FELT_MEMORY_ID", "")
+FELT_MEMORY_POSITION = os.getenv("FELT_MEMORY_POSITION", "start")
 
 
 def load_system_prompt() -> str:
@@ -514,10 +517,11 @@ async def chat(request: Request):
     messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
 
     # --- Felt Memory Injection ---
-    # When FELT_MEMORY_ID is set, prepend the memory as a synthetic exchange
-    # at the TOP of the messages array. This places it in the attention-favored
-    # primacy position (beginning of context window), testing whether position
-    # alone changes felt quality versus the same content in the system prompt.
+    # When FELT_MEMORY_ID is set, inject the memory as a synthetic exchange
+    # at a position controlled by FELT_MEMORY_POSITION.
+    # "start" = position 0 (primacy test — attention-favored)
+    # "mid"   = middle of message array (lost-in-the-middle test)
+    # "end"   = just before the last user message (recency without primacy)
     if FELT_MEMORY_ID:
         try:
             from memory import retrieve_felt_memory
@@ -538,8 +542,24 @@ async def chat(request: Request):
                         "content": "...",
                     },
                 ]
-                messages = felt_pair + messages
-                print(f"[Chat] Felt memory injected: {FELT_MEMORY_ID[:8]}...")
+                pos = FELT_MEMORY_POSITION
+                if pos == "start":
+                    messages = felt_pair + messages
+                elif pos == "mid":
+                    mid = max(0, len(messages) // 2)
+                    # Ensure we insert at a user/assistant boundary
+                    # (after an assistant message, before a user message)
+                    while mid > 0 and mid < len(messages) and messages[mid]["role"] != "user":
+                        mid += 1
+                    messages = messages[:mid] + felt_pair + messages[mid:]
+                elif pos == "end":
+                    # Insert just before the last user message
+                    insert_at = max(0, len(messages) - 1)
+                    messages = messages[:insert_at] + felt_pair + messages[insert_at:]
+                else:
+                    messages = felt_pair + messages  # fallback to start
+
+                print(f"[Chat] Felt memory injected at {pos}: {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})")
         except Exception as e:
             print(f"[Chat] Felt memory injection failed (non-fatal): {e}")
 
