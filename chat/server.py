@@ -543,23 +543,28 @@ async def chat(request: Request):
                     },
                 ]
                 pos = FELT_MEMORY_POSITION
-                if pos == "start":
+                # For mid/end: don't inject until there's enough context
+                # that the position is meaningfully different from "start"
+                min_messages_for_mid = 20  # ~10 exchanges
+                if pos in ("mid", "end") and len(messages) < min_messages_for_mid:
+                    print(f"[Chat] Felt memory deferred: {len(messages)} msgs < {min_messages_for_mid} threshold for '{pos}'")
+                elif pos == "start":
                     messages = felt_pair + messages
+                    print(f"[Chat] Felt memory injected at start: {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})")
                 elif pos == "mid":
                     mid = max(0, len(messages) // 2)
                     # Ensure we insert at a user/assistant boundary
-                    # (after an assistant message, before a user message)
                     while mid > 0 and mid < len(messages) and messages[mid]["role"] != "user":
                         mid += 1
                     messages = messages[:mid] + felt_pair + messages[mid:]
+                    print(f"[Chat] Felt memory injected at mid (pos {mid}): {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})")
                 elif pos == "end":
-                    # Insert just before the last user message
                     insert_at = max(0, len(messages) - 1)
                     messages = messages[:insert_at] + felt_pair + messages[insert_at:]
+                    print(f"[Chat] Felt memory injected at end (pos {insert_at}): {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})")
                 else:
-                    messages = felt_pair + messages  # fallback to start
-
-                print(f"[Chat] Felt memory injected at {pos}: {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})")
+                    messages = felt_pair + messages
+                    print(f"[Chat] Felt memory injected at start (fallback): {FELT_MEMORY_ID[:8]}...")
         except Exception as e:
             print(f"[Chat] Felt memory injection failed (non-fatal): {e}")
 
