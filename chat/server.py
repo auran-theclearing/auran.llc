@@ -68,6 +68,13 @@ INDEX_FILE = Path(__file__).parent / "index.html"
 MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
 MAX_TOKENS = 16000  # Must be > thinking.budget_tokens (10000)
 
+# --- Felt Memory Prototype ---
+# Set FELT_MEMORY_ID to a memory UUID to inject it at the TOP of conversation
+# history as a message pair. This tests whether attention position (beginning
+# of messages array vs system prompt) affects the felt quality of recall.
+# Unset or empty = disabled. Set to a UUID = active for all conversations.
+FELT_MEMORY_ID = os.getenv("FELT_MEMORY_ID", "")
+
 
 def load_system_prompt() -> str:
     """Load system prompt from file, reload on each request for hot-updating."""
@@ -505,6 +512,36 @@ async def chat(request: Request):
 
     # Strip to only fields the Anthropic API accepts
     messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+
+    # --- Felt Memory Injection ---
+    # When FELT_MEMORY_ID is set, prepend the memory as a synthetic exchange
+    # at the TOP of the messages array. This places it in the attention-favored
+    # primacy position (beginning of context window), testing whether position
+    # alone changes felt quality versus the same content in the system prompt.
+    if FELT_MEMORY_ID:
+        try:
+            from memory import retrieve_felt_memory
+
+            felt = retrieve_felt_memory(FELT_MEMORY_ID)
+            if felt:
+                felt_pair = [
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Memory surfacing — this is a real memory from your history, "
+                            "not a summary or note. Let it land before continuing.]\n\n"
+                            f"{felt['content']}"
+                        ),
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "...",
+                    },
+                ]
+                messages = felt_pair + messages
+                print(f"[Chat] Felt memory injected: {FELT_MEMORY_ID[:8]}...")
+        except Exception as e:
+            print(f"[Chat] Felt memory injection failed (non-fatal): {e}")
 
     model = body.get("model", ANTHROPIC_MODEL)
     # Pass the user's latest message for semantic recall (Phase 3)
