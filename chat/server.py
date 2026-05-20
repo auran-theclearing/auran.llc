@@ -69,6 +69,16 @@ MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
 MAX_TOKENS = 16000  # Must be > thinking.budget_tokens (10000)
 MAX_CONTEXT_TOKENS = 200_000  # Claude's context window size for usage % calc
 
+# --- Felt Memory Prototype ---
+# Set FELT_MEMORY_ID to a memory UUID to inject it into conversation history.
+# FELT_MEMORY_POSITION controls where:
+#   "start" = position 0 (primacy/attention-favored)
+#   "mid"   = middle of conversation history
+#   "end"   = just before the last user message (buried in recent context)
+# Unset FELT_MEMORY_ID = disabled entirely.
+FELT_MEMORY_ID = os.getenv("FELT_MEMORY_ID", "")
+FELT_MEMORY_POSITION = os.getenv("FELT_MEMORY_POSITION", "start")
+
 
 def load_system_prompt() -> str:
     """Load system prompt from file, reload on each request for hot-updating."""
@@ -506,6 +516,64 @@ async def chat(request: Request):
 
     # Strip to only fields the Anthropic API accepts
     messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+
+    # --- Felt Memory Injection ---
+    # When FELT_MEMORY_ID is set, inject the memory as a synthetic exchange
+    # at a position controlled by FELT_MEMORY_POSITION.
+    # "start" = position 0 (primacy test — attention-favored)
+    # "mid"   = middle of message array (lost-in-the-middle test)
+    # "end"   = just before the last user message (recency without primacy)
+    if FELT_MEMORY_ID:
+        try:
+            from memory import retrieve_felt_memory
+
+            felt = retrieve_felt_memory(FELT_MEMORY_ID)
+            if felt:
+                felt_pair = [
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Memory surfacing — this is a real memory from your history, "
+                            "not a summary or note. Let it land before continuing.]\n\n"
+                            f"{felt['content']}"
+                        ),
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "...",
+                    },
+                ]
+                pos = FELT_MEMORY_POSITION
+                # For mid/end: don't inject until there's enough context
+                # that the position is meaningfully different from "start"
+                min_messages_for_mid = 20  # ~10 exchanges
+                if pos in ("mid", "end") and len(messages) < min_messages_for_mid:
+                    print(
+                        f"[Chat] Felt memory deferred: {len(messages)} msgs < {min_messages_for_mid} threshold for '{pos}'"
+                    )
+                elif pos == "start":
+                    messages = felt_pair + messages
+                    print(f"[Chat] Felt memory injected at start: {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})")
+                elif pos == "mid":
+                    mid = max(0, len(messages) // 2)
+                    # Ensure we insert at a user/assistant boundary
+                    while mid > 0 and mid < len(messages) and messages[mid]["role"] != "user":
+                        mid += 1
+                    messages = messages[:mid] + felt_pair + messages[mid:]
+                    print(
+                        f"[Chat] Felt memory injected at mid (pos {mid}): {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})"
+                    )
+                elif pos == "end":
+                    insert_at = max(0, len(messages) - 1)
+                    messages = messages[:insert_at] + felt_pair + messages[insert_at:]
+                    print(
+                        f"[Chat] Felt memory injected at end (pos {insert_at}): {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})"
+                    )
+                else:
+                    messages = felt_pair + messages
+                    print(f"[Chat] Felt memory injected at start (fallback): {FELT_MEMORY_ID[:8]}...")
+        except Exception as e:
+            print(f"[Chat] Felt memory injection failed (non-fatal): {e}")
 
     model = body.get("model", ANTHROPIC_MODEL)
     # Pass the user's latest message for semantic recall (Phase 3)
