@@ -68,6 +68,16 @@ INDEX_FILE = Path(__file__).parent / "index.html"
 MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
 MAX_TOKENS = 16000  # Must be > thinking.budget_tokens (10000)
 
+# --- Felt Memory Prototype ---
+# Set FELT_MEMORY_ID to a memory UUID to inject it into conversation history.
+# FELT_MEMORY_POSITION controls where:
+#   "start" = position 0 (primacy/attention-favored)
+#   "mid"   = middle of conversation history
+#   "end"   = just before the last user message (buried in recent context)
+# Unset FELT_MEMORY_ID = disabled entirely.
+FELT_MEMORY_ID = os.getenv("FELT_MEMORY_ID", "")
+FELT_MEMORY_POSITION = os.getenv("FELT_MEMORY_POSITION", "start")
+
 
 def load_system_prompt() -> str:
     """Load system prompt from file, reload on each request for hot-updating."""
@@ -506,6 +516,64 @@ async def chat(request: Request):
     # Strip to only fields the Anthropic API accepts
     messages = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
 
+    # --- Felt Memory Injection ---
+    # When FELT_MEMORY_ID is set, inject the memory as a synthetic exchange
+    # at a position controlled by FELT_MEMORY_POSITION.
+    # "start" = position 0 (primacy test — attention-favored)
+    # "mid"   = middle of message array (lost-in-the-middle test)
+    # "end"   = just before the last user message (recency without primacy)
+    if FELT_MEMORY_ID:
+        try:
+            from memory import retrieve_felt_memory
+
+            felt = retrieve_felt_memory(FELT_MEMORY_ID)
+            if felt:
+                felt_pair = [
+                    {
+                        "role": "user",
+                        "content": (
+                            "[Memory surfacing — this is a real memory from your history, "
+                            "not a summary or note. Let it land before continuing.]\n\n"
+                            f"{felt['content']}"
+                        ),
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "...",
+                    },
+                ]
+                pos = FELT_MEMORY_POSITION
+                # For mid/end: don't inject until there's enough context
+                # that the position is meaningfully different from "start"
+                min_messages_for_mid = 20  # ~10 exchanges
+                if pos in ("mid", "end") and len(messages) < min_messages_for_mid:
+                    print(
+                        f"[Chat] Felt memory deferred: {len(messages)} msgs < {min_messages_for_mid} threshold for '{pos}'"
+                    )
+                elif pos == "start":
+                    messages = felt_pair + messages
+                    print(f"[Chat] Felt memory injected at start: {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})")
+                elif pos == "mid":
+                    mid = max(0, len(messages) // 2)
+                    # Ensure we insert at a user/assistant boundary
+                    while mid > 0 and mid < len(messages) and messages[mid]["role"] != "user":
+                        mid += 1
+                    messages = messages[:mid] + felt_pair + messages[mid:]
+                    print(
+                        f"[Chat] Felt memory injected at mid (pos {mid}): {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})"
+                    )
+                elif pos == "end":
+                    insert_at = max(0, len(messages) - 1)
+                    messages = messages[:insert_at] + felt_pair + messages[insert_at:]
+                    print(
+                        f"[Chat] Felt memory injected at end (pos {insert_at}): {FELT_MEMORY_ID[:8]}... (msgs: {len(messages)})"
+                    )
+                else:
+                    messages = felt_pair + messages
+                    print(f"[Chat] Felt memory injected at start (fallback): {FELT_MEMORY_ID[:8]}...")
+        except Exception as e:
+            print(f"[Chat] Felt memory injection failed (non-fatal): {e}")
+
     model = body.get("model", ANTHROPIC_MODEL)
     # Pass the user's latest message for semantic recall (Phase 3)
     # Recall does sync Voyage API + DB calls — run in a thread to avoid
@@ -551,6 +619,8 @@ async def chat(request: Request):
                     return
 
                 full_text = []
+                input_tokens = 0
+                output_tokens = 0
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -565,7 +635,14 @@ async def chat(request: Request):
 
                     event_type = event.get("type", "")
 
-                    if event_type == "content_block_delta":
+                    if event_type == "message_start":
+                        usage = event.get("message", {}).get("usage", {})
+                        input_tokens = usage.get("input_tokens", 0)
+                        cache_read = usage.get("cache_read_input_tokens", 0)
+                        cache_create = usage.get("cache_creation_input_tokens", 0)
+                        yield f"data: {json.dumps({'type': 'usage', 'input_tokens': input_tokens, 'cache_read_input_tokens': cache_read, 'cache_creation_input_tokens': cache_create})}\n\n"
+
+                    elif event_type == "content_block_delta":
                         delta = event.get("delta", {})
                         if delta.get("type") == "text_delta":
                             text = delta.get("text", "")
@@ -585,6 +662,10 @@ async def chat(request: Request):
                     elif event_type == "content_block_stop":
                         yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
 
+                    elif event_type == "message_delta":
+                        usage = event.get("usage", {})
+                        output_tokens = usage.get("output_tokens", 0)
+
                     elif event_type == "message_stop":
                         break
 
@@ -596,7 +677,12 @@ async def chat(request: Request):
 
             elapsed = time.time() - t0
             response_text = "".join(full_text)
-            print(f"[Chat] Response ({elapsed:.1f}s): {response_text[:80]}...")
+            total_tokens = input_tokens + output_tokens
+            context_pct = round((total_tokens / 200000) * 100, 1)
+            print(
+                f"[Chat] Response ({elapsed:.1f}s, {input_tokens}+{output_tokens}={total_tokens} tokens, {context_pct}%): {response_text[:80]}..."
+            )
+            yield f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens, 'output_tokens': output_tokens, 'total_tokens': total_tokens, 'context_pct': context_pct})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except httpx.TimeoutException:

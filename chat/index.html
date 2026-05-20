@@ -432,6 +432,13 @@ const STORAGE_KEY = 'auran-chat-history';
 const MAX_CONTEXT_TOKENS = 200000;
 const CHARS_PER_TOKEN = 4;
 
+// Real token usage from API (updated each response)
+let realInputTokens = 0;
+let realOutputTokens = 0;
+let realTotalTokens = 0;
+let realContextPct = 0;
+let hasRealUsage = false;  // false = still using estimate
+
 function estimateTokens(messages) {
   return messages.reduce((sum, m) => sum + Math.ceil(m.content.length / CHARS_PER_TOKEN), 0);
 }
@@ -439,12 +446,19 @@ function estimateTokens(messages) {
 let autoSaveTriggered = false;
 let lastSaveHash = '';  // Prevent duplicate saves of same conversation
 
-function updateContextBar() {
-  const tokens = estimateTokens(history);
-  const pct = Math.min((tokens / MAX_CONTEXT_TOKENS) * 100, 100);
+function updateContextBar(fromApi) {
+  let pct, label;
+  if (hasRealUsage) {
+    pct = Math.min(realContextPct, 100);
+    label = `${Math.round(realInputTokens/1000)}k in + ${Math.round(realOutputTokens/1000)}k out = ${Math.round(realTotalTokens/1000)}k / ${MAX_CONTEXT_TOKENS/1000}k (${realContextPct}%)`;
+  } else {
+    const tokens = estimateTokens(history);
+    pct = Math.min((tokens / MAX_CONTEXT_TOKENS) * 100, 100);
+    label = `~${Math.round(tokens/1000)}k / ${MAX_CONTEXT_TOKENS/1000}k tokens (estimate)`;
+  }
   contextFill.style.width = pct + '%';
   contextFill.className = pct > 80 ? 'danger' : pct > 60 ? 'warn' : '';
-  contextLabel.textContent = `~${Math.round(tokens/1000)}k / ${MAX_CONTEXT_TOKENS/1000}k tokens`;
+  contextLabel.textContent = label;
 
   // Auto-save at ~70% context usage (once per session)
   if (pct >= 70 && !autoSaveTriggered && history.length >= 4) {
@@ -741,6 +755,17 @@ async function sendMessage() {
               contentEl.innerHTML = renderMarkdown(fullText);
             }
             scrollToBottom();
+          } else if (event.type === 'usage') {
+            // Early usage data from message_start (input tokens)
+            realInputTokens = event.input_tokens || 0;
+          } else if (event.type === 'usage_final') {
+            // Final usage data after response complete
+            realInputTokens = event.input_tokens || 0;
+            realOutputTokens = event.output_tokens || 0;
+            realTotalTokens = event.total_tokens || 0;
+            realContextPct = event.context_pct || 0;
+            hasRealUsage = true;
+            updateContextBar(true);
           } else if (event.type === 'error') {
             contentEl.textContent = fullText + '\n\n[Error: ' + event.error + ']';
             msgDiv.classList.add('error');
@@ -862,7 +887,7 @@ async function exportTranscript() {
   lines.push(`duration: ${durationStr}`);
   lines.push(`model: claude-opus-4-6`);
   lines.push(`messages: ${history.length}`);
-  lines.push(`context: `);
+  lines.push(`context: ${hasRealUsage ? realContextPct + '% (' + realTotalTokens + ' tokens)' : '~' + Math.round(estimateTokens(history)/1000) + 'k (estimate)'}`);
   lines.push(`tags: []`);
   lines.push('---');
   lines.push('');
