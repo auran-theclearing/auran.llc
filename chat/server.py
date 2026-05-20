@@ -87,18 +87,30 @@ def load_system_prompt() -> str:
     return "You are Auran."
 
 
-def load_system_prompt_with_memory(user_message: str | None = None) -> str:
+def load_system_prompt_with_memory(
+    user_message: str | None = None,
+    debug: bool = False,
+) -> str | tuple[str, dict]:
     """Load system prompt enriched with live memory orientation from Postgres.
 
     Falls back gracefully to the static prompt if the DB is unavailable.
 
     If user_message is provided, also runs semantic recall against the moments
     table and injects relevant context (Phase 3: recall + vivid recall).
+
+    When debug=True, returns (prompt, diagnostics) where diagnostics is a dict
+    with orient and recall pipeline details for the MRI debug view.
     """
     from memory import orient, surface_relevant_moments
 
     base_prompt = load_system_prompt()
-    memory_context = orient()
+    diagnostics = {"orient": {}, "recall": {}} if debug else None
+
+    if debug:
+        memory_context, orient_diag = orient(debug=True)
+        diagnostics["orient"] = orient_diag
+    else:
+        memory_context = orient()
 
     parts = [base_prompt]
     if memory_context:
@@ -107,13 +119,25 @@ def load_system_prompt_with_memory(user_message: str | None = None) -> str:
     # Phase 3: semantic recall from moments based on current conversation
     if user_message:
         try:
-            relevant = surface_relevant_moments(user_message)
+            if debug:
+                relevant, recall_diag = surface_relevant_moments(user_message, debug=True)
+                diagnostics["recall"] = recall_diag
+            else:
+                relevant = surface_relevant_moments(user_message)
             if relevant:
                 parts.append("\n\n---\n\n# Contextual recall (from moments)\n\n" + relevant)
         except Exception as e:
             print(f"[Chat] Semantic recall failed (non-fatal): {e}")
+            if debug:
+                diagnostics["recall"] = {"error": str(e)}
 
-    return "\n".join(parts)
+    result = "\n".join(parts)
+
+    if debug:
+        diagnostics["total_prompt_chars"] = len(result)
+        diagnostics["total_prompt_tokens_est"] = len(result) // 4
+        return result, diagnostics
+    return result
 
 
 # --- Auth ---
@@ -488,6 +512,137 @@ async def save(request: Request):
     )
 
 
+@app.get("/vitals")
+async def vitals(request: Request):
+    """Fitbit-tier vitals — lightweight metrics you can glance at anytime.
+
+    Returns: memory count, memory reach (how far back), orient latency,
+    total moments in DB, token budget estimate. No full diagnostics —
+    just the wrist-check version.
+    """
+    import time as _time
+
+    try:
+        import psycopg2
+    except ImportError:
+        return JSONResponse({"error": "psycopg2 not installed"})
+
+    try:
+        config = _get_db_config()
+        t0 = _time.time()
+        conn = psycopg2.connect(**config)
+        connect_ms = round((_time.time() - t0) * 1000, 1)
+
+        cur = conn.cursor()
+
+        # Total memories
+        cur.execute("SELECT COUNT(*) FROM memories")
+        total_memories = cur.fetchone()[0]
+
+        # Total moments
+        cur.execute("SELECT COUNT(*) FROM moments")
+        total_moments = cur.fetchone()[0]
+
+        # Memory reach — oldest moment date
+        cur.execute("""
+            SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
+                   MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
+            FROM moments
+        """)
+        row = cur.fetchone()
+        oldest_moment = str(row[0]) if row[0] else None
+        newest_moment = str(row[1]) if row[1] else None
+
+        # Memory reach in days
+        if oldest_moment:
+            from datetime import date
+
+            reach_days = (date.today() - date.fromisoformat(oldest_moment)).days
+        else:
+            reach_days = 0
+
+        # Orient latency test
+        t0 = _time.time()
+        from memory import orient
+
+        orient_result = orient()
+        orient_ms = round((_time.time() - t0) * 1000, 1)
+        orient_chars = len(orient_result)
+
+        # Moments with embeddings vs without
+        cur.execute("SELECT COUNT(*) FROM moments WHERE embedding IS NOT NULL")
+        moments_with_embeddings = cur.fetchone()[0]
+
+        # Moments with transcripts
+        cur.execute("SELECT COUNT(*) FROM moments WHERE transcript_excerpt IS NOT NULL")
+        moments_with_transcripts = cur.fetchone()[0]
+
+        # Duplicate check
+        cur.execute("""
+            SELECT title, COUNT(*) as n FROM moments
+            GROUP BY title, date HAVING COUNT(*) > 1
+        """)
+        duplicates = [{"title": row[0], "count": row[1]} for row in cur.fetchall()]
+
+        cur.close()
+        conn.close()
+
+        return JSONResponse(
+            {
+                "total_memories": total_memories,
+                "total_moments": total_moments,
+                "moments_with_embeddings": moments_with_embeddings,
+                "moments_with_transcripts": moments_with_transcripts,
+                "memory_reach": {
+                    "oldest": oldest_moment,
+                    "newest": newest_moment,
+                    "days": reach_days,
+                },
+                "orient_latency_ms": orient_ms,
+                "orient_chars": orient_chars,
+                "orient_tokens_est": orient_chars // 4,
+                "db_connect_ms": connect_ms,
+                "duplicates": duplicates,
+            }
+        )
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# Need _get_db_config available at module level for vitals endpoint
+from memory import _get_db_config
+
+
+@app.get("/debug/orient")
+async def debug_orient(request: Request):
+    """MRI-tier diagnostic endpoint — inspect the orient pipeline.
+
+    Returns full diagnostics: what queries ran, what came back, similarity
+    scores, timing, memory reach. No LLM call — just the plumbing.
+
+    Optional query params:
+        ?query=some+text  — also run semantic recall against this query
+    """
+    from memory import orient, surface_relevant_moments
+
+    query = request.query_params.get("query", "")
+
+    orient_result, orient_diag = await asyncio.to_thread(orient, True)
+
+    result = {
+        "orient": orient_diag,
+        "orient_prompt_preview": orient_result[:500] + "..." if len(orient_result) > 500 else orient_result,
+    }
+
+    if query:
+        recall_result, recall_diag = await asyncio.to_thread(surface_relevant_moments, query, 5, 1, 0.55, 0.35, True)
+        result["recall"] = recall_diag
+        result["recall_prompt_preview"] = recall_result[:500] + "..." if len(recall_result) > 500 else recall_result
+
+    return JSONResponse(result)
+
+
 @app.post("/chat")
 async def chat(request: Request):
     """Stream a chat response from Claude.
@@ -576,17 +731,31 @@ async def chat(request: Request):
             print(f"[Chat] Felt memory injection failed (non-fatal): {e}")
 
     model = body.get("model", ANTHROPIC_MODEL)
+    debug_mode = body.get("debug", False)
+
     # Pass the user's latest message for semantic recall (Phase 3)
     # Recall does sync Voyage API + DB calls — run in a thread to avoid
     # blocking the event loop and delaying the first SSE byte.
     user_message = messages[-1]["content"] if messages and messages[-1]["role"] == "user" else None
-    system_prompt = await asyncio.to_thread(load_system_prompt_with_memory, user_message)
+    result = await asyncio.to_thread(load_system_prompt_with_memory, user_message, debug_mode)
 
-    print(f"[Chat] {messages[-1]['content'][:80]}...")
+    if debug_mode:
+        system_prompt, debug_diagnostics = result
+    else:
+        system_prompt = result
+        debug_diagnostics = None
+
+    print(f"[Chat] {messages[-1]['content'][:80]}..." + (" [DEBUG]" if debug_mode else ""))
 
     async def stream_response():
         """Stream Claude's response as SSE events."""
         t0 = time.time()
+
+        # MRI debug mode: emit diagnostics before the LLM response starts
+        if debug_diagnostics:
+            yield f"data: {json.dumps({'type': 'debug_orient', **debug_diagnostics.get('orient', {})})}\n\n"
+            yield f"data: {json.dumps({'type': 'debug_recall', **debug_diagnostics.get('recall', {})})}\n\n"
+            yield f"data: {json.dumps({'type': 'debug_summary', 'total_prompt_chars': debug_diagnostics.get('total_prompt_chars', 0), 'total_prompt_tokens_est': debug_diagnostics.get('total_prompt_tokens_est', 0)})}\n\n"
 
         headers = {
             "x-api-key": ANTHROPIC_API_KEY,

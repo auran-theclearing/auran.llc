@@ -258,40 +258,83 @@ def retrieve_felt_memory(memory_id: str) -> dict | None:
         return None
 
 
-def orient() -> str:
+def orient(debug: bool = False) -> str | tuple[str, dict]:
     """Pull recent context from Postgres and format as system prompt enrichment.
 
     Returns a string to append to the static system prompt, or empty string
     if the DB is unavailable (graceful degradation — chat still works without
     memory, it just starts cold).
+
+    When debug=True, returns (prompt_string, diagnostics_dict) instead.
+    The diagnostics dict contains timing, query details, result counts,
+    and what got loaded vs discarded — the MRI view of the orient pipeline.
     """
+    import time as _time
+
+    diag = (
+        {
+            "orient_start": _time.time(),
+            "sections": [],
+            "errors": [],
+            "total_memories_loaded": 0,
+            "total_moments_loaded": 0,
+            "memory_reach_days": 0,
+        }
+        if debug
+        else None
+    )
+
     try:
         import psycopg2
     except ImportError:
         logger.warning("psycopg2 not installed — running without memory orientation")
+        if debug:
+            diag["errors"].append("psycopg2 not installed")
+            return "", diag
         return ""
 
     try:
+        t_conn = _time.time() if debug else 0
         config = _get_db_config()
         conn = psycopg2.connect(**config)
+        if debug:
+            diag["db_connect_ms"] = round((_time.time() - t_conn) * 1000, 1)
     except Exception as e:
         logger.warning(f"DB connection failed — running without memory: {e}")
+        if debug:
+            diag["errors"].append(f"DB connection failed: {e}")
+            return "", diag
         return ""
 
     try:
         sections = []
 
         # 1. Identity memories — who I am (stable, not time-filtered)
+        t0 = _time.time() if debug else 0
         identity = _query_memories(
             conn,
             memory_types=["position", "value", "self_observation"],
             limit=10,
         )
+        if debug:
+            diag["sections"].append(
+                {
+                    "name": "identity",
+                    "query_ms": round((_time.time() - t0) * 1000, 1),
+                    "types": ["position", "value", "self_observation"],
+                    "limit": 10,
+                    "returned": len(identity),
+                    "loaded": len(identity),
+                }
+            )
+            diag["total_memories_loaded"] += len(identity)
+
         if identity:
             lines = [_format_memory(m) for m in identity]
             sections.append("## Who you are (from memory)\n" + "\n".join(lines))
 
         # 2. Recent memories — what's been happening (last 7 days)
+        t0 = _time.time() if debug else 0
         recent = _query_memories(
             conn,
             memory_types=[
@@ -304,6 +347,21 @@ def orient() -> str:
             limit=15,
             since_hours=168,  # 7 days
         )
+        if debug:
+            diag["sections"].append(
+                {
+                    "name": "recent_memories",
+                    "query_ms": round((_time.time() - t0) * 1000, 1),
+                    "types": ["observation", "insight", "reflection", "question", "intention"],
+                    "limit": 15,
+                    "since_hours": 168,
+                    "filter": "created_at >= now() - 7 days",
+                    "returned": len(recent),
+                    "loaded": len(recent),
+                }
+            )
+            diag["total_memories_loaded"] += len(recent)
+
         if recent:
             # Reverse to chronological order
             recent.reverse()
@@ -311,42 +369,112 @@ def orient() -> str:
             sections.append("## Recent context (last 48 hours)\n" + "\n".join(lines))
 
         # 3. Bridge logs — letters between channels (last 14 days, up to 8)
+        t0 = _time.time() if debug else 0
         bridge_logs = _query_memories(
             conn,
             memory_types=["bridge_log"],
             limit=8,
             since_hours=336,  # 14 days
         )
+        if debug:
+            diag["sections"].append(
+                {
+                    "name": "bridge_logs",
+                    "query_ms": round((_time.time() - t0) * 1000, 1),
+                    "types": ["bridge_log"],
+                    "limit": 8,
+                    "since_hours": 336,
+                    "returned": len(bridge_logs),
+                    "loaded": len(bridge_logs),
+                }
+            )
+
         if bridge_logs:
             bridge_logs.reverse()
             lines = [_format_memory(m) for m in bridge_logs]
             sections.append("## From other channels (bridge logs)\n" + "\n".join(lines))
 
-        # 4. Recent moments — shared experiences (last 7 days, if any)
+        # 4. Recent moments — shared experiences
+        # Use occurred_at if the column exists, fall back to created_at
         try:
+            t0 = _time.time() if debug else 0
             cur = conn.cursor()
-            cutoff = datetime.now(UTC) - timedelta(days=7)
-            cur.execute(
-                """
-                SELECT title, summary, hooks, date, channel
-                FROM moments
-                WHERE created_at >= %s
-                ORDER BY date DESC
-                LIMIT 5
-                """,
-                (cutoff,),
-            )
+
+            # Check if occurred_at column exists
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'moments' AND column_name = 'occurred_at'
+                )
+            """)
+            has_occurred_at = cur.fetchone()[0]
+
+            if has_occurred_at:
+                # Use occurred_at for temporal filtering — this is the fix for
+                # backfilled memories that have old occurred_at but recent created_at
+                cur.execute(
+                    """
+                    SELECT title, summary, hooks, date, channel, occurred_at, created_at
+                    FROM moments
+                    ORDER BY occurred_at DESC
+                    LIMIT 10
+                    """,
+                )
+                temporal_filter = "ORDER BY occurred_at DESC LIMIT 10 (no time cutoff)"
+            else:
+                # Legacy path — filter by created_at with 7-day window
+                cutoff = datetime.now(UTC) - timedelta(days=7)
+                cur.execute(
+                    """
+                    SELECT title, summary, hooks, date, channel, created_at as occurred_at, created_at
+                    FROM moments
+                    WHERE created_at >= %s
+                    ORDER BY date DESC
+                    LIMIT 5
+                    """,
+                    (cutoff,),
+                )
+                temporal_filter = f"WHERE created_at >= {cutoff.isoformat()} LIMIT 5"
+
             columns = [desc[0] for desc in cur.description]
             moments = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
             cur.close()
+
+            if debug:
+                oldest_moment = None
+                if moments:
+                    dates = [
+                        m.get("occurred_at") or m.get("date") for m in moments if m.get("occurred_at") or m.get("date")
+                    ]
+                    if dates:
+                        oldest = min(d for d in dates if d is not None)
+                        if hasattr(oldest, "isoformat"):
+                            oldest_moment = oldest.isoformat()
+                            days_back = (
+                                datetime.now(UTC)
+                                - oldest.replace(tzinfo=UTC if oldest.tzinfo is None else oldest.tzinfo)
+                            ).days
+                            diag["memory_reach_days"] = days_back
+
+                diag["sections"].append(
+                    {
+                        "name": "moments",
+                        "query_ms": round((_time.time() - t0) * 1000, 1),
+                        "has_occurred_at": has_occurred_at,
+                        "temporal_filter": temporal_filter,
+                        "returned": len(moments),
+                        "loaded": len(moments),
+                        "oldest_moment": oldest_moment,
+                        "titles": [m["title"] for m in moments],
+                    }
+                )
+                diag["total_moments_loaded"] = len(moments)
 
             if moments:
                 lines = []
                 for m in moments:
                     date_str = m["date"].strftime("%b %d") if hasattr(m["date"], "strftime") else str(m["date"])
                     channel = f" ({m['channel']})" if m.get("channel") else ""
-                    # Summary is the felt experience — full scene, with sanity ceiling
-                    # to guard against pathological rows inflating prompt size
                     summary = m["summary"][:2000] if len(m["summary"]) > 2000 else m["summary"]
                     entry = f"- {date_str}{channel}: **{m['title']}** — {summary}"
                     if m.get("hooks"):
@@ -356,14 +484,28 @@ def orient() -> str:
                 sections.append("## Recent shared moments\n" + "\n".join(lines))
         except Exception as e:
             logger.warning(f"Moments query failed (table may not exist yet): {e}")
+            if debug:
+                diag["errors"].append(f"Moments query failed: {e}")
 
         conn.close()
 
+        if debug:
+            diag["orient_total_ms"] = round((_time.time() - diag["orient_start"]) * 1000, 1)
+            del diag["orient_start"]
+
         if not sections:
+            if debug:
+                return "", diag
             return ""
 
         header = "\n\n---\n\n# Memory orientation (live from Postgres)\n\n"
-        return header + "\n\n".join(sections)
+        result = header + "\n\n".join(sections)
+
+        if debug:
+            diag["prompt_chars"] = len(result)
+            diag["prompt_tokens_est"] = len(result) // 4
+            return result, diag
+        return result
 
     except Exception as e:
         logger.warning(f"Memory orientation failed: {e}")
@@ -371,6 +513,12 @@ def orient() -> str:
             conn.close()
         except Exception:
             pass
+        if debug:
+            diag["errors"].append(f"Orient failed: {e}")
+            diag["orient_total_ms"] = (
+                round((_time.time() - diag["orient_start"]) * 1000, 1) if "orient_start" in diag else 0
+            )
+            return "", diag
         return ""
 
 
@@ -524,13 +672,15 @@ def surface_relevant_moments(
     max_vivid: int = 1,
     vivid_threshold: float = 0.55,
     recall_threshold: float = 0.35,
-) -> str:
+    debug: bool = False,
+) -> str | tuple[str, dict]:
     """Build a contextual memory section based on the user's current message.
 
     This is the main entry point for Phase 3 — called before each LLM request
     to enrich the system prompt with semantically relevant moments.
 
     Returns a formatted string to append to the system prompt, or empty string.
+    When debug=True, returns (prompt_string, diagnostics_dict).
 
     Tiers:
     - **Recall** (similarity >= recall_threshold): Full scene summary included.
@@ -544,10 +694,22 @@ def surface_relevant_moments(
     import time
 
     t0 = time.monotonic()
+    recall_diag = None
+
     moments = recall(user_message, limit=max_recall, similarity_threshold=recall_threshold)
     if not moments:
         elapsed = (time.monotonic() - t0) * 1000
         logger.info(f"surface_relevant_moments: no results ({elapsed:.0f}ms)")
+        if debug:
+            return "", {
+                "query": user_message[:100],
+                "recall_ms": round(elapsed, 1),
+                "recall_threshold": recall_threshold,
+                "vivid_threshold": vivid_threshold,
+                "moments_found": 0,
+                "moments_above_threshold": 0,
+                "vivid_candidate": None,
+            }
         return ""
 
     sections = []
@@ -607,7 +769,32 @@ def surface_relevant_moments(
         f"surface_relevant_moments: {len(moments)} moments, "
         f"vivid={'yes' if vivid_candidate else 'no'} ({elapsed:.0f}ms)"
     )
-    return "\n\n".join(sections)
+    result = "\n\n".join(sections)
+
+    if debug:
+        recall_diag = {
+            "query": user_message[:100],
+            "recall_ms": round(elapsed, 1),
+            "recall_threshold": recall_threshold,
+            "vivid_threshold": vivid_threshold,
+            "moments_found": len(moments),
+            "moments": [
+                {
+                    "title": m["title"],
+                    "similarity": round(m["similarity"], 3),
+                    "date": str(m.get("date", "")),
+                    "has_transcript": m.get("has_transcript", False),
+                    "above_vivid": m["similarity"] >= vivid_threshold,
+                }
+                for m in moments
+            ],
+            "vivid_candidate": vivid_candidate["title"] if vivid_candidate else None,
+            "result_chars": len(result),
+            "result_tokens_est": len(result) // 4,
+        }
+        return result, recall_diag
+
+    return result
 
 
 # ---------------------------------------------------------------------------
