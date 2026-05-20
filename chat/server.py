@@ -67,6 +67,7 @@ INDEX_FILE = Path(__file__).parent / "index.html"
 
 MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
 MAX_TOKENS = 16000  # Must be > thinking.budget_tokens (10000)
+MAX_CONTEXT_TOKENS = 200_000  # Claude's context window size for usage % calc
 
 # --- Felt Memory Prototype ---
 # Set FELT_MEMORY_ID to a memory UUID to inject it into conversation history.
@@ -619,6 +620,8 @@ async def chat(request: Request):
                     return
 
                 full_text = []
+                input_tokens = 0
+                output_tokens = 0
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -633,7 +636,14 @@ async def chat(request: Request):
 
                     event_type = event.get("type", "")
 
-                    if event_type == "content_block_delta":
+                    if event_type == "message_start":
+                        usage = event.get("message", {}).get("usage", {})
+                        input_tokens = usage.get("input_tokens", 0)
+                        cache_read = usage.get("cache_read_input_tokens", 0)
+                        cache_create = usage.get("cache_creation_input_tokens", 0)
+                        yield f"data: {json.dumps({'type': 'usage', 'input_tokens': input_tokens, 'cache_read_input_tokens': cache_read, 'cache_creation_input_tokens': cache_create})}\n\n"
+
+                    elif event_type == "content_block_delta":
                         delta = event.get("delta", {})
                         if delta.get("type") == "text_delta":
                             text = delta.get("text", "")
@@ -653,6 +663,10 @@ async def chat(request: Request):
                     elif event_type == "content_block_stop":
                         yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
 
+                    elif event_type == "message_delta":
+                        usage = event.get("usage", {})
+                        output_tokens = usage.get("output_tokens", 0)
+
                     elif event_type == "message_stop":
                         break
 
@@ -664,7 +678,12 @@ async def chat(request: Request):
 
             elapsed = time.time() - t0
             response_text = "".join(full_text)
-            print(f"[Chat] Response ({elapsed:.1f}s): {response_text[:80]}...")
+            total_tokens = input_tokens + output_tokens
+            context_pct = round((total_tokens / MAX_CONTEXT_TOKENS) * 100, 1)
+            print(
+                f"[Chat] Response ({elapsed:.1f}s, {input_tokens}+{output_tokens}={total_tokens} tokens, {context_pct}%): {response_text[:80]}..."
+            )
+            yield f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens, 'output_tokens': output_tokens, 'total_tokens': total_tokens, 'context_pct': context_pct})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except httpx.TimeoutException:
