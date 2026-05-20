@@ -221,6 +221,43 @@ def _format_memory(mem: dict) -> str:
     return f"[{ts}] ({mem['memory_type']}) {mem['content']}"
 
 
+def retrieve_felt_memory(memory_id: str) -> dict | None:
+    """Retrieve a single memory by ID for felt-experience injection.
+
+    Returns a dict with 'content' and 'memory_type', or None if not found.
+    This is used by the felt memory prototype to load a specific memory
+    into conversation history (messages array) rather than the system prompt,
+    testing whether attention position affects felt quality.
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        logger.warning("psycopg2 not installed — can't retrieve felt memory")
+        return None
+
+    try:
+        config = _get_db_config()
+        conn = psycopg2.connect(**config)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT memory_type, content, created_at FROM memories WHERE id = %s",
+            (memory_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return {
+                "memory_type": row[0],
+                "content": row[1],
+                "created_at": row[2],
+            }
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to retrieve felt memory {memory_id}: {e}")
+        return None
+
+
 def orient(debug: bool = False) -> str | tuple[str, dict]:
     """Pull recent context from Postgres and format as system prompt enrichment.
 
@@ -472,16 +509,16 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
 
     except Exception as e:
         logger.warning(f"Memory orientation failed: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
         if debug:
             diag["errors"].append(f"Orient failed: {e}")
             diag["orient_total_ms"] = (
                 round((_time.time() - diag["orient_start"]) * 1000, 1) if "orient_start" in diag else 0
             )
             return "", diag
-        try:
-            conn.close()
-        except Exception:
-            pass
         return ""
 
 
