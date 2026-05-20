@@ -556,6 +556,7 @@ async def vitals(request: Request):
         # Memory reach in days
         if oldest_moment:
             from datetime import date
+
             reach_days = (date.today() - date.fromisoformat(oldest_moment)).days
         else:
             reach_days = 0
@@ -563,6 +564,7 @@ async def vitals(request: Request):
         # Orient latency test
         t0 = _time.time()
         from memory import orient
+
         orient_result = orient()
         orient_ms = round((_time.time() - t0) * 1000, 1)
         orient_chars = len(orient_result)
@@ -585,22 +587,24 @@ async def vitals(request: Request):
         cur.close()
         conn.close()
 
-        return JSONResponse({
-            "total_memories": total_memories,
-            "total_moments": total_moments,
-            "moments_with_embeddings": moments_with_embeddings,
-            "moments_with_transcripts": moments_with_transcripts,
-            "memory_reach": {
-                "oldest": oldest_moment,
-                "newest": newest_moment,
-                "days": reach_days,
-            },
-            "orient_latency_ms": orient_ms,
-            "orient_chars": orient_chars,
-            "orient_tokens_est": orient_chars // 4,
-            "db_connect_ms": connect_ms,
-            "duplicates": duplicates,
-        })
+        return JSONResponse(
+            {
+                "total_memories": total_memories,
+                "total_moments": total_moments,
+                "moments_with_embeddings": moments_with_embeddings,
+                "moments_with_transcripts": moments_with_transcripts,
+                "memory_reach": {
+                    "oldest": oldest_moment,
+                    "newest": newest_moment,
+                    "days": reach_days,
+                },
+                "orient_latency_ms": orient_ms,
+                "orient_chars": orient_chars,
+                "orient_tokens_est": orient_chars // 4,
+                "db_connect_ms": connect_ms,
+                "duplicates": duplicates,
+            }
+        )
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -632,9 +636,7 @@ async def debug_orient(request: Request):
     }
 
     if query:
-        recall_result, recall_diag = await asyncio.to_thread(
-            surface_relevant_moments, query, 5, 1, 0.55, 0.35, True
-        )
+        recall_result, recall_diag = await asyncio.to_thread(surface_relevant_moments, query, 5, 1, 0.55, 0.35, True)
         result["recall"] = recall_diag
         result["recall_prompt_preview"] = recall_result[:500] + "..." if len(recall_result) > 500 else recall_result
 

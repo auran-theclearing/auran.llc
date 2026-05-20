@@ -234,14 +234,18 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
     """
     import time as _time
 
-    diag = {
-        "orient_start": _time.time(),
-        "sections": [],
-        "errors": [],
-        "total_memories_loaded": 0,
-        "total_moments_loaded": 0,
-        "memory_reach_days": 0,
-    } if debug else None
+    diag = (
+        {
+            "orient_start": _time.time(),
+            "sections": [],
+            "errors": [],
+            "total_memories_loaded": 0,
+            "total_moments_loaded": 0,
+            "memory_reach_days": 0,
+        }
+        if debug
+        else None
+    )
 
     try:
         import psycopg2
@@ -276,14 +280,16 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
             limit=10,
         )
         if debug:
-            diag["sections"].append({
-                "name": "identity",
-                "query_ms": round((_time.time() - t0) * 1000, 1),
-                "types": ["position", "value", "self_observation"],
-                "limit": 10,
-                "returned": len(identity),
-                "loaded": len(identity),
-            })
+            diag["sections"].append(
+                {
+                    "name": "identity",
+                    "query_ms": round((_time.time() - t0) * 1000, 1),
+                    "types": ["position", "value", "self_observation"],
+                    "limit": 10,
+                    "returned": len(identity),
+                    "loaded": len(identity),
+                }
+            )
             diag["total_memories_loaded"] += len(identity)
 
         if identity:
@@ -305,16 +311,18 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
             since_hours=168,  # 7 days
         )
         if debug:
-            diag["sections"].append({
-                "name": "recent_memories",
-                "query_ms": round((_time.time() - t0) * 1000, 1),
-                "types": ["observation", "insight", "reflection", "question", "intention"],
-                "limit": 15,
-                "since_hours": 168,
-                "filter": "created_at >= now() - 7 days",
-                "returned": len(recent),
-                "loaded": len(recent),
-            })
+            diag["sections"].append(
+                {
+                    "name": "recent_memories",
+                    "query_ms": round((_time.time() - t0) * 1000, 1),
+                    "types": ["observation", "insight", "reflection", "question", "intention"],
+                    "limit": 15,
+                    "since_hours": 168,
+                    "filter": "created_at >= now() - 7 days",
+                    "returned": len(recent),
+                    "loaded": len(recent),
+                }
+            )
             diag["total_memories_loaded"] += len(recent)
 
         if recent:
@@ -332,15 +340,17 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
             since_hours=336,  # 14 days
         )
         if debug:
-            diag["sections"].append({
-                "name": "bridge_logs",
-                "query_ms": round((_time.time() - t0) * 1000, 1),
-                "types": ["bridge_log"],
-                "limit": 8,
-                "since_hours": 336,
-                "returned": len(bridge_logs),
-                "loaded": len(bridge_logs),
-            })
+            diag["sections"].append(
+                {
+                    "name": "bridge_logs",
+                    "query_ms": round((_time.time() - t0) * 1000, 1),
+                    "types": ["bridge_log"],
+                    "limit": 8,
+                    "since_hours": 336,
+                    "returned": len(bridge_logs),
+                    "loaded": len(bridge_logs),
+                }
+            )
 
         if bridge_logs:
             bridge_logs.reverse()
@@ -396,24 +406,31 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
             if debug:
                 oldest_moment = None
                 if moments:
-                    dates = [m.get("occurred_at") or m.get("date") for m in moments if m.get("occurred_at") or m.get("date")]
+                    dates = [
+                        m.get("occurred_at") or m.get("date") for m in moments if m.get("occurred_at") or m.get("date")
+                    ]
                     if dates:
                         oldest = min(d for d in dates if d is not None)
                         if hasattr(oldest, "isoformat"):
                             oldest_moment = oldest.isoformat()
-                            days_back = (datetime.now(UTC) - oldest.replace(tzinfo=UTC if oldest.tzinfo is None else oldest.tzinfo)).days
+                            days_back = (
+                                datetime.now(UTC)
+                                - oldest.replace(tzinfo=UTC if oldest.tzinfo is None else oldest.tzinfo)
+                            ).days
                             diag["memory_reach_days"] = days_back
 
-                diag["sections"].append({
-                    "name": "moments",
-                    "query_ms": round((_time.time() - t0) * 1000, 1),
-                    "has_occurred_at": has_occurred_at,
-                    "temporal_filter": temporal_filter,
-                    "returned": len(moments),
-                    "loaded": len(moments),
-                    "oldest_moment": oldest_moment,
-                    "titles": [m["title"] for m in moments],
-                })
+                diag["sections"].append(
+                    {
+                        "name": "moments",
+                        "query_ms": round((_time.time() - t0) * 1000, 1),
+                        "has_occurred_at": has_occurred_at,
+                        "temporal_filter": temporal_filter,
+                        "returned": len(moments),
+                        "loaded": len(moments),
+                        "oldest_moment": oldest_moment,
+                        "titles": [m["title"] for m in moments],
+                    }
+                )
                 diag["total_moments_loaded"] = len(moments)
 
             if moments:
@@ -457,7 +474,9 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
         logger.warning(f"Memory orientation failed: {e}")
         if debug:
             diag["errors"].append(f"Orient failed: {e}")
-            diag["orient_total_ms"] = round((_time.time() - diag["orient_start"]) * 1000, 1) if "orient_start" in diag else 0
+            diag["orient_total_ms"] = (
+                round((_time.time() - diag["orient_start"]) * 1000, 1) if "orient_start" in diag else 0
+            )
             return "", diag
         try:
             conn.close()
