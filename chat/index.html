@@ -446,7 +446,7 @@ function estimateTokens(messages) {
 let autoSaveTriggered = false;
 let lastSaveHash = '';  // Prevent duplicate saves of same conversation
 
-function updateContextBar(fromApi) {
+function updateContextBar() {
   let pct, label;
   if (hasRealUsage) {
     pct = Math.min(realContextPct, 100);
@@ -765,7 +765,7 @@ async function sendMessage() {
             realTotalTokens = event.total_tokens || 0;
             realContextPct = event.context_pct || 0;
             hasRealUsage = true;
-            updateContextBar(true);
+            updateContextBar();
           } else if (event.type === 'error') {
             contentEl.textContent = fullText + '\n\n[Error: ' + event.error + ']';
             msgDiv.classList.add('error');
@@ -885,7 +885,7 @@ async function exportTranscript() {
   lines.push(`start: ${fmtTime(startDate)}`);
   lines.push(`end: ${fmtTime(endDate)}`);
   lines.push(`duration: ${durationStr}`);
-  lines.push(`model: claude-opus-4-6`);
+  lines.push(`model: claude-opus-4-6`);  // TODO: get model from server usage_final event
   lines.push(`messages: ${history.length}`);
   lines.push(`context: ${hasRealUsage ? realContextPct + '% (' + realTotalTokens + ' tokens)' : '~' + Math.round(estimateTokens(history)/1000) + 'k (estimate)'}`);
   lines.push(`tags: []`);
@@ -963,6 +963,8 @@ async function newChat() {
   if (history.length < 2) {
     history = [];
     messagesEl.innerHTML = '';
+    hasRealUsage = false;
+    realInputTokens = realOutputTokens = realTotalTokens = realContextPct = 0;
     saveHistory();
     updateContextBar();
     inputEl.focus();
@@ -977,6 +979,8 @@ async function newChat() {
   messagesEl.innerHTML = '';
   lastSaveHash = '';
   autoSaveTriggered = false;
+  hasRealUsage = false;
+  realInputTokens = realOutputTokens = realTotalTokens = realContextPct = 0;
   sessionVersion = Date.now();  // Bump version so other devices pick up the new chat
   saveHistory();  // Clears local + syncs empty to server
   updateContextBar();
