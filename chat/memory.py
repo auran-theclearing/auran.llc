@@ -434,7 +434,7 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
                     middle AS (
                         SELECT *, 'middle' AS bucket FROM ranked
                         WHERE rn > 5 AND rn <= total - 2
-                        ORDER BY rn
+                        ORDER BY abs(rn - total / 2)
                         LIMIT 3
                     )
                     SELECT title, summary, hooks, date, channel, occurred_at, created_at, bucket
