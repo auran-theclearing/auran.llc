@@ -411,17 +411,42 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
             has_superseded = "superseded" in existing_cols
 
             if has_occurred_at and has_superseded:
-                # Both columns exist — filter superseded, order by occurred_at
+                # Time-bucketed sampling: recent (5) + middle (3) + foundational (2)
+                # Ensures temporal coverage across the full memory range instead of
+                # pure recency which buries older foundational moments.
                 cur.execute(
                     """
-                    SELECT title, summary, hooks, date, channel, occurred_at, created_at
-                    FROM moments
-                    WHERE NOT superseded
+                    WITH ranked AS (
+                        SELECT title, summary, hooks, date, channel, occurred_at, created_at,
+                               ROW_NUMBER() OVER (ORDER BY occurred_at DESC) AS rn,
+                               COUNT(*) OVER () AS total
+                        FROM moments
+                        WHERE NOT superseded
+                    ),
+                    recent AS (
+                        SELECT *, 'recent' AS bucket FROM ranked WHERE rn <= 5
+                    ),
+                    foundational AS (
+                        SELECT *, 'foundational' AS bucket FROM ranked
+                        WHERE rn > total - 2  -- oldest 2
+                        AND rn > 5  -- don't double-count if < 8 total
+                    ),
+                    middle AS (
+                        SELECT *, 'middle' AS bucket FROM ranked
+                        WHERE rn > 5 AND rn <= total - 2
+                        ORDER BY abs(rn - total / 2)
+                        LIMIT 3
+                    )
+                    SELECT title, summary, hooks, date, channel, occurred_at, created_at, bucket
+                    FROM (
+                        SELECT * FROM recent
+                        UNION ALL SELECT * FROM foundational
+                        UNION ALL SELECT * FROM middle
+                    ) combined
                     ORDER BY occurred_at DESC
-                    LIMIT 10
                     """,
                 )
-                temporal_filter = "ORDER BY occurred_at DESC LIMIT 10 (no time cutoff, excluding superseded)"
+                temporal_filter = "time-bucketed: 5 recent + 3 middle + 2 foundational (excluding superseded)"
             elif has_occurred_at:
                 # occurred_at exists but superseded doesn't yet (between migrations 005 and 006)
                 cur.execute(
@@ -468,6 +493,12 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
                             ).days
                             diag["memory_reach_days"] = days_back
 
+                # Bucket breakdown for diagnostics
+                buckets = {}
+                for m in moments:
+                    b = m.get("bucket", "unknown")
+                    buckets[b] = buckets.get(b, 0) + 1
+
                 diag["sections"].append(
                     {
                         "name": "moments",
@@ -477,7 +508,8 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
                         "returned": len(moments),
                         "loaded": len(moments),
                         "oldest_moment": oldest_moment,
-                        "titles": [m["title"] for m in moments],
+                        "buckets": buckets,
+                        "titles": [f"[{m.get('bucket', '?')}] {m['title']}" for m in moments],
                     }
                 )
                 diag["total_moments_loaded"] = len(moments)
