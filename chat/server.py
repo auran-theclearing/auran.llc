@@ -26,7 +26,9 @@ import base64
 import json
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -539,16 +541,41 @@ async def vitals(request: Request):
         cur.execute("SELECT COUNT(*) FROM memories")
         total_memories = cur.fetchone()[0]
 
-        # Total moments
-        cur.execute("SELECT COUNT(*) FROM moments")
-        total_moments = cur.fetchone()[0]
-
-        # Memory reach — oldest moment date
+        # Check if superseded column exists (migration 006)
         cur.execute("""
-            SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
-                   MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
-            FROM moments
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'moments' AND column_name = 'superseded'
+            )
         """)
+        has_superseded = cur.fetchone()[0]
+
+        # Total moments (active vs superseded)
+        if has_superseded:
+            cur.execute("SELECT COUNT(*) FROM moments WHERE NOT superseded")
+            active_moments = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM moments WHERE superseded = TRUE")
+            superseded_moments = cur.fetchone()[0]
+        else:
+            cur.execute("SELECT COUNT(*) FROM moments")
+            active_moments = cur.fetchone()[0]
+            superseded_moments = 0
+        total_moments = active_moments + superseded_moments
+
+        # Memory reach — oldest moment date (active only)
+        if has_superseded:
+            cur.execute("""
+                SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
+                       MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
+                FROM moments
+                WHERE NOT superseded
+            """)
+        else:
+            cur.execute("""
+                SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
+                       MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
+                FROM moments
+            """)
         row = cur.fetchone()
         oldest_moment = str(row[0]) if row[0] else None
         newest_moment = str(row[1]) if row[1] else None
@@ -587,10 +614,15 @@ async def vitals(request: Request):
         cur.close()
         conn.close()
 
+        now_utc = datetime.now(UTC)
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+
         return JSONResponse(
             {
                 "total_memories": total_memories,
                 "total_moments": total_moments,
+                "active_moments": active_moments,
+                "superseded_moments": superseded_moments,
                 "moments_with_embeddings": moments_with_embeddings,
                 "moments_with_transcripts": moments_with_transcripts,
                 "memory_reach": {
@@ -603,6 +635,12 @@ async def vitals(request: Request):
                 "orient_tokens_est": orient_chars // 4,
                 "db_connect_ms": connect_ms,
                 "duplicates": duplicates,
+                "current_time": {
+                    "utc": now_utc.isoformat(),
+                    "eastern": now_et.isoformat(),
+                    "date": now_et.strftime("%Y-%m-%d"),
+                    "day": now_et.strftime("%A"),
+                },
             }
         )
 
