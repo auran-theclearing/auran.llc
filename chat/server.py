@@ -552,7 +552,7 @@ async def vitals(request: Request):
 
         # Total moments (active vs superseded)
         if has_superseded:
-            cur.execute("SELECT COUNT(*) FROM moments WHERE (NOT superseded OR superseded IS NULL)")
+            cur.execute("SELECT COUNT(*) FROM moments WHERE NOT superseded")
             active_moments = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM moments WHERE superseded = TRUE")
             superseded_moments = cur.fetchone()[0]
@@ -568,7 +568,7 @@ async def vitals(request: Request):
                 SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
                        MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
                 FROM moments
-                WHERE (NOT superseded OR superseded IS NULL)
+                WHERE NOT superseded
             """)
         else:
             cur.execute("""
@@ -632,12 +632,14 @@ async def vitals(request: Request):
                 "orient_tokens_est": orient_chars // 4,
                 "db_connect_ms": connect_ms,
                 "duplicates": duplicates,
-                "current_time": {
-                    "utc": datetime.now(UTC).isoformat(),
-                    "eastern": datetime.now(ZoneInfo("America/New_York")).isoformat(),
-                    "date": datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d"),
-                    "day": datetime.now(ZoneInfo("America/New_York")).strftime("%A"),
-                },
+                "current_time": (
+                    lambda now_utc=datetime.now(UTC), now_et=datetime.now(ZoneInfo("America/New_York")): {
+                        "utc": now_utc.isoformat(),
+                        "eastern": now_et.isoformat(),
+                        "date": now_et.strftime("%Y-%m-%d"),
+                        "day": now_et.strftime("%A"),
+                    }
+                )(),
             }
         )
 

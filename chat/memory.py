@@ -415,7 +415,7 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
                     """
                     SELECT title, summary, hooks, date, channel, occurred_at, created_at
                     FROM moments
-                    WHERE (NOT superseded OR superseded IS NULL)
+                    WHERE NOT superseded
                     ORDER BY occurred_at DESC
                     LIMIT 10
                     """,
@@ -586,7 +586,7 @@ def recall(
                        1 - (embedding <=> %s::vector) AS similarity
                 FROM moments
                 WHERE embedding IS NOT NULL
-                  AND (NOT superseded OR superseded IS NULL)
+                  AND NOT superseded
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s
                 """,

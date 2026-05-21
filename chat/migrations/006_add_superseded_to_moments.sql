@@ -28,8 +28,10 @@ BEGIN
     END IF;
 END $$;
 
--- Index for orient query performance (most queries filter on NOT superseded)
-CREATE INDEX IF NOT EXISTS idx_moments_superseded ON moments (superseded) WHERE NOT superseded;
+-- Partial index for orient query: covers WHERE NOT superseded ORDER BY occurred_at DESC
+DROP INDEX IF EXISTS idx_moments_superseded;
+CREATE INDEX IF NOT EXISTS idx_moments_active_occurred
+    ON moments (occurred_at DESC) WHERE NOT superseded;
 
--- Foreign key: superseded_by must reference an existing moment
--- (no constraint — moments may be in different states during migration)
+-- No FK constraint on superseded_by — keeps backfill/migration flexible
+-- (caller is responsible for valid references)
