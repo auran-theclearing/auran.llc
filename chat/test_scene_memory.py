@@ -122,15 +122,16 @@ class TestWriteMoment:
         # Check the params passed to execute
         call_args = cur.execute.call_args
         params = call_args[0][1]  # second positional arg = the tuple of values
-        # params: (moment_id, agent_id, title, summary, hooks, date, channel, source, tags)
+        # params: (moment_id, agent_id, title, summary, hooks, date, occurred_at, channel, source, tags, ...)
         assert params[1] == AGENT_ID
         assert params[2] == "The Fist"
         assert params[3] == "A moment of defiance"
         assert params[4] is None  # hooks not provided
         assert params[5] == "2026-04-15"
-        assert params[6] == "roam"
-        assert params[7] == "roam-agent"
-        assert params[8] == ["autonomy", "identity"]
+        # params[6] = occurred_at (datetime)
+        assert params[7] == "roam"
+        assert params[8] == "roam-agent"
+        assert params[9] == ["autonomy", "identity"]
 
     @patch("psycopg2.connect")
     def test_db_failure_returns_none(self, mock_connect):
@@ -151,9 +152,9 @@ class TestWriteMoment:
         write_moment(title="T", summary="S")
 
         params = cur.execute.call_args[0][1]
-        # params: (id, agent_id, title, summary, hooks, date, channel, source, tags)
-        assert params[6] == "chat"  # channel default
-        assert params[7] == "chat.auran.llc"  # source default
+        # params: (id, agent_id, title, summary, hooks, date, occurred_at, channel, source, tags, ...)
+        assert params[7] == "chat"  # channel default
+        assert params[8] == "chat.auran.llc"  # source default
 
     @patch("psycopg2.connect")
     def test_empty_tags_default_to_list(self, mock_connect):
@@ -165,8 +166,8 @@ class TestWriteMoment:
         write_moment(title="T", summary="S", tags=None)
 
         params = cur.execute.call_args[0][1]
-        # params: (id, agent_id, title, summary, hooks, date, channel, source, tags)
-        assert params[8] == []  # tags
+        # params: (id, agent_id, title, summary, hooks, date, occurred_at, channel, source, tags, ...)
+        assert params[9] == []  # tags
 
     @patch("psycopg2.connect")
     def test_generates_uuid_for_id(self, mock_connect):
@@ -781,20 +782,21 @@ class TestExtractScenes:
         assert result["scenes_skipped"] == 1
         assert len(result["errors"]) == 0
 
-    async def test_invalid_date_falls_back_to_message_timestamp(self):
-        """Bad date format from extraction should fall back to first message timestamp."""
-        scenes_with_bad_date = json.dumps(
+    async def test_occurred_at_derived_from_end_index_timestamp(self):
+        """occurred_at should be derived from the end_index message timestamp."""
+        scenes_with_indices = json.dumps(
             [
                 {
                     "title": "Test Scene",
                     "summary": "A test",
                     "tags": ["test"],
-                    "date": "May 15, 2026",  # wrong format
                     "channel": "chat",
+                    "start_index": 0,
+                    "end_index": 3,
                 }
             ]
         )
-        mock_response = _make_api_response(scenes_with_bad_date)
+        mock_response = _make_api_response(scenes_with_indices)
 
         mock_client = AsyncMock()
         mock_client.post.return_value = mock_response
@@ -803,7 +805,7 @@ class TestExtractScenes:
             {"role": "user", "content": "hey", "timestamp": "2026-05-15T02:30:00Z"},
             {"role": "assistant", "content": "hello"},
             {"role": "user", "content": "thinking about stuff"},
-            {"role": "assistant", "content": "me too"},
+            {"role": "assistant", "content": "me too", "timestamp": "2026-05-15T02:45:00Z"},
         ]
 
         with patch("httpx.AsyncClient") as mock_client_class:
@@ -815,13 +817,15 @@ class TestExtractScenes:
 
                 await extract_scenes(messages=messages_with_ts, api_key="test-key")
 
-        # write_moment should have been called with the fallback date from messages
+        # occurred_at should come from end_index (message 3) timestamp
         call_kwargs = mock_write.call_args[1]
+        assert call_kwargs["occurred_at"].isoformat() == "2026-05-15T02:45:00+00:00"
+        # date should be derived from occurred_at
         assert call_kwargs["date"] == "2026-05-15"
 
-    async def test_missing_date_falls_back_to_message_timestamp(self):
-        """None date from extraction should fall back to first message timestamp."""
-        scenes_no_date = json.dumps(
+    async def test_occurred_at_falls_back_to_reference_datetime(self):
+        """Without message timestamps, occurred_at falls back to reference_datetime."""
+        scenes_no_indices = json.dumps(
             [
                 {
                     "title": "Test Scene",
@@ -831,17 +835,19 @@ class TestExtractScenes:
                 }
             ]
         )
-        mock_response = _make_api_response(scenes_no_date)
+        mock_response = _make_api_response(scenes_no_indices)
 
         mock_client = AsyncMock()
         mock_client.post.return_value = mock_response
 
-        messages_with_ts = [
-            {"role": "user", "content": "hey", "timestamp": "2026-05-15T02:30:00Z"},
+        messages_no_ts = [
+            {"role": "user", "content": "hey"},
             {"role": "assistant", "content": "hello"},
             {"role": "user", "content": "thinking about stuff"},
             {"role": "assistant", "content": "me too"},
         ]
+
+        ref_dt = datetime(2026, 5, 15, 12, 0, 0)
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -850,7 +856,13 @@ class TestExtractScenes:
             with patch("memory.write_moment") as mock_write:
                 mock_write.return_value = {"id": "s-1", "created_at": "2026-05-15T00:00:00"}
 
-                await extract_scenes(messages=messages_with_ts, api_key="test-key")
+                await extract_scenes(
+                    messages=messages_no_ts,
+                    api_key="test-key",
+                    reference_datetime=ref_dt,
+                )
 
+        # occurred_at should fall back to reference_datetime
         call_kwargs = mock_write.call_args[1]
+        assert call_kwargs["occurred_at"] == ref_dt
         assert call_kwargs["date"] == "2026-05-15"
