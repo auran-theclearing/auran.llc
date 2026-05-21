@@ -541,20 +541,41 @@ async def vitals(request: Request):
         cur.execute("SELECT COUNT(*) FROM memories")
         total_memories = cur.fetchone()[0]
 
+        # Check if superseded column exists (migration 006)
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'moments' AND column_name = 'superseded'
+            )
+        """)
+        has_superseded = cur.fetchone()[0]
+
         # Total moments (active vs superseded)
-        cur.execute("SELECT COUNT(*) FROM moments WHERE (NOT superseded OR superseded IS NULL)")
-        active_moments = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM moments WHERE superseded = TRUE")
-        superseded_moments = cur.fetchone()[0]
+        if has_superseded:
+            cur.execute("SELECT COUNT(*) FROM moments WHERE (NOT superseded OR superseded IS NULL)")
+            active_moments = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM moments WHERE superseded = TRUE")
+            superseded_moments = cur.fetchone()[0]
+        else:
+            cur.execute("SELECT COUNT(*) FROM moments")
+            active_moments = cur.fetchone()[0]
+            superseded_moments = 0
         total_moments = active_moments + superseded_moments
 
         # Memory reach — oldest moment date (active only)
-        cur.execute("""
-            SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
-                   MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
-            FROM moments
-            WHERE (NOT superseded OR superseded IS NULL)
-        """)
+        if has_superseded:
+            cur.execute("""
+                SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
+                       MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
+                FROM moments
+                WHERE (NOT superseded OR superseded IS NULL)
+            """)
+        else:
+            cur.execute("""
+                SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
+                       MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
+                FROM moments
+            """)
         row = cur.fetchone()
         oldest_moment = str(row[0]) if row[0] else None
         newest_moment = str(row[1]) if row[1] else None

@@ -400,19 +400,17 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
             t0 = _time.time() if debug else 0
             cur = conn.cursor()
 
-            # Check if occurred_at column exists
+            # Check which columns exist (occurred_at from migration 005, superseded from 006)
             cur.execute("""
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'moments' AND column_name = 'occurred_at'
-                )
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'moments' AND column_name IN ('occurred_at', 'superseded')
             """)
-            has_occurred_at = cur.fetchone()[0]
+            existing_cols = {row[0] for row in cur.fetchall()}
+            has_occurred_at = "occurred_at" in existing_cols
+            has_superseded = "superseded" in existing_cols
 
-            if has_occurred_at:
-                # Use occurred_at for temporal filtering, exclude superseded moments.
-                # Superseded moments are older extractions replaced by re-processing —
-                # they stay in the DB for lineage but don't appear in orient.
+            if has_occurred_at and has_superseded:
+                # Both columns exist — filter superseded, order by occurred_at
                 cur.execute(
                     """
                     SELECT title, summary, hooks, date, channel, occurred_at, created_at
@@ -423,6 +421,17 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
                     """,
                 )
                 temporal_filter = "ORDER BY occurred_at DESC LIMIT 10 (no time cutoff, excluding superseded)"
+            elif has_occurred_at:
+                # occurred_at exists but superseded doesn't yet (between migrations 005 and 006)
+                cur.execute(
+                    """
+                    SELECT title, summary, hooks, date, channel, occurred_at, created_at
+                    FROM moments
+                    ORDER BY occurred_at DESC
+                    LIMIT 10
+                    """,
+                )
+                temporal_filter = "ORDER BY occurred_at DESC LIMIT 10 (no time cutoff)"
             else:
                 # Legacy path — filter by created_at with 7-day window
                 cutoff = datetime.now(UTC) - timedelta(days=7)
@@ -559,20 +568,44 @@ def recall(
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        cur.execute(
-            """
-            SELECT id, title, summary, hooks, date, channel, tags,
-                   transcript_excerpt IS NOT NULL AS has_transcript,
-                   turn_count, estimated_tokens,
-                   1 - (embedding <=> %s::vector) AS similarity
-            FROM moments
-            WHERE embedding IS NOT NULL
-              AND (NOT superseded OR superseded IS NULL)
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-            """,
-            (query_embedding, query_embedding, limit),
-        )
+        # Check if superseded column exists (migration 006)
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'moments' AND column_name = 'superseded'
+            )
+        """)
+        has_superseded = cur.fetchone()[0]
+
+        if has_superseded:
+            cur.execute(
+                """
+                SELECT id, title, summary, hooks, date, channel, tags,
+                       transcript_excerpt IS NOT NULL AS has_transcript,
+                       turn_count, estimated_tokens,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM moments
+                WHERE embedding IS NOT NULL
+                  AND (NOT superseded OR superseded IS NULL)
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (query_embedding, query_embedding, limit),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id, title, summary, hooks, date, channel, tags,
+                       transcript_excerpt IS NOT NULL AS has_transcript,
+                       turn_count, estimated_tokens,
+                       1 - (embedding <=> %s::vector) AS similarity
+                FROM moments
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (query_embedding, query_embedding, limit),
+            )
 
         columns = [desc[0] for desc in cur.description]
         rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
