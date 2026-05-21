@@ -820,8 +820,8 @@ class TestExtractScenes:
         # occurred_at should come from end_index (message 3) timestamp
         call_kwargs = mock_write.call_args[1]
         assert call_kwargs["occurred_at"].isoformat() == "2026-05-15T02:45:00+00:00"
-        # date should be derived from occurred_at
-        assert call_kwargs["date"] == "2026-05-15"
+        # date derived in Eastern time — 2:45 AM UTC = 10:45 PM ET on May 14
+        assert call_kwargs["date"] == "2026-05-14"
 
     async def test_occurred_at_falls_back_to_reference_datetime(self):
         """Without message timestamps, occurred_at falls back to reference_datetime."""

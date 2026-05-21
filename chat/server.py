@@ -614,6 +614,9 @@ async def vitals(request: Request):
         cur.close()
         conn.close()
 
+        now_utc = datetime.now(UTC)
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+
         return JSONResponse(
             {
                 "total_memories": total_memories,
@@ -632,14 +635,12 @@ async def vitals(request: Request):
                 "orient_tokens_est": orient_chars // 4,
                 "db_connect_ms": connect_ms,
                 "duplicates": duplicates,
-                "current_time": (
-                    lambda now_utc=datetime.now(UTC), now_et=datetime.now(ZoneInfo("America/New_York")): {
-                        "utc": now_utc.isoformat(),
-                        "eastern": now_et.isoformat(),
-                        "date": now_et.strftime("%Y-%m-%d"),
-                        "day": now_et.strftime("%A"),
-                    }
-                )(),
+                "current_time": {
+                    "utc": now_utc.isoformat(),
+                    "eastern": now_et.isoformat(),
+                    "date": now_et.strftime("%Y-%m-%d"),
+                    "day": now_et.strftime("%A"),
+                },
             }
         )
 

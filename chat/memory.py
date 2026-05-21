@@ -18,6 +18,7 @@ import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("auran-chat.memory")
 
@@ -1585,8 +1586,9 @@ async def extract_scenes(
                 f"No message timestamp for scene '{title}' — using reference_datetime {reference_datetime.isoformat()}"
             )
 
-        # Derive date from occurred_at (not independently set)
-        scene_date = scene_occurred_at.strftime("%Y-%m-%d")
+        # Derive date in Eastern time — Olivia's felt frame.
+        # UTC strftime would tag a 10pm ET conversation as the next day.
+        scene_date = scene_occurred_at.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
         prepared.append(
             {
