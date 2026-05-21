@@ -26,7 +26,9 @@ import base64
 import json
 import os
 import time
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -609,6 +611,12 @@ async def vitals(request: Request):
                 "orient_tokens_est": orient_chars // 4,
                 "db_connect_ms": connect_ms,
                 "duplicates": duplicates,
+                "current_time": {
+                    "utc": datetime.now(UTC).isoformat(),
+                    "eastern": datetime.now(ZoneInfo("America/New_York")).isoformat(),
+                    "date": datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d"),
+                    "day": datetime.now(ZoneInfo("America/New_York")).strftime("%A"),
+                },
             }
         )
 
