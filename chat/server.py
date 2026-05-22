@@ -788,6 +788,7 @@ async def chat(request: Request):
     async def stream_response():
         """Stream Claude's response as SSE events."""
         t0 = time.time()
+        HEARTBEAT_INTERVAL = 15  # seconds
 
         # MRI debug mode: emit diagnostics before the LLM response starts
         if debug_diagnostics:
@@ -829,7 +830,31 @@ async def chat(request: Request):
                 full_text = []
                 input_tokens = 0
                 output_tokens = 0
-                async for line in resp.aiter_lines():
+                event_count = 0
+                line_iter = resp.aiter_lines().__aiter__()
+                while True:
+                    # Use wait_for so heartbeats fire during upstream stalls
+                    try:
+                        line = await asyncio.wait_for(
+                            line_iter.__anext__(),
+                            timeout=HEARTBEAT_INTERVAL,
+                        )
+                    except TimeoutError:
+                        # Upstream stalled — send keepalive and check disconnect
+                        yield ": keepalive\n\n"
+                        if await request.is_disconnected():
+                            print("[Chat] Client disconnected, stopping stream")
+                            return
+                        continue
+                    except StopAsyncIteration:
+                        break
+
+                    # Periodic disconnect check during normal flow
+                    event_count += 1
+                    if event_count % 20 == 0 and await request.is_disconnected():
+                        print("[Chat] Client disconnected, stopping stream")
+                        return
+
                     if not line.startswith("data: "):
                         continue
                     data_str = line[6:]
