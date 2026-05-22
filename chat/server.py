@@ -1105,7 +1105,11 @@ async def chat(request: Request):
                     # Execute tools and build tool results
                     tool_results = []
                     for tc in tool_calls:
-                        result_text = await asyncio.to_thread(execute_recall_tool, tc["name"], tc["input"])
+                        try:
+                            result_text = await asyncio.to_thread(execute_recall_tool, tc["name"], tc["input"])
+                        except Exception as tool_err:
+                            print(f"[Chat] Tool execution failed: {tc['name']}: {tool_err}")
+                            result_text = f"Memory recall failed: {type(tool_err).__name__}: {tool_err}"
                         tool_results.append(
                             {
                                 "type": "tool_result",
