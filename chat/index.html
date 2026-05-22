@@ -744,6 +744,8 @@ async function sendMessage() {
     let fullText = '';
     let thinkingText = '';
     let thinkingEl = null;
+    let receivedDone = false;
+    let receivedError = false;
 
     // Start throttled pending response persistence (every 500ms)
     // Also update module-level refs for visibilitychange handler
@@ -831,22 +833,37 @@ async function sendMessage() {
             hasRealUsage = true;
             updateContextBar();
           } else if (event.type === 'error') {
+            receivedError = true;
+            // Force-save what we have before the error annotation
+            savePendingResponse(fullText, thinkingText);
             contentEl.textContent = fullText + '\n\n[Error: ' + event.error + ']';
             msgDiv.classList.add('error');
           } else if (event.type === 'done') {
-            // Stream complete
+            receivedDone = true;
           }
         } catch (e) {}
       }
     }
 
     msgDiv.classList.remove('streaming');
-    clearPendingResponse();
 
     if (fullText) {
+      // Detect truncated responses: stream ended but server never sent 'done'
+      const wasInterrupted = !receivedDone && !receivedError;
+      if (wasInterrupted) {
+        fullText += '\n\n*[Response may be incomplete — connection ended before server confirmed completion]*';
+        if (thinkingEl) {
+          let textNode = contentEl.querySelector('.response-text');
+          if (textNode) textNode.innerHTML = renderMarkdown(fullText);
+        } else {
+          contentEl.innerHTML = renderMarkdown(fullText);
+        }
+      }
+
       const assistantTs = new Date().toISOString();
       const entry = { role: 'assistant', content: fullText, timestamp: assistantTs };
       if (thinkingText) entry.thinking = thinkingText;
+      if (wasInterrupted) entry.partial = true;
       history.push(entry);
       // Update the message div's timestamp
       const tsEl = msgDiv.querySelector('.timestamp');
@@ -854,6 +871,10 @@ async function sendMessage() {
       saveHistory();
       updateContextBar();
     }
+
+    // Clear pending AFTER history is saved — if saveHistory fails,
+    // the pending response is still recoverable on next page load
+    clearPendingResponse();
 
   } catch (err) {
     removeThinking();
