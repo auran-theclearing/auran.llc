@@ -730,7 +730,6 @@ async def debug_orient(request: Request):
     return JSONResponse(result)
 
 
-@app.post("/chat")
 def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a recall tool and return the result as a string."""
     from memory import recall
@@ -780,6 +779,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
     return f"Unknown tool: {tool_name}"
 
 
+@app.post("/chat")
 async def chat(request: Request):
     """Stream a chat response from Claude.
 
