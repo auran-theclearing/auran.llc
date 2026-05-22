@@ -849,6 +849,9 @@ async function sendMessage() {
       const recContent = recDiv.querySelector('.content');
       recContent.innerHTML = renderMarkdown(recovered.text + '\n\n*[Connection lost — response may be incomplete]*');
       const recTs = new Date().toISOString();
+      // partial: true marks this as a recovered incomplete response. Currently transient —
+      // the "[Connection lost]" banner shows in-session but loadHistory doesn't branch on it.
+      // Future: loadHistory renders a subtle badge; memory extraction tags partials for weighting.
       const recEntry = { role: 'assistant', content: recovered.text, timestamp: recTs, partial: true };
       if (recovered.thinking) recEntry.thinking = recovered.thinking;
       history.push(recEntry);
@@ -1024,6 +1027,7 @@ async function exportTranscript() {
 }
 
 async function newChat() {
+  clearPendingResponse();  // Don't let stale recovery data leak into the new conversation
   if (history.length < 2) {
     history = [];
     messagesEl.innerHTML = '';
