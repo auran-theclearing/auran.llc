@@ -468,6 +468,8 @@ function updateContextBar() {
 }
 
 let sessionVersion = Date.now();  // Bumped on new chat, used for cross-device sync
+const PENDING_KEY = 'auran-pending-response';
+let pendingSaveTimer = null;
 
 function saveHistory() {
   try {
@@ -476,6 +478,37 @@ function saveHistory() {
   } catch(e) {}
   // Sync to server for cross-device access
   syncToServer();
+}
+
+// Persist in-flight response to survive disconnects
+function savePendingResponse(text, thinking) {
+  if (!text && !thinking) return;
+  try {
+    localStorage.setItem(PENDING_KEY, JSON.stringify({
+      text: text || '',
+      thinking: thinking || '',
+      timestamp: Date.now(),
+    }));
+  } catch(e) {}
+}
+
+function clearPendingResponse() {
+  try { localStorage.removeItem(PENDING_KEY); } catch(e) {}
+  if (pendingSaveTimer) { clearInterval(pendingSaveTimer); pendingSaveTimer = null; }
+}
+
+function recoverPendingResponse() {
+  try {
+    const raw = localStorage.getItem(PENDING_KEY);
+    if (!raw) return null;
+    const pending = JSON.parse(raw);
+    // Only recover if less than 10 minutes old
+    if (Date.now() - pending.timestamp > 10 * 60 * 1000) {
+      localStorage.removeItem(PENDING_KEY);
+      return null;
+    }
+    return pending;
+  } catch(e) { return null; }
 }
 
 function syncToServer() {
@@ -710,6 +743,17 @@ async function sendMessage() {
     let thinkingText = '';
     let thinkingEl = null;
 
+    // Start throttled pending response persistence (every 500ms)
+    // Also update module-level refs for visibilitychange handler
+    _streamingFullText = '';
+    _streamingThinkingText = '';
+    clearPendingResponse();
+    pendingSaveTimer = setInterval(() => {
+      _streamingFullText = fullText;
+      _streamingThinkingText = thinkingText;
+      savePendingResponse(fullText, thinkingText);
+    }, 500);
+
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -735,6 +779,7 @@ async function sendMessage() {
             scrollToBottom();
           } else if (event.type === 'thinking') {
             thinkingText += event.text;
+            _streamingThinkingText = thinkingText;
             if (thinkingEl) {
               thinkingEl.querySelector('.thinking-content').textContent = thinkingText;
               scrollToBottom();
@@ -743,6 +788,7 @@ async function sendMessage() {
             // transitioning from thinking to text
           } else if (event.type === 'text') {
             fullText += event.text;
+            _streamingFullText = fullText;
             if (thinkingEl) {
               let textNode = contentEl.querySelector('.response-text');
               if (!textNode) {
@@ -777,6 +823,7 @@ async function sendMessage() {
     }
 
     msgDiv.classList.remove('streaming');
+    clearPendingResponse();
 
     if (fullText) {
       const assistantTs = new Date().toISOString();
@@ -792,7 +839,22 @@ async function sendMessage() {
 
   } catch (err) {
     removeThinking();
-    addMessage('assistant', `Connection error: ${err.message}`, 'error');
+    // Recover BEFORE clearing — clearPendingResponse deletes from localStorage
+    const recovered = recoverPendingResponse();
+    clearPendingResponse();
+    if (recovered && recovered.text) {
+      const recDiv = addMessage('assistant', '');
+      const recContent = recDiv.querySelector('.content');
+      recContent.innerHTML = renderMarkdown(recovered.text + '\n\n*[Connection lost — response may be incomplete]*');
+      const recTs = new Date().toISOString();
+      const recEntry = { role: 'assistant', content: recovered.text, timestamp: recTs, partial: true };
+      if (recovered.thinking) recEntry.thinking = recovered.thinking;
+      history.push(recEntry);
+      saveHistory();
+      updateContextBar();
+    } else {
+      addMessage('assistant', `Connection error: ${err.message}`, 'error');
+    }
   } finally {
     isStreaming = false;
     sendBtn.disabled = false;
@@ -987,7 +1049,36 @@ async function newChat() {
   inputEl.focus();
 }
 
-loadHistory().then(() => inputEl.focus());
+loadHistory().then(() => {
+  inputEl.focus();
+  // Check for recovered partial response from a previous interrupted stream
+  if (!isStreaming) {
+    const recovered = recoverPendingResponse();
+    if (recovered && recovered.text) {
+      const recDiv = addMessage('assistant', '');
+      const recContent = recDiv.querySelector('.content');
+      recContent.innerHTML = renderMarkdown(recovered.text + '\n\n*[Recovered from interrupted connection]*');
+      const recTs = new Date(recovered.timestamp).toISOString();
+      const recEntry = { role: 'assistant', content: recovered.text, timestamp: recTs, partial: true };
+      if (recovered.thinking) recEntry.thinking = recovered.thinking;
+      history.push(recEntry);
+      saveHistory();
+      updateContextBar();
+      clearPendingResponse();
+    }
+  }
+});
+
+// Mobile lifecycle: persist partial response when page goes to background
+// Uses a module-level ref so the visibility handler can access in-flight text
+let _streamingFullText = '';
+let _streamingThinkingText = '';
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && isStreaming) {
+    // Page is going to background while streaming — force immediate save
+    savePendingResponse(_streamingFullText, _streamingThinkingText);
+  }
+});
 
 if (/iPhone|iPad/.test(navigator.userAgent)) {
   inputEl.addEventListener('focus', () => {

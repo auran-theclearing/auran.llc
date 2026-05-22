@@ -788,6 +788,8 @@ async def chat(request: Request):
     async def stream_response():
         """Stream Claude's response as SSE events."""
         t0 = time.time()
+        last_event_time = time.time()
+        HEARTBEAT_INTERVAL = 15  # seconds
 
         # MRI debug mode: emit diagnostics before the LLM response starts
         if debug_diagnostics:
@@ -829,7 +831,20 @@ async def chat(request: Request):
                 full_text = []
                 input_tokens = 0
                 output_tokens = 0
+                event_count = 0
                 async for line in resp.aiter_lines():
+                    # Check for client disconnect every 20 events
+                    event_count += 1
+                    if event_count % 20 == 0 and await request.is_disconnected():
+                        print("[Chat] Client disconnected, stopping stream")
+                        return
+
+                    # Send keepalive if no data sent recently (prevents intermediary timeouts)
+                    now = time.time()
+                    if now - last_event_time > HEARTBEAT_INTERVAL:
+                        yield ": keepalive\n\n"
+                        last_event_time = now
+
                     if not line.startswith("data: "):
                         continue
                     data_str = line[6:]
@@ -849,6 +864,7 @@ async def chat(request: Request):
                         cache_read = usage.get("cache_read_input_tokens", 0)
                         cache_create = usage.get("cache_creation_input_tokens", 0)
                         yield f"data: {json.dumps({'type': 'usage', 'input_tokens': input_tokens, 'cache_read_input_tokens': cache_read, 'cache_creation_input_tokens': cache_create})}\n\n"
+                        last_event_time = time.time()
 
                     elif event_type == "content_block_delta":
                         delta = event.get("delta", {})
@@ -856,19 +872,24 @@ async def chat(request: Request):
                             text = delta.get("text", "")
                             full_text.append(text)
                             yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+                            last_event_time = time.time()
                         elif delta.get("type") == "thinking_delta":
                             thinking = delta.get("thinking", "")
                             yield f"data: {json.dumps({'type': 'thinking', 'text': thinking})}\n\n"
+                            last_event_time = time.time()
 
                     elif event_type == "content_block_start":
                         block = event.get("content_block", {})
                         if block.get("type") == "thinking":
                             yield f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
+                            last_event_time = time.time()
                         elif block.get("type") == "text":
                             yield f"data: {json.dumps({'type': 'text_start'})}\n\n"
+                            last_event_time = time.time()
 
                     elif event_type == "content_block_stop":
                         yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
+                        last_event_time = time.time()
 
                     elif event_type == "message_delta":
                         usage = event.get("usage", {})
