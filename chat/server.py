@@ -916,6 +916,11 @@ async def chat(request: Request):
 
         try:
             tool_round = 0
+            # Accumulate token counts across all tool rounds so usage_final
+            # reflects the true cost, not just the last round's slice.
+            input_tokens_total = 0
+            output_tokens_total = 0
+
             while True:
                 async with (
                     httpx.AsyncClient(timeout=120) as client,
@@ -987,6 +992,7 @@ async def chat(request: Request):
                         if event_type == "message_start":
                             usage = event.get("message", {}).get("usage", {})
                             input_tokens = usage.get("input_tokens", 0)
+                            input_tokens_total += input_tokens
                             cache_read = usage.get("cache_read_input_tokens", 0)
                             cache_create = usage.get("cache_creation_input_tokens", 0)
                             if tool_round == 0:
@@ -1007,8 +1013,8 @@ async def chat(request: Request):
                                 current_tool_id = block.get("id")
                                 current_tool_name = block.get("name")
                                 current_tool_input_json = []
-                                # Tell the frontend we're recalling
-                                yield f"data: {json.dumps({'type': 'recall_start', 'tool': current_tool_name})}\n\n"
+                                # Tell the frontend we're recalling (id for pairing with recall_result)
+                                yield f"data: {json.dumps({'type': 'recall_start', 'tool': current_tool_name, 'id': current_tool_id})}\n\n"
 
                         elif event_type == "content_block_delta":
                             delta = event.get("delta", {})
@@ -1033,7 +1039,9 @@ async def chat(request: Request):
                             if current_tool_id:
                                 try:
                                     tool_input = json.loads("".join(current_tool_input_json))
-                                except json.JSONDecodeError:
+                                except json.JSONDecodeError as parse_err:
+                                    raw = "".join(current_tool_input_json)
+                                    print(f"[Chat] Tool input JSON parse failed: {parse_err} — raw: {raw[:200]}")
                                     tool_input = {}
                                 tool_calls.append(
                                     {
@@ -1056,14 +1064,23 @@ async def chat(request: Request):
                                 current_tool_name = None
                                 current_tool_input_json = []
                             elif current_thinking_text:
-                                # Finalize thinking block
-                                content_blocks.append(
-                                    {
-                                        "type": "thinking",
-                                        "thinking": "".join(current_thinking_text),
-                                        "signature": current_thinking_signature or "",
-                                    }
-                                )
+                                # Finalize thinking block — signature is required
+                                # for extended thinking + tool_use round-trips.
+                                # If signature_delta never arrived, skip the block
+                                # rather than sending empty string (which would 400).
+                                if current_thinking_signature:
+                                    content_blocks.append(
+                                        {
+                                            "type": "thinking",
+                                            "thinking": "".join(current_thinking_text),
+                                            "signature": current_thinking_signature,
+                                        }
+                                    )
+                                else:
+                                    print(
+                                        "[Chat] Warning: thinking block closed without signature — "
+                                        "dropping block to avoid API 400 on next round"
+                                    )
                                 current_thinking_text = []
                                 current_thinking_signature = None
                             elif in_text_block:
@@ -1083,6 +1100,7 @@ async def chat(request: Request):
                         elif event_type == "message_delta":
                             usage = event.get("usage", {})
                             output_tokens = usage.get("output_tokens", 0)
+                            output_tokens_total += output_tokens
                             stop_reason = event.get("delta", {}).get("stop_reason")
 
                         elif event_type == "message_stop":
@@ -1095,12 +1113,26 @@ async def chat(request: Request):
                             return
 
                 # Check if we need to execute tools
-                if stop_reason == "tool_use" and tool_calls and tool_round < MAX_TOOL_ROUNDS:
-                    tool_round += 1
-                    print(f"[Chat] Executing {len(tool_calls)} tool(s), round {tool_round}")
+                if stop_reason == "tool_use" and tool_calls:
+                    at_cap = tool_round >= MAX_TOOL_ROUNDS
+
+                    if at_cap:
+                        # Hit the round cap — execute tools so frontend indicators
+                        # resolve, but don't re-call the API. Log so we know it happened.
+                        print(
+                            f"[Chat] MAX_TOOL_ROUNDS ({MAX_TOOL_ROUNDS}) reached — "
+                            f"executing {len(tool_calls)} final tool(s) without continuation"
+                        )
+                    else:
+                        tool_round += 1
+                        print(f"[Chat] Executing {len(tool_calls)} tool(s), round {tool_round}")
 
                     # Build assistant message with all content blocks
                     assistant_msg = {"role": "assistant", "content": content_blocks}
+
+                    # Keepalive before tool execution — Voyage embed + pgvector
+                    # can stall, and the SSE connection would go silent without this.
+                    yield ": keepalive\n\n"
 
                     # Execute tools and build tool results
                     tool_results = []
@@ -1117,7 +1149,11 @@ async def chat(request: Request):
                                 "content": result_text,
                             }
                         )
-                        yield f"data: {json.dumps({'type': 'recall_result', 'tool': tc['name'], 'query': tc['input'].get('query', tc['input'].get('title', ''))})}\n\n"
+                        yield f"data: {json.dumps({'type': 'recall_result', 'tool': tc['name'], 'id': tc['id'], 'query': tc['input'].get('query', tc['input'].get('title', ''))})}\n\n"
+
+                    if at_cap:
+                        # Don't re-call API — break out with indicators resolved
+                        break
 
                     user_tool_msg = {"role": "user", "content": tool_results}
 
@@ -1129,17 +1165,19 @@ async def chat(request: Request):
                     full_text = []
                     continue
                 else:
-                    # No tool use or max rounds reached — we're done
+                    # No tool use — we're done
                     break
 
             elapsed = time.time() - t0
             response_text = "".join(full_text)
-            total_tokens = input_tokens + output_tokens
+            total_tokens = input_tokens_total + output_tokens_total
             context_pct = round((total_tokens / MAX_CONTEXT_TOKENS) * 100, 1)
             print(
-                f"[Chat] Response ({elapsed:.1f}s, {input_tokens}+{output_tokens}={total_tokens} tokens, {context_pct}%): {response_text[:80]}..."
+                f"[Chat] Response ({elapsed:.1f}s, {input_tokens_total}+{output_tokens_total}={total_tokens} tokens, {context_pct}%"
+                + (f", {tool_round} tool round(s)" if tool_round > 0 else "")
+                + f"): {response_text[:80]}..."
             )
-            yield f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens, 'output_tokens': output_tokens, 'total_tokens': total_tokens, 'context_pct': context_pct})}\n\n"
+            yield f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens_total, 'output_tokens': output_tokens_total, 'total_tokens': total_tokens, 'context_pct': context_pct})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except httpx.TimeoutException:

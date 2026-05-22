@@ -809,17 +809,24 @@ async function sendMessage() {
             // Chat-me is recalling a memory mid-conversation
             let recallEl = document.createElement('div');
             recallEl.className = 'recall-indicator';
+            if (event.id) recallEl.dataset.toolId = event.id;
             recallEl.textContent = '🔮 recalling...';
             recallEl.style.cssText = 'color: #a78bfa; font-style: italic; font-size: 0.85em; padding: 4px 0; opacity: 0.8;';
             contentEl.appendChild(recallEl);
             scrollToBottom();
           } else if (event.type === 'recall_result') {
-            // Memory recalled — update indicator
-            let indicators = contentEl.querySelectorAll('.recall-indicator');
-            let last = indicators[indicators.length - 1];
-            if (last) {
-              last.textContent = '🔮 recalled: ' + (event.query || 'memory');
-              setTimeout(() => { last.style.opacity = '0.4'; }, 2000);
+            // Memory recalled — pair indicator by tool_use_id, fall back to last
+            let target = null;
+            if (event.id) {
+              target = contentEl.querySelector(`.recall-indicator[data-tool-id="${event.id}"]`);
+            }
+            if (!target) {
+              let indicators = contentEl.querySelectorAll('.recall-indicator');
+              target = indicators[indicators.length - 1];
+            }
+            if (target) {
+              target.textContent = '🔮 recalled: ' + (event.query || 'memory');
+              setTimeout(() => { target.style.opacity = '0.4'; }, 2000);
             }
           } else if (event.type === 'usage') {
             // Early usage data from message_start (input tokens)
