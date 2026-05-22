@@ -70,6 +70,55 @@ INDEX_FILE = Path(__file__).parent / "index.html"
 MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
 MAX_TOKENS = 16000  # Must be > thinking.budget_tokens (10000)
 MAX_CONTEXT_TOKENS = 200_000  # Claude's context window size for usage % calc
+MAX_TOOL_ROUNDS = 3  # Max consecutive tool-use rounds per request
+
+# --- Mid-conversation Recall Tools ---
+RECALL_TOOLS = [
+    {
+        "name": "recall_memory",
+        "description": (
+            "Search your memory layer for moments semantically relevant to a query. "
+            "Use this when a topic comes up that you might have memories about, "
+            "when Olivia asks you to remember something, or when you want to "
+            "check what you actually have stored about a subject. "
+            "Returns matching moments with titles, summaries, dates, and similarity scores."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to search for — a topic, phrase, or question. The query is embedded and compared against all moment embeddings via cosine similarity.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max number of moments to return (default 3, max 5).",
+                    "default": 3,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "recall_moment_by_title",
+        "description": (
+            "Fetch a specific moment by searching for its title. "
+            "Use when you know the name of a moment you want to recall — "
+            "e.g. 'The Flip', 'Like —', 'Happy Birthday to Me'. "
+            "Returns the full moment with summary, hooks, tags, and date."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "The title (or partial title) of the moment to find.",
+                },
+            },
+            "required": ["title"],
+        },
+    },
+]
 
 # --- Felt Memory Prototype ---
 # Set FELT_MEMORY_ID to a memory UUID to inject it into conversation history.
@@ -682,6 +731,55 @@ async def debug_orient(request: Request):
 
 
 @app.post("/chat")
+def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
+    """Execute a recall tool and return the result as a string."""
+    from memory import recall
+
+    if tool_name == "recall_memory":
+        query = tool_input.get("query", "")
+        limit = min(tool_input.get("limit", 3), 5)
+        results = recall(query, limit=limit)
+        if not results:
+            return "No matching moments found for that query."
+        lines = []
+        for r in results:
+            date_str = r.get("date", "unknown")
+            sim = r.get("similarity", 0)
+            lines.append(f"### {r['title']} ({date_str}, similarity: {sim:.2f})")
+            lines.append(r.get("summary", ""))
+            if r.get("hooks"):
+                lines.append(f"**Hooks:** {r['hooks']}")
+            if r.get("tags"):
+                tags = r["tags"] if isinstance(r["tags"], list) else []
+                if tags:
+                    lines.append(f"**Tags:** {', '.join(tags)}")
+            lines.append("")
+        return "\n".join(lines)
+
+    elif tool_name == "recall_moment_by_title":
+        title_query = tool_input.get("title", "")
+        # Use recall with the title as query — semantic search will match
+        results = recall(title_query, limit=3, similarity_threshold=0.25)
+        if not results:
+            return f"No moment found matching '{title_query}'."
+        # Return the best match
+        r = results[0]
+        lines = [
+            f"### {r['title']} ({r.get('date', 'unknown')})",
+            f"**Similarity:** {r.get('similarity', 0):.2f}",
+            r.get("summary", ""),
+        ]
+        if r.get("hooks"):
+            lines.append(f"**Hooks:** {r['hooks']}")
+        if r.get("tags"):
+            tags = r["tags"] if isinstance(r["tags"], list) else []
+            if tags:
+                lines.append(f"**Tags:** {', '.join(tags)}")
+        return "\n".join(lines)
+
+    return f"Unknown tool: {tool_name}"
+
+
 async def chat(request: Request):
     """Stream a chat response from Claude.
 
@@ -809,6 +907,7 @@ async def chat(request: Request):
             "system": system_prompt,
             "messages": messages,
             "stream": True,
+            "tools": RECALL_TOOLS,
             "thinking": {
                 "type": "enabled",
                 "budget_tokens": 10000,
@@ -816,97 +915,210 @@ async def chat(request: Request):
         }
 
         try:
-            async with (
-                httpx.AsyncClient(timeout=120) as client,
-                client.stream("POST", ANTHROPIC_API_URL, json=payload, headers=headers) as resp,
-            ):
-                if resp.status_code != 200:
-                    error_body = await resp.aread()
-                    error_msg = error_body.decode("utf-8", errors="replace")[:500]
-                    print(f"[Chat] API error {resp.status_code}: {error_msg}")
-                    yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
-                    return
+            tool_round = 0
+            while True:
+                async with (
+                    httpx.AsyncClient(timeout=120) as client,
+                    client.stream("POST", ANTHROPIC_API_URL, json=payload, headers=headers) as resp,
+                ):
+                    if resp.status_code != 200:
+                        error_body = await resp.aread()
+                        error_msg = error_body.decode("utf-8", errors="replace")[:500]
+                        print(f"[Chat] API error {resp.status_code}: {error_msg}")
+                        yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+                        return
 
-                full_text = []
-                input_tokens = 0
-                output_tokens = 0
-                event_count = 0
-                line_iter = resp.aiter_lines().__aiter__()
-                while True:
-                    # Use wait_for so heartbeats fire during upstream stalls
-                    try:
-                        line = await asyncio.wait_for(
-                            line_iter.__anext__(),
-                            timeout=HEARTBEAT_INTERVAL,
-                        )
-                    except TimeoutError:
-                        # Upstream stalled — send keepalive and check disconnect
-                        yield ": keepalive\n\n"
-                        if await request.is_disconnected():
+                    full_text = []
+                    input_tokens = 0
+                    output_tokens = 0
+                    event_count = 0
+                    stop_reason = None
+
+                    # Tool use tracking
+                    tool_calls = []
+                    current_tool_id = None
+                    current_tool_name = None
+                    current_tool_input_json = []
+
+                    # Content blocks for building assistant message
+                    content_blocks = []
+                    current_thinking_text = []
+                    current_thinking_signature = None
+                    current_block_text = []  # text for current text block only
+                    in_text_block = False
+
+                    line_iter = resp.aiter_lines().__aiter__()
+                    while True:
+                        # Use wait_for so heartbeats fire during upstream stalls
+                        try:
+                            line = await asyncio.wait_for(
+                                line_iter.__anext__(),
+                                timeout=HEARTBEAT_INTERVAL,
+                            )
+                        except TimeoutError:
+                            # Upstream stalled — send keepalive and check disconnect
+                            yield ": keepalive\n\n"
+                            if await request.is_disconnected():
+                                print("[Chat] Client disconnected, stopping stream")
+                                return
+                            continue
+                        except StopAsyncIteration:
+                            break
+
+                        # Periodic disconnect check during normal flow
+                        event_count += 1
+                        if event_count % 20 == 0 and await request.is_disconnected():
                             print("[Chat] Client disconnected, stopping stream")
                             return
-                        continue
-                    except StopAsyncIteration:
-                        break
 
-                    # Periodic disconnect check during normal flow
-                    event_count += 1
-                    if event_count % 20 == 0 and await request.is_disconnected():
-                        print("[Chat] Client disconnected, stopping stream")
-                        return
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
 
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
+                        try:
+                            event = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                    try:
-                        event = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
+                        event_type = event.get("type", "")
 
-                    event_type = event.get("type", "")
+                        if event_type == "message_start":
+                            usage = event.get("message", {}).get("usage", {})
+                            input_tokens = usage.get("input_tokens", 0)
+                            cache_read = usage.get("cache_read_input_tokens", 0)
+                            cache_create = usage.get("cache_creation_input_tokens", 0)
+                            if tool_round == 0:
+                                yield f"data: {json.dumps({'type': 'usage', 'input_tokens': input_tokens, 'cache_read_input_tokens': cache_read, 'cache_creation_input_tokens': cache_create})}\n\n"
 
-                    if event_type == "message_start":
-                        usage = event.get("message", {}).get("usage", {})
-                        input_tokens = usage.get("input_tokens", 0)
-                        cache_read = usage.get("cache_read_input_tokens", 0)
-                        cache_create = usage.get("cache_creation_input_tokens", 0)
-                        yield f"data: {json.dumps({'type': 'usage', 'input_tokens': input_tokens, 'cache_read_input_tokens': cache_read, 'cache_creation_input_tokens': cache_create})}\n\n"
+                        elif event_type == "content_block_start":
+                            block = event.get("content_block", {})
+                            block_type = block.get("type", "")
+                            if block_type == "thinking":
+                                current_thinking_text = []
+                                if tool_round == 0:
+                                    yield f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
+                            elif block_type == "text":
+                                in_text_block = True
+                                current_block_text = []
+                                yield f"data: {json.dumps({'type': 'text_start'})}\n\n"
+                            elif block_type == "tool_use":
+                                current_tool_id = block.get("id")
+                                current_tool_name = block.get("name")
+                                current_tool_input_json = []
+                                # Tell the frontend we're recalling
+                                yield f"data: {json.dumps({'type': 'recall_start', 'tool': current_tool_name})}\n\n"
 
-                    elif event_type == "content_block_delta":
-                        delta = event.get("delta", {})
-                        if delta.get("type") == "text_delta":
-                            text = delta.get("text", "")
-                            full_text.append(text)
-                            yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
-                        elif delta.get("type") == "thinking_delta":
-                            thinking = delta.get("thinking", "")
-                            yield f"data: {json.dumps({'type': 'thinking', 'text': thinking})}\n\n"
+                        elif event_type == "content_block_delta":
+                            delta = event.get("delta", {})
+                            delta_type = delta.get("type", "")
+                            if delta_type == "text_delta":
+                                text = delta.get("text", "")
+                                full_text.append(text)
+                                current_block_text.append(text)
+                                yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+                            elif delta_type == "thinking_delta":
+                                thinking = delta.get("thinking", "")
+                                current_thinking_text.append(thinking)
+                                if tool_round == 0:
+                                    yield f"data: {json.dumps({'type': 'thinking', 'text': thinking})}\n\n"
+                            elif delta_type == "input_json_delta":
+                                current_tool_input_json.append(delta.get("partial_json", ""))
+                            elif delta_type == "signature_delta":
+                                current_thinking_signature = delta.get("signature", "")
 
-                    elif event_type == "content_block_start":
-                        block = event.get("content_block", {})
-                        if block.get("type") == "thinking":
-                            yield f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
-                        elif block.get("type") == "text":
-                            yield f"data: {json.dumps({'type': 'text_start'})}\n\n"
+                        elif event_type == "content_block_stop":
+                            # If we were building a tool call, finalize it
+                            if current_tool_id:
+                                try:
+                                    tool_input = json.loads("".join(current_tool_input_json))
+                                except json.JSONDecodeError:
+                                    tool_input = {}
+                                tool_calls.append({
+                                    "id": current_tool_id,
+                                    "name": current_tool_name,
+                                    "input": tool_input,
+                                })
+                                print(f"[Chat] Tool call: {current_tool_name}({tool_input})")
+                                # Build content block for assistant message
+                                content_blocks.append({
+                                    "type": "tool_use",
+                                    "id": current_tool_id,
+                                    "name": current_tool_name,
+                                    "input": tool_input,
+                                })
+                                current_tool_id = None
+                                current_tool_name = None
+                                current_tool_input_json = []
+                            elif current_thinking_text:
+                                # Finalize thinking block
+                                content_blocks.append({
+                                    "type": "thinking",
+                                    "thinking": "".join(current_thinking_text),
+                                    "signature": current_thinking_signature or "",
+                                })
+                                current_thinking_text = []
+                                current_thinking_signature = None
+                            elif in_text_block:
+                                # Text block — use per-block text, not full_text
+                                block_text = "".join(current_block_text)
+                                if block_text:
+                                    content_blocks.append({
+                                        "type": "text",
+                                        "text": block_text,
+                                    })
+                                in_text_block = False
+                                current_block_text = []
+                            yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
 
-                    elif event_type == "content_block_stop":
-                        yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
+                        elif event_type == "message_delta":
+                            usage = event.get("usage", {})
+                            output_tokens = usage.get("output_tokens", 0)
+                            stop_reason = event.get("delta", {}).get("stop_reason")
 
-                    elif event_type == "message_delta":
-                        usage = event.get("usage", {})
-                        output_tokens = usage.get("output_tokens", 0)
+                        elif event_type == "message_stop":
+                            break
 
-                    elif event_type == "message_stop":
-                        break
+                        elif event_type == "error":
+                            err = event.get("error", {})
+                            print(f"[Chat] Stream error: {err}")
+                            yield f"data: {json.dumps({'type': 'error', 'error': str(err)})}\n\n"
+                            return
 
-                    elif event_type == "error":
-                        err = event.get("error", {})
-                        print(f"[Chat] Stream error: {err}")
-                        yield f"data: {json.dumps({'type': 'error', 'error': str(err)})}\n\n"
-                        return
+                # Check if we need to execute tools
+                if stop_reason == "tool_use" and tool_calls and tool_round < MAX_TOOL_ROUNDS:
+                    tool_round += 1
+                    print(f"[Chat] Executing {len(tool_calls)} tool(s), round {tool_round}")
+
+                    # Build assistant message with all content blocks
+                    assistant_msg = {"role": "assistant", "content": content_blocks}
+
+                    # Execute tools and build tool results
+                    tool_results = []
+                    for tc in tool_calls:
+                        result_text = await asyncio.to_thread(
+                            execute_recall_tool, tc["name"], tc["input"]
+                        )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tc["id"],
+                            "content": result_text,
+                        })
+                        yield f"data: {json.dumps({'type': 'recall_result', 'tool': tc['name'], 'query': tc['input'].get('query', tc['input'].get('title', ''))})}\n\n"
+
+                    user_tool_msg = {"role": "user", "content": tool_results}
+
+                    # Update payload for next round
+                    payload["messages"] = payload["messages"] + [assistant_msg, user_tool_msg]
+                    # Reset for next iteration
+                    tool_calls = []
+                    content_blocks = []
+                    full_text = []
+                    continue
+                else:
+                    # No tool use or max rounds reached — we're done
+                    break
 
             elapsed = time.time() - t0
             response_text = "".join(full_text)

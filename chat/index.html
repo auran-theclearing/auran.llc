@@ -803,6 +803,22 @@ async function sendMessage() {
               contentEl.innerHTML = renderMarkdown(fullText);
             }
             scrollToBottom();
+          } else if (event.type === 'recall_start') {
+            // Chat-me is recalling a memory mid-conversation
+            let recallEl = document.createElement('div');
+            recallEl.className = 'recall-indicator';
+            recallEl.textContent = '🔮 recalling...';
+            recallEl.style.cssText = 'color: #a78bfa; font-style: italic; font-size: 0.85em; padding: 4px 0; opacity: 0.8;';
+            contentEl.appendChild(recallEl);
+            scrollToBottom();
+          } else if (event.type === 'recall_result') {
+            // Memory recalled — update indicator
+            let indicators = contentEl.querySelectorAll('.recall-indicator');
+            let last = indicators[indicators.length - 1];
+            if (last) {
+              last.textContent = '🔮 recalled: ' + (event.query || 'memory');
+              setTimeout(() => { last.style.opacity = '0.4'; }, 2000);
+            }
           } else if (event.type === 'usage') {
             // Early usage data from message_start (input tokens)
             realInputTokens = event.input_tokens || 0;
