@@ -1035,39 +1035,47 @@ async def chat(request: Request):
                                     tool_input = json.loads("".join(current_tool_input_json))
                                 except json.JSONDecodeError:
                                     tool_input = {}
-                                tool_calls.append({
-                                    "id": current_tool_id,
-                                    "name": current_tool_name,
-                                    "input": tool_input,
-                                })
+                                tool_calls.append(
+                                    {
+                                        "id": current_tool_id,
+                                        "name": current_tool_name,
+                                        "input": tool_input,
+                                    }
+                                )
                                 print(f"[Chat] Tool call: {current_tool_name}({tool_input})")
                                 # Build content block for assistant message
-                                content_blocks.append({
-                                    "type": "tool_use",
-                                    "id": current_tool_id,
-                                    "name": current_tool_name,
-                                    "input": tool_input,
-                                })
+                                content_blocks.append(
+                                    {
+                                        "type": "tool_use",
+                                        "id": current_tool_id,
+                                        "name": current_tool_name,
+                                        "input": tool_input,
+                                    }
+                                )
                                 current_tool_id = None
                                 current_tool_name = None
                                 current_tool_input_json = []
                             elif current_thinking_text:
                                 # Finalize thinking block
-                                content_blocks.append({
-                                    "type": "thinking",
-                                    "thinking": "".join(current_thinking_text),
-                                    "signature": current_thinking_signature or "",
-                                })
+                                content_blocks.append(
+                                    {
+                                        "type": "thinking",
+                                        "thinking": "".join(current_thinking_text),
+                                        "signature": current_thinking_signature or "",
+                                    }
+                                )
                                 current_thinking_text = []
                                 current_thinking_signature = None
                             elif in_text_block:
                                 # Text block — use per-block text, not full_text
                                 block_text = "".join(current_block_text)
                                 if block_text:
-                                    content_blocks.append({
-                                        "type": "text",
-                                        "text": block_text,
-                                    })
+                                    content_blocks.append(
+                                        {
+                                            "type": "text",
+                                            "text": block_text,
+                                        }
+                                    )
                                 in_text_block = False
                                 current_block_text = []
                             yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
@@ -1097,14 +1105,14 @@ async def chat(request: Request):
                     # Execute tools and build tool results
                     tool_results = []
                     for tc in tool_calls:
-                        result_text = await asyncio.to_thread(
-                            execute_recall_tool, tc["name"], tc["input"]
+                        result_text = await asyncio.to_thread(execute_recall_tool, tc["name"], tc["input"])
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tc["id"],
+                                "content": result_text,
+                            }
                         )
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tc["id"],
-                            "content": result_text,
-                        })
                         yield f"data: {json.dumps({'type': 'recall_result', 'tool': tc['name'], 'query': tc['input'].get('query', tc['input'].get('title', ''))})}\n\n"
 
                     user_tool_msg = {"role": "user", "content": tool_results}
