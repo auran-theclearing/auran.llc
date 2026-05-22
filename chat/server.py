@@ -832,18 +832,30 @@ async def chat(request: Request):
                 input_tokens = 0
                 output_tokens = 0
                 event_count = 0
-                async for line in resp.aiter_lines():
-                    # Check for client disconnect every 20 events
+                line_iter = resp.aiter_lines().__aiter__()
+                while True:
+                    # Use wait_for so heartbeats fire during upstream stalls
+                    try:
+                        line = await asyncio.wait_for(
+                            line_iter.__anext__(),
+                            timeout=HEARTBEAT_INTERVAL,
+                        )
+                    except asyncio.TimeoutError:
+                        # Upstream stalled — send keepalive and check disconnect
+                        yield ": keepalive\n\n"
+                        last_event_time = time.time()
+                        if await request.is_disconnected():
+                            print("[Chat] Client disconnected, stopping stream")
+                            return
+                        continue
+                    except StopAsyncIteration:
+                        break
+
+                    # Periodic disconnect check during normal flow
                     event_count += 1
                     if event_count % 20 == 0 and await request.is_disconnected():
                         print("[Chat] Client disconnected, stopping stream")
                         return
-
-                    # Send keepalive if no data sent recently (prevents intermediary timeouts)
-                    now = time.time()
-                    if now - last_event_time > HEARTBEAT_INTERVAL:
-                        yield ": keepalive\n\n"
-                        last_event_time = now
 
                     if not line.startswith("data: "):
                         continue

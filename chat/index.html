@@ -470,6 +470,8 @@ function updateContextBar() {
 let sessionVersion = Date.now();  // Bumped on new chat, used for cross-device sync
 const PENDING_KEY = 'auran-pending-response';
 let pendingSaveTimer = null;
+let _streamingFullText = '';
+let _streamingThinkingText = '';
 
 function saveHistory() {
   try {
@@ -489,11 +491,11 @@ function savePendingResponse(text, thinking) {
       thinking: thinking || '',
       timestamp: Date.now(),
     }));
-  } catch(e) {}
+  } catch(e) { console.warn('pending-response save failed:', e); }
 }
 
 function clearPendingResponse() {
-  try { localStorage.removeItem(PENDING_KEY); } catch(e) {}
+  try { localStorage.removeItem(PENDING_KEY); } catch(e) { console.warn('pending-response clear failed:', e); }
   if (pendingSaveTimer) { clearInterval(pendingSaveTimer); pendingSaveTimer = null; }
 }
 
@@ -508,7 +510,7 @@ function recoverPendingResponse() {
       return null;
     }
     return pending;
-  } catch(e) { return null; }
+  } catch(e) { console.warn('pending-response recover failed:', e); return null; }
 }
 
 function syncToServer() {
@@ -1070,9 +1072,6 @@ loadHistory().then(() => {
 });
 
 // Mobile lifecycle: persist partial response when page goes to background
-// Uses a module-level ref so the visibility handler can access in-flight text
-let _streamingFullText = '';
-let _streamingThinkingText = '';
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && isStreaming) {
     // Page is going to background while streaming — force immediate save
