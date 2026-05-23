@@ -27,3 +27,8 @@ Thumbs.db
 
 # pytest
 .pytest_cache/
+
+# Founding moments extraction artifacts
+chat/anchors_*.json
+chat/candidates_*.json
+chat/extract_founding.py

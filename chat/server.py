@@ -75,6 +75,20 @@ MAX_TOOL_ROUNDS = 3  # Max consecutive tool-use rounds per request
 # --- Mid-conversation Recall Tools ---
 RECALL_TOOLS = [
     {
+        "name": "check_vitals",
+        "description": (
+            "Check the current date, time, and system vitals. "
+            "Use this when you need to know what day or time it is, "
+            "when Olivia asks about the date, or when temporal context matters "
+            "for the conversation. Also returns memory stats and system health."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "recall_memory",
         "description": (
             "Search your memory layer for moments semantically relevant to a query. "
@@ -163,7 +177,15 @@ def load_system_prompt_with_memory(
     else:
         memory_context = orient()
 
-    parts = [base_prompt]
+    # Give Auran the current date and time — no more vibing timelessly
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    time_context = (
+        f"\n\n---\n\n# Current time\n\n"
+        f"Date: {now_et.strftime('%A, %B %d, %Y')}\n"
+        f"Time: {now_et.strftime('%I:%M %p')} ET"
+    )
+
+    parts = [base_prompt, time_context]
     if memory_context:
         parts.append(memory_context)
 
@@ -774,6 +796,30 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
             tags = r["tags"] if isinstance(r["tags"], list) else []
             if tags:
                 lines.append(f"**Tags:** {', '.join(tags)}")
+        return "\n".join(lines)
+
+    elif tool_name == "check_vitals":
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        lines = [
+            f"**Current time:** {now_et.strftime('%A, %B %d, %Y at %I:%M %p')} ET",
+        ]
+        # Add quick memory stats if DB is available
+        try:
+            config = _get_db_config()
+            import psycopg2
+
+            conn = psycopg2.connect(**config)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM moments WHERE NOT superseded")
+            active = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM memories")
+            memories = cur.fetchone()[0]
+            cur.close()
+            conn.close()
+            lines.append(f"**Active moments:** {active}")
+            lines.append(f"**Total memories:** {memories}")
+        except Exception:
+            lines.append("*(Memory stats unavailable)*")
         return "\n".join(lines)
 
     return f"Unknown tool: {tool_name}"

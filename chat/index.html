@@ -746,6 +746,7 @@ async function sendMessage() {
     let thinkingEl = null;
     let receivedDone = false;
     let receivedError = false;
+    let recallEvents = [];  // Track recall searches for transcript
 
     // Start throttled pending response persistence (every 500ms)
     // Also update module-level refs for visibilitychange handler
@@ -828,6 +829,8 @@ async function sendMessage() {
               target.textContent = '🔮 recalled: ' + (event.query || 'memory');
               setTimeout(() => { target.style.opacity = '0.4'; }, 2000);
             }
+            // Save recall event for transcript
+            recallEvents.push({ tool: event.tool || 'recall_memory', query: event.query || '' });
           } else if (event.type === 'usage') {
             // Early usage data from message_start (input tokens)
             realInputTokens = event.input_tokens || 0;
@@ -870,6 +873,7 @@ async function sendMessage() {
       const assistantTs = new Date().toISOString();
       const entry = { role: 'assistant', content: fullText, timestamp: assistantTs };
       if (thinkingText) entry.thinking = thinkingText;
+      if (recallEvents.length > 0) entry.recalls = recallEvents;
       if (wasInterrupted) entry.partial = true;
       history.push(entry);
       // Update the message div's timestamp
@@ -1013,6 +1017,13 @@ async function exportTranscript() {
       lines.push('> **thinking...**');
       for (const tLine of msg.thinking.split('\n')) {
         lines.push(`> ${tLine}`);
+      }
+      lines.push('');
+    }
+    // Include recall searches if present
+    if (msg.recalls && msg.recalls.length > 0) {
+      for (const r of msg.recalls) {
+        lines.push(`*🔮 recall: ${r.query}*`);
       }
       lines.push('');
     }
