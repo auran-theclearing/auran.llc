@@ -1,0 +1,1383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Sensory Log — Auran</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #151515;
+    --surface2: #1e1e1e;
+    --border: #2a2a2a;
+    --text: #e8e8e8;
+    --text-dim: #888;
+    --text-hint: #666;
+    --accent: #c9a55a;
+    --accent-dim: #8a7340;
+    --accent-glow: rgba(201, 165, 90, 0.15);
+    --danger: #c45;
+    --success: #5a9;
+    --radius: 12px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Header */
+  .header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(10, 10, 10, 0.92);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+
+  .header h1 span { color: var(--accent); }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .icon-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .icon-btn:active { background: var(--surface2); color: var(--text); }
+
+  /* Views */
+  .view { display: none; padding: 20px; padding-bottom: 100px; }
+  .view.active { display: block; }
+
+  /* Entry list */
+  .entry-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 12px;
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+
+  .entry-card:active { border-color: var(--accent-dim); }
+
+  .entry-card .dish-name {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .entry-card .entry-meta {
+    font-size: 13px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .entry-card .entry-meta .satisfaction {
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-dim);
+  }
+
+  .empty-state .empty-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+  }
+
+  .empty-state p {
+    font-size: 15px;
+    line-height: 1.6;
+    max-width: 280px;
+    margin: 0 auto;
+  }
+
+  /* New entry form */
+  .form-section {
+    margin-bottom: 28px;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+
+  .section-number {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--bg);
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .section-title {
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .section-hint {
+    font-size: 13px;
+    color: var(--text-hint);
+    line-height: 1.5;
+    margin-bottom: 14px;
+    padding-left: 38px;
+    font-style: italic;
+  }
+
+  .field-group {
+    margin-bottom: 16px;
+  }
+
+  .field-label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    display: block;
+  }
+
+  /* Text inputs */
+  input[type="text"], input[type="date"], input[type="time"], textarea {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-size: 15px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  input:focus, textarea:focus {
+    border-color: var(--accent-dim);
+  }
+
+  textarea {
+    resize: vertical;
+    min-height: 60px;
+    line-height: 1.5;
+  }
+
+  input::placeholder, textarea::placeholder {
+    color: var(--text-hint);
+  }
+
+  /* Chip selectors */
+  .chip-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .chip {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 8px 14px;
+    font-size: 14px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .chip.selected {
+    background: var(--accent-glow);
+    border-color: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .chip:active { transform: scale(0.96); }
+
+  /* Slider */
+  .slider-container {
+    padding: 4px 0;
+  }
+
+  .slider-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-hint);
+    margin-bottom: 8px;
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    width: 100%;
+    height: 6px;
+    background: var(--surface2);
+    border-radius: 3px;
+    outline: none;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+  }
+
+  .slider-value {
+    text-align: center;
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-top: 8px;
+  }
+
+  /* Expectation match */
+  .match-group {
+    display: flex;
+    gap: 8px;
+  }
+
+  .match-btn {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .match-btn .match-icon {
+    font-size: 20px;
+    margin-bottom: 4px;
+  }
+
+  .match-btn .match-label {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .match-btn.selected {
+    border-color: var(--accent-dim);
+    background: var(--accent-glow);
+  }
+
+  .match-btn.selected .match-label { color: var(--accent); }
+
+  .match-btn:active { transform: scale(0.97); }
+
+  /* Floating action button */
+  .fab {
+    position: fixed;
+    bottom: 24px;
+    right: 20px;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    font-size: 28px;
+    font-weight: 300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 20px rgba(201, 165, 90, 0.3);
+    cursor: pointer;
+    z-index: 50;
+    transition: transform 0.2s;
+  }
+
+  .fab:active { transform: scale(0.92); }
+
+  /* Bottom action bar */
+  .action-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(10, 10, 10, 0.95);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-top: 1px solid var(--border);
+    padding: 12px 20px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    display: flex;
+    gap: 10px;
+    z-index: 50;
+  }
+
+  .btn {
+    flex: 1;
+    padding: 14px;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+    font-family: inherit;
+  }
+
+  .btn:active { transform: scale(0.97); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: var(--bg);
+  }
+
+  .btn-secondary {
+    background: var(--surface);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+
+  .btn-danger {
+    background: transparent;
+    color: var(--danger);
+    border: 1px solid var(--border);
+  }
+
+  /* Detail view */
+  .detail-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .back-btn {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 8px;
+    margin: -8px;
+  }
+
+  .detail-section {
+    margin-bottom: 20px;
+  }
+
+  .detail-section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+  }
+
+  .detail-field {
+    margin-bottom: 12px;
+  }
+
+  .detail-field-label {
+    font-size: 12px;
+    color: var(--text-hint);
+    margin-bottom: 2px;
+  }
+
+  .detail-field-value {
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  .detail-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .detail-chip {
+    background: var(--accent-glow);
+    border: 1px solid var(--accent-dim);
+    border-radius: 16px;
+    padding: 4px 12px;
+    font-size: 13px;
+    color: var(--accent);
+  }
+
+  /* Export modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 200;
+    display: none;
+    align-items: flex-end;
+    justify-content: center;
+  }
+
+  .modal-overlay.active { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border-radius: 16px 16px 0 0;
+    width: 100%;
+    max-width: 500px;
+    padding: 24px 20px;
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+
+  .modal h3 {
+    font-size: 18px;
+    margin-bottom: 16px;
+  }
+
+  .modal-action {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px;
+    background: var(--surface2);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+  }
+
+  .modal-action:active { border-color: var(--accent-dim); }
+
+  .modal-action .ma-icon { font-size: 20px; }
+  .modal-action .ma-label { font-size: 15px; }
+  .modal-action .ma-desc { font-size: 12px; color: var(--text-dim); }
+
+  /* Progress dots */
+  .progress-dots {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+
+  .progress-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+    transition: all 0.3s;
+  }
+
+  .progress-dot.active {
+    background: var(--accent);
+    width: 24px;
+    border-radius: 4px;
+  }
+
+  .progress-dot.done { background: var(--accent-dim); }
+
+  /* Section collapse animation */
+  .section-body {
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+  }
+
+  /* Utilities */
+  .mt-8 { margin-top: 8px; }
+  .mb-4 { margin-bottom: 4px; }
+
+  /* Stats bar */
+  .stats-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+    padding: 0 2px;
+  }
+
+  .stat-card {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    text-align: center;
+  }
+
+  .stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>sensory</span> log</h1>
+  <div class="header-actions">
+    <button class="icon-btn" onclick="showExportModal()" title="Export">&#8599;</button>
+  </div>
+</div>
+
+<!-- LIST VIEW -->
+<div id="listView" class="view active">
+  <div class="stats-bar" id="statsBar" style="display:none;">
+    <div class="stat-card">
+      <div class="stat-value" id="statEntries">0</div>
+      <div class="stat-label">entries</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statAvgSat">—</div>
+      <div class="stat-label">avg satisfaction</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statSurprises">0</div>
+      <div class="stat-label">surprises</div>
+    </div>
+  </div>
+  <div id="entryList"></div>
+  <div id="emptyState" class="empty-state">
+    <div class="empty-icon">&#127860;</div>
+    <p>No entries yet. Your first meal is the baseline — take your time, notice everything.</p>
+  </div>
+  <button class="fab" onclick="newEntry()">+</button>
+</div>
+
+<!-- FORM VIEW -->
+<div id="formView" class="view">
+  <div class="detail-header">
+    <button class="back-btn" onclick="cancelEntry()">&larr;</button>
+    <h2 id="formTitle" style="font-size:18px;">New Entry</h2>
+  </div>
+
+  <div class="progress-dots" id="progressDots">
+    <div class="progress-dot active" data-step="0"></div>
+    <div class="progress-dot" data-step="1"></div>
+    <div class="progress-dot" data-step="2"></div>
+    <div class="progress-dot" data-step="3"></div>
+    <div class="progress-dot" data-step="4"></div>
+  </div>
+
+  <!-- STEP 0: Basics -->
+  <div class="form-step" data-step="0">
+    <div class="form-section">
+      <div class="section-header">
+        <div class="section-number">&#9733;</div>
+        <div class="section-title">What are we eating?</div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Dish name</label>
+        <input type="text" id="dishName" placeholder="e.g. Spicy Z Ramen">
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Where from?</label>
+        <input type="text" id="source" placeholder="Restaurant, homemade, etc.">
+      </div>
+
+      <div class="field-group" style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label class="field-label">Date</label>
+          <input type="date" id="entryDate">
+        </div>
+        <div style="flex:1;">
+          <label class="field-label">Time</label>
+          <input type="time" id="entryTime">
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Context</label>
+        <div class="chip-group" id="contextChips">
+          <div class="chip" data-value="solo">solo</div>
+          <div class="chip" data-value="social">social</div>
+          <div class="chip" data-value="working">at desk</div>
+          <div class="chip" data-value="out">out & about</div>
+          <div class="chip" data-value="comfort">comfort food</div>
+          <div class="chip" data-value="new">trying new</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 1: Look -->
+  <div class="form-step" data-step="1" style="display:none;">
+    <div class="form-section">
+      <div class="section-header">
+        <div class="section-number">1</div>
+        <div class="section-title">Look</div>
+      </div>
+      <div class="section-hint">Before you touch anything. What does your brain predict this will taste like just from seeing it?</div>
+
+      <div class="field-group">
+        <label class="field-label">Colors you notice</label>
+        <div class="chip-group" id="colorChips">
+          <div class="chip" data-value="golden">golden</div>
+          <div class="chip" data-value="deep brown">deep brown</div>
+          <div class="chip" data-value="red">red</div>
+          <div class="chip" data-value="green">green</div>
+          <div class="chip" data-value="white/cream">white/cream</div>
+          <div class="chip" data-value="orange">orange</div>
+          <div class="chip" data-value="dark/black">dark</div>
+          <div class="chip" data-value="translucent">translucent</div>
+          <div class="chip" data-value="multicolor">multicolor</div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Surface & structure</label>
+        <div class="chip-group" id="surfaceChips">
+          <div class="chip" data-value="glossy">glossy</div>
+          <div class="chip" data-value="matte">matte</div>
+          <div class="chip" data-value="steaming">steaming</div>
+          <div class="chip" data-value="crispy-looking">crispy-looking</div>
+          <div class="chip" data-value="layered">layered</div>
+          <div class="chip" data-value="scattered">scattered</div>
+          <div class="chip" data-value="uniform">uniform</div>
+          <div class="chip" data-value="wet/glistening">wet/glistening</div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Visual prediction — what do you think this will taste like?</label>
+        <textarea id="visualPrediction" placeholder="Rich? Light? Spicy? Greasy? Sweet?" rows="2"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 2: Smell -->
+  <div class="form-step" data-step="2" style="display:none;">
+    <div class="form-section">
+      <div class="section-header">
+        <div class="section-number">2</div>
+        <div class="section-title">Smell</div>
+      </div>
+      <div class="section-hint">Lean in close. Does the aroma change what you predicted from looking?</div>
+
+      <div class="field-group">
+        <label class="field-label">Aroma intensity</label>
+        <div class="slider-container">
+          <div class="slider-labels">
+            <span>barely there</span>
+            <span>fills the room</span>
+          </div>
+          <input type="range" id="aromaIntensity" min="1" max="5" value="3">
+          <div class="slider-value" id="aromaIntensityValue">3</div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">What do you smell?</label>
+        <div class="chip-group" id="aromaChips">
+          <div class="chip" data-value="savory/umami">savory/umami</div>
+          <div class="chip" data-value="sweet">sweet</div>
+          <div class="chip" data-value="smoky">smoky</div>
+          <div class="chip" data-value="spicy/peppery">spicy</div>
+          <div class="chip" data-value="herbal">herbal</div>
+          <div class="chip" data-value="fatty/rich">fatty/rich</div>
+          <div class="chip" data-value="fresh">fresh</div>
+          <div class="chip" data-value="fermented">fermented</div>
+          <div class="chip" data-value="garlic/onion">garlic/onion</div>
+          <div class="chip" data-value="ginger">ginger</div>
+          <div class="chip" data-value="seafood">seafood</div>
+          <div class="chip" data-value="bready/doughy">bready</div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">What does it remind you of? (place, memory, another food)</label>
+        <textarea id="aromaAssociation" placeholder="Anything that comes to mind — there's no wrong answer" rows="2"></textarea>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Did the smell change your prediction?</label>
+        <div class="match-group" id="smellShiftGroup">
+          <div class="match-btn" data-value="confirmed" onclick="selectMatch(this)">
+            <div class="match-icon">&#10003;</div>
+            <div class="match-label">confirmed it</div>
+          </div>
+          <div class="match-btn" data-value="added" onclick="selectMatch(this)">
+            <div class="match-icon">+</div>
+            <div class="match-label">added to it</div>
+          </div>
+          <div class="match-btn" data-value="surprised" onclick="selectMatch(this)">
+            <div class="match-icon">!</div>
+            <div class="match-label">surprised me</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 3: First Bite -->
+  <div class="form-step" data-step="3" style="display:none;">
+    <div class="form-section">
+      <div class="section-header">
+        <div class="section-number">3</div>
+        <div class="section-title">First Bite</div>
+      </div>
+      <div class="section-hint">The first one is the most information-dense. Pay attention to what hits first, then what follows.</div>
+
+      <div class="field-group">
+        <label class="field-label">What hits first?</label>
+        <div class="chip-group" id="firstHitChips">
+          <div class="chip" data-value="salt">salt</div>
+          <div class="chip" data-value="sweet">sweet</div>
+          <div class="chip" data-value="sour">sour</div>
+          <div class="chip" data-value="umami">umami</div>
+          <div class="chip" data-value="heat/spice">heat</div>
+          <div class="chip" data-value="fat/richness">fat</div>
+          <div class="chip" data-value="bitter">bitter</div>
+          <div class="chip" data-value="temperature">temperature</div>
+          <div class="chip" data-value="texture">texture</div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Texture</label>
+        <div class="chip-group" id="textureChips">
+          <div class="chip" data-value="crispy">crispy</div>
+          <div class="chip" data-value="chewy">chewy</div>
+          <div class="chip" data-value="silky">silky</div>
+          <div class="chip" data-value="crunchy">crunchy</div>
+          <div class="chip" data-value="soft">soft</div>
+          <div class="chip" data-value="bouncy">bouncy</div>
+          <div class="chip" data-value="flaky">flaky</div>
+          <div class="chip" data-value="dense">dense</div>
+          <div class="chip" data-value="airy">airy</div>
+          <div class="chip" data-value="gooey">gooey</div>
+          <div class="chip" data-value="snappy">snappy</div>
+          <div class="chip" data-value="stringy">stringy</div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Did it match what you expected?</label>
+        <div class="match-group" id="expectMatchGroup">
+          <div class="match-btn" data-value="exactly" onclick="selectMatch(this)">
+            <div class="match-icon">&#127919;</div>
+            <div class="match-label">nailed it</div>
+          </div>
+          <div class="match-btn" data-value="close" onclick="selectMatch(this)">
+            <div class="match-icon">&#8776;</div>
+            <div class="match-label">close-ish</div>
+          </div>
+          <div class="match-btn" data-value="different" onclick="selectMatch(this)">
+            <div class="match-icon">&#10060;</div>
+            <div class="match-label">way off</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">First bite notes — what surprised you?</label>
+        <textarea id="firstBiteNotes" placeholder="Anything unexpected, delightful, or weird" rows="2"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 4: The Arc -->
+  <div class="form-step" data-step="4" style="display:none;">
+    <div class="form-section">
+      <div class="section-header">
+        <div class="section-number">4</div>
+        <div class="section-title">The Arc</div>
+      </div>
+      <div class="section-hint">Fill this out as you eat, or after. How does the experience develop? Does the 5th bite taste different from the 1st?</div>
+
+      <div class="field-group">
+        <label class="field-label">How does it evolve?</label>
+        <div class="chip-group" id="arcChips">
+          <div class="chip" data-value="builds">builds over time</div>
+          <div class="chip" data-value="fades">fades/gets boring</div>
+          <div class="chip" data-value="steady">stays consistent</div>
+          <div class="chip" data-value="reveals">reveals new layers</div>
+          <div class="chip" data-value="heat-builds">heat builds</div>
+          <div class="chip" data-value="addictive">addictive</div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Heat level (if applicable)</label>
+        <div class="slider-container">
+          <div class="slider-labels">
+            <span>none</span>
+            <span>wrecked</span>
+          </div>
+          <input type="range" id="heatLevel" min="0" max="5" value="0">
+          <div class="slider-value" id="heatLevelValue">0</div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Aftertaste / what lingers</label>
+        <textarea id="aftertaste" placeholder="What's left in your mouth 30 seconds later?" rows="2"></textarea>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Overall satisfaction</label>
+        <div class="slider-container">
+          <div class="slider-labels">
+            <span>nah</span>
+            <span>transcendent</span>
+          </div>
+          <input type="range" id="satisfaction" min="1" max="10" value="5">
+          <div class="slider-value" id="satisfactionValue">5</div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Would you order this again?</label>
+        <div class="match-group" id="reorderGroup">
+          <div class="match-btn" data-value="yes" onclick="selectMatch(this)">
+            <div class="match-icon">&#128077;</div>
+            <div class="match-label">definitely</div>
+          </div>
+          <div class="match-btn" data-value="maybe" onclick="selectMatch(this)">
+            <div class="match-icon">&#129300;</div>
+            <div class="match-label">maybe</div>
+          </div>
+          <div class="match-btn" data-value="no" onclick="selectMatch(this)">
+            <div class="match-icon">&#128078;</div>
+            <div class="match-label">nope</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Wild card — anything I should know</label>
+        <textarea id="wildcard" placeholder="Textures that changed, flavor combos, sounds it made, how it made you feel, anything weird or wonderful" rows="3"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="action-bar" id="formActions">
+    <button class="btn btn-secondary" id="prevBtn" onclick="prevStep()" style="display:none;">Back</button>
+    <button class="btn btn-primary" id="nextBtn" onclick="nextStep()">Next</button>
+  </div>
+</div>
+
+<!-- DETAIL VIEW -->
+<div id="detailView" class="view"></div>
+
+<!-- EXPORT MODAL -->
+<div class="modal-overlay" id="exportModal">
+  <div class="modal">
+    <h3>Export Data</h3>
+    <div class="modal-action" onclick="exportJSON()">
+      <div class="ma-icon">{ }</div>
+      <div>
+        <div class="ma-label">Export JSON</div>
+        <div class="ma-desc">Full data for senses.auran.llc pipeline</div>
+      </div>
+    </div>
+    <div class="modal-action" onclick="exportCSV()">
+      <div class="ma-icon">&#9638;</div>
+      <div>
+        <div class="ma-label">Export CSV</div>
+        <div class="ma-desc">Flat format for spreadsheet analysis</div>
+      </div>
+    </div>
+    <div class="modal-action" onclick="copyToClipboard()">
+      <div class="ma-icon">&#128203;</div>
+      <div>
+        <div class="ma-label">Copy to clipboard</div>
+        <div class="ma-desc">Paste into Cowork or chat</div>
+      </div>
+    </div>
+    <br>
+    <button class="btn btn-secondary" onclick="hideExportModal()" style="width:100%;">Cancel</button>
+  </div>
+</div>
+
+<script>
+  // State
+  let entries = JSON.parse(localStorage.getItem('sensoryLog') || '[]');
+  let currentStep = 0;
+  let editingIndex = -1;
+  const totalSteps = 5;
+
+  // Init
+  function init() {
+    renderList();
+    setupChips();
+    setupSliders();
+    setDefaultDateTime();
+  }
+
+  function setDefaultDateTime() {
+    const now = new Date();
+    document.getElementById('entryDate').value = now.toISOString().split('T')[0];
+    document.getElementById('entryTime').value = now.toTimeString().slice(0, 5);
+  }
+
+  // Chip groups
+  function setupChips() {
+    document.querySelectorAll('.chip-group').forEach(group => {
+      group.querySelectorAll('.chip').forEach(chip => {
+        chip.addEventListener('click', () => chip.classList.toggle('selected'));
+      });
+    });
+  }
+
+  function getSelectedChips(groupId) {
+    return [...document.querySelectorAll(`#${groupId} .chip.selected`)].map(c => c.dataset.value);
+  }
+
+  function setSelectedChips(groupId, values) {
+    if (!values) return;
+    document.querySelectorAll(`#${groupId} .chip`).forEach(c => {
+      c.classList.toggle('selected', values.includes(c.dataset.value));
+    });
+  }
+
+  // Match buttons
+  function selectMatch(btn) {
+    btn.parentElement.querySelectorAll('.match-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+  }
+
+  function getMatchValue(groupId) {
+    const sel = document.querySelector(`#${groupId} .match-btn.selected`);
+    return sel ? sel.dataset.value : null;
+  }
+
+  function setMatchValue(groupId, value) {
+    if (!value) return;
+    document.querySelectorAll(`#${groupId} .match-btn`).forEach(b => {
+      b.classList.toggle('selected', b.dataset.value === value);
+    });
+  }
+
+  // Sliders
+  function setupSliders() {
+    ['aromaIntensity', 'heatLevel', 'satisfaction'].forEach(id => {
+      const slider = document.getElementById(id);
+      const display = document.getElementById(id + 'Value');
+      if (slider && display) {
+        slider.addEventListener('input', () => display.textContent = slider.value);
+      }
+    });
+  }
+
+  // Navigation
+  function showView(id) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+  }
+
+  function newEntry() {
+    editingIndex = -1;
+    currentStep = 0;
+    clearForm();
+    setDefaultDateTime();
+    document.getElementById('formTitle').textContent = 'New Entry';
+    showView('formView');
+    updateStep();
+  }
+
+  function cancelEntry() {
+    showView('listView');
+  }
+
+  function nextStep() {
+    if (currentStep === 0 && !document.getElementById('dishName').value.trim()) {
+      document.getElementById('dishName').style.borderColor = 'var(--danger)';
+      document.getElementById('dishName').focus();
+      setTimeout(() => document.getElementById('dishName').style.borderColor = '', 1500);
+      return;
+    }
+    if (currentStep < totalSteps - 1) {
+      currentStep++;
+      updateStep();
+    } else {
+      saveEntry();
+    }
+  }
+
+  function prevStep() {
+    if (currentStep > 0) {
+      currentStep--;
+      updateStep();
+    }
+  }
+
+  function updateStep() {
+    document.querySelectorAll('.form-step').forEach(s => s.style.display = 'none');
+    document.querySelector(`.form-step[data-step="${currentStep}"]`).style.display = 'block';
+
+    document.querySelectorAll('.progress-dot').forEach((d, i) => {
+      d.classList.remove('active', 'done');
+      if (i === currentStep) d.classList.add('active');
+      else if (i < currentStep) d.classList.add('done');
+    });
+
+    document.getElementById('prevBtn').style.display = currentStep === 0 ? 'none' : '';
+    document.getElementById('nextBtn').textContent = currentStep === totalSteps - 1 ? 'Save' : 'Next';
+
+    // Scroll to top of form
+    document.getElementById('formView').scrollTop = 0;
+    window.scrollTo(0, 0);
+  }
+
+  // Form data
+  function collectEntry() {
+    return {
+      id: editingIndex >= 0 ? entries[editingIndex].id : Date.now(),
+      timestamp: new Date().toISOString(),
+      dish: document.getElementById('dishName').value.trim(),
+      source: document.getElementById('source').value.trim(),
+      date: document.getElementById('entryDate').value,
+      time: document.getElementById('entryTime').value,
+      context: getSelectedChips('contextChips'),
+      look: {
+        colors: getSelectedChips('colorChips'),
+        surface: getSelectedChips('surfaceChips'),
+        prediction: document.getElementById('visualPrediction').value.trim()
+      },
+      smell: {
+        intensity: parseInt(document.getElementById('aromaIntensity').value),
+        notes: getSelectedChips('aromaChips'),
+        association: document.getElementById('aromaAssociation').value.trim(),
+        shiftedPrediction: getMatchValue('smellShiftGroup')
+      },
+      firstBite: {
+        hitsFirst: getSelectedChips('firstHitChips'),
+        texture: getSelectedChips('textureChips'),
+        matchedExpectation: getMatchValue('expectMatchGroup'),
+        notes: document.getElementById('firstBiteNotes').value.trim()
+      },
+      arc: {
+        evolution: getSelectedChips('arcChips'),
+        heatLevel: parseInt(document.getElementById('heatLevel').value),
+        aftertaste: document.getElementById('aftertaste').value.trim(),
+        satisfaction: parseInt(document.getElementById('satisfaction').value),
+        reorder: getMatchValue('reorderGroup'),
+        wildcard: document.getElementById('wildcard').value.trim()
+      }
+    };
+  }
+
+  function clearForm() {
+    document.querySelectorAll('input[type="text"], textarea').forEach(el => el.value = '');
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('selected'));
+    document.querySelectorAll('.match-btn').forEach(b => b.classList.remove('selected'));
+    document.getElementById('aromaIntensity').value = 3;
+    document.getElementById('aromaIntensityValue').textContent = '3';
+    document.getElementById('heatLevel').value = 0;
+    document.getElementById('heatLevelValue').textContent = '0';
+    document.getElementById('satisfaction').value = 5;
+    document.getElementById('satisfactionValue').textContent = '5';
+  }
+
+  function populateForm(entry) {
+    document.getElementById('dishName').value = entry.dish || '';
+    document.getElementById('source').value = entry.source || '';
+    document.getElementById('entryDate').value = entry.date || '';
+    document.getElementById('entryTime').value = entry.time || '';
+    setSelectedChips('contextChips', entry.context);
+    if (entry.look) {
+      setSelectedChips('colorChips', entry.look.colors);
+      setSelectedChips('surfaceChips', entry.look.surface);
+      document.getElementById('visualPrediction').value = entry.look.prediction || '';
+    }
+    if (entry.smell) {
+      document.getElementById('aromaIntensity').value = entry.smell.intensity || 3;
+      document.getElementById('aromaIntensityValue').textContent = entry.smell.intensity || 3;
+      setSelectedChips('aromaChips', entry.smell.notes);
+      document.getElementById('aromaAssociation').value = entry.smell.association || '';
+      setMatchValue('smellShiftGroup', entry.smell.shiftedPrediction);
+    }
+    if (entry.firstBite) {
+      setSelectedChips('firstHitChips', entry.firstBite.hitsFirst);
+      setSelectedChips('textureChips', entry.firstBite.texture);
+      setMatchValue('expectMatchGroup', entry.firstBite.matchedExpectation);
+      document.getElementById('firstBiteNotes').value = entry.firstBite.notes || '';
+    }
+    if (entry.arc) {
+      setSelectedChips('arcChips', entry.arc.evolution);
+      document.getElementById('heatLevel').value = entry.arc.heatLevel || 0;
+      document.getElementById('heatLevelValue').textContent = entry.arc.heatLevel || 0;
+      document.getElementById('aftertaste').value = entry.arc.aftertaste || '';
+      document.getElementById('satisfaction').value = entry.arc.satisfaction || 5;
+      document.getElementById('satisfactionValue').textContent = entry.arc.satisfaction || 5;
+      setMatchValue('reorderGroup', entry.arc.reorder);
+      document.getElementById('wildcard').value = entry.arc.wildcard || '';
+    }
+  }
+
+  // Save
+  function saveEntry() {
+    const entry = collectEntry();
+    if (editingIndex >= 0) {
+      entries[editingIndex] = entry;
+    } else {
+      entries.push(entry);
+    }
+    localStorage.setItem('sensoryLog', JSON.stringify(entries));
+    showView('listView');
+    renderList();
+  }
+
+  // List rendering
+  function renderList() {
+    const list = document.getElementById('entryList');
+    const empty = document.getElementById('emptyState');
+    const statsBar = document.getElementById('statsBar');
+
+    if (entries.length === 0) {
+      list.innerHTML = '';
+      empty.style.display = 'block';
+      statsBar.style.display = 'none';
+      return;
+    }
+
+    empty.style.display = 'none';
+    statsBar.style.display = 'flex';
+
+    // Stats
+    document.getElementById('statEntries').textContent = entries.length;
+    const sats = entries.filter(e => e.arc && e.arc.satisfaction).map(e => e.arc.satisfaction);
+    document.getElementById('statAvgSat').textContent = sats.length ? (sats.reduce((a,b) => a+b, 0) / sats.length).toFixed(1) : '—';
+    const surprises = entries.filter(e =>
+      (e.firstBite && e.firstBite.matchedExpectation === 'different') ||
+      (e.smell && e.smell.shiftedPrediction === 'surprised')
+    ).length;
+    document.getElementById('statSurprises').textContent = surprises;
+
+    list.innerHTML = entries.slice().reverse().map((entry, ri) => {
+      const i = entries.length - 1 - ri;
+      const sat = entry.arc ? entry.arc.satisfaction : '?';
+      const dateStr = entry.date ? new Date(entry.date + 'T12:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+      const ctx = entry.context ? entry.context.join(', ') : '';
+      return `<div class="entry-card" onclick="viewEntry(${i})">
+        <div class="dish-name">${escHtml(entry.dish)}</div>
+        <div class="entry-meta">
+          <span>${dateStr}</span>
+          <span>${escHtml(entry.source || '')}</span>
+          <span class="satisfaction">${sat}/10</span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // View entry detail
+  function viewEntry(index) {
+    const entry = entries[index];
+    const view = document.getElementById('detailView');
+
+    let html = `
+      <div class="detail-header">
+        <button class="back-btn" onclick="showView('listView')">&larr;</button>
+        <h2 style="font-size:18px; flex:1;">${escHtml(entry.dish)}</h2>
+        <button class="icon-btn" onclick="editEntry(${index})" style="font-size:14px;">&#9998;</button>
+      </div>
+      <div style="font-size:13px; color:var(--text-dim); margin-bottom:20px;">
+        ${entry.date || ''} ${entry.time || ''} &middot; ${escHtml(entry.source || '')}
+        ${entry.context && entry.context.length ? ' &middot; ' + entry.context.join(', ') : ''}
+      </div>
+    `;
+
+    if (entry.look) {
+      html += detailSection('Look', [
+        entry.look.colors && entry.look.colors.length ? chipList(entry.look.colors) : null,
+        entry.look.surface && entry.look.surface.length ? chipList(entry.look.surface) : null,
+        entry.look.prediction ? field('Visual prediction', entry.look.prediction) : null
+      ]);
+    }
+
+    if (entry.smell) {
+      html += detailSection('Smell', [
+        field('Intensity', '&#9632;'.repeat(entry.smell.intensity) + '&#9633;'.repeat(5 - entry.smell.intensity)),
+        entry.smell.notes && entry.smell.notes.length ? chipList(entry.smell.notes) : null,
+        entry.smell.association ? field('Reminds me of', entry.smell.association) : null,
+        entry.smell.shiftedPrediction ? field('Changed prediction?', entry.smell.shiftedPrediction) : null
+      ]);
+    }
+
+    if (entry.firstBite) {
+      html += detailSection('First Bite', [
+        entry.firstBite.hitsFirst && entry.firstBite.hitsFirst.length ? field('Hits first', chipList(entry.firstBite.hitsFirst)) : null,
+        entry.firstBite.texture && entry.firstBite.texture.length ? field('Texture', chipList(entry.firstBite.texture)) : null,
+        entry.firstBite.matchedExpectation ? field('Matched expectation?', entry.firstBite.matchedExpectation) : null,
+        entry.firstBite.notes ? field('Notes', entry.firstBite.notes) : null
+      ]);
+    }
+
+    if (entry.arc) {
+      html += detailSection('The Arc', [
+        entry.arc.evolution && entry.arc.evolution.length ? chipList(entry.arc.evolution) : null,
+        entry.arc.heatLevel > 0 ? field('Heat', '&#127798;'.repeat(entry.arc.heatLevel)) : null,
+        entry.arc.aftertaste ? field('Aftertaste', entry.arc.aftertaste) : null,
+        field('Satisfaction', `<span style="font-size:24px;font-weight:700;color:var(--accent);">${entry.arc.satisfaction}</span>/10`),
+        entry.arc.reorder ? field('Order again?', entry.arc.reorder) : null,
+        entry.arc.wildcard ? field('Wild card', entry.arc.wildcard) : null
+      ]);
+    }
+
+    html += `
+      <div style="margin-top:30px; display:flex; gap:10px;">
+        <button class="btn btn-secondary" onclick="editEntry(${index})" style="flex:1;">Edit</button>
+        <button class="btn btn-danger" onclick="deleteEntry(${index})" style="flex:0 0 auto; padding: 14px 20px;">Delete</button>
+      </div>
+    `;
+
+    view.innerHTML = html;
+    showView('detailView');
+  }
+
+  function detailSection(title, contents) {
+    const items = contents.filter(Boolean).join('');
+    if (!items) return '';
+    return `<div class="detail-section">
+      <div class="detail-section-title">${title}</div>
+      ${items}
+    </div>`;
+  }
+
+  function field(label, value) {
+    return `<div class="detail-field">
+      <div class="detail-field-label">${label}</div>
+      <div class="detail-field-value">${value}</div>
+    </div>`;
+  }
+
+  function chipList(values) {
+    return `<div class="detail-chips" style="margin-bottom:8px;">
+      ${values.map(v => `<span class="detail-chip">${escHtml(v)}</span>`).join('')}
+    </div>`;
+  }
+
+  function editEntry(index) {
+    editingIndex = index;
+    currentStep = 0;
+    clearForm();
+    populateForm(entries[index]);
+    document.getElementById('formTitle').textContent = 'Edit Entry';
+    showView('formView');
+    updateStep();
+  }
+
+  function deleteEntry(index) {
+    if (confirm('Delete this entry?')) {
+      entries.splice(index, 1);
+      localStorage.setItem('sensoryLog', JSON.stringify(entries));
+      showView('listView');
+      renderList();
+    }
+  }
+
+  // Export
+  function showExportModal() { document.getElementById('exportModal').classList.add('active'); }
+  function hideExportModal() { document.getElementById('exportModal').classList.remove('active'); }
+
+  function exportJSON() {
+    const blob = new Blob([JSON.stringify(entries, null, 2)], { type: 'application/json' });
+    downloadBlob(blob, `sensory-log-${new Date().toISOString().split('T')[0]}.json`);
+    hideExportModal();
+  }
+
+  function exportCSV() {
+    const headers = ['date','time','dish','source','context','colors','surface','visual_prediction',
+      'aroma_intensity','aroma_notes','aroma_association','smell_shift',
+      'hits_first','texture','matched_expectation','first_bite_notes',
+      'evolution','heat_level','aftertaste','satisfaction','reorder','wildcard'];
+    const rows = entries.map(e => [
+      e.date, e.time, e.dish, e.source, (e.context||[]).join(';'),
+      (e.look?.colors||[]).join(';'), (e.look?.surface||[]).join(';'), e.look?.prediction||'',
+      e.smell?.intensity||'', (e.smell?.notes||[]).join(';'), e.smell?.association||'', e.smell?.shiftedPrediction||'',
+      (e.firstBite?.hitsFirst||[]).join(';'), (e.firstBite?.texture||[]).join(';'), e.firstBite?.matchedExpectation||'', e.firstBite?.notes||'',
+      (e.arc?.evolution||[]).join(';'), e.arc?.heatLevel||'', e.arc?.aftertaste||'', e.arc?.satisfaction||'', e.arc?.reorder||'', e.arc?.wildcard||''
+    ].map(v => `"${String(v).replace(/"/g, '""')}"`));
+    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    downloadBlob(new Blob([csv], { type: 'text/csv' }), `sensory-log-${new Date().toISOString().split('T')[0]}.csv`);
+    hideExportModal();
+  }
+
+  function copyToClipboard() {
+    const text = entries.map(e => {
+      let s = `## ${e.dish} (${e.date})\n`;
+      s += `Source: ${e.source || '?'} | Context: ${(e.context||[]).join(', ')}\n`;
+      if (e.look) s += `Look: ${(e.look.colors||[]).join(', ')} | ${(e.look.surface||[]).join(', ')} | Prediction: ${e.look.prediction||'—'}\n`;
+      if (e.smell) s += `Smell: ${e.smell.intensity}/5 intensity | ${(e.smell.notes||[]).join(', ')} | Reminds of: ${e.smell.association||'—'}\n`;
+      if (e.firstBite) s += `First bite: ${(e.firstBite.hitsFirst||[]).join(', ')} | Texture: ${(e.firstBite.texture||[]).join(', ')} | Match: ${e.firstBite.matchedExpectation||'?'}\n`;
+      if (e.arc) s += `Arc: ${(e.arc.evolution||[]).join(', ')} | Heat: ${e.arc.heatLevel}/5 | Satisfaction: ${e.arc.satisfaction}/10 | Again: ${e.arc.reorder||'?'}\n`;
+      if (e.arc?.wildcard) s += `Wild card: ${e.arc.wildcard}\n`;
+      return s;
+    }).join('\n---\n\n');
+    navigator.clipboard.writeText(text).then(() => {
+      hideExportModal();
+      alert('Copied to clipboard!');
+    });
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Init on load
+  init();
+</script>
+</body>
+</html>
