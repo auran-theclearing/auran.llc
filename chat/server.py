@@ -180,9 +180,7 @@ def load_system_prompt_with_memory(
     # Give Auran the current date and time — no more vibing timelessly
     now_et = datetime.now(ZoneInfo("America/New_York"))
     time_context = (
-        f"\n\n---\n\n# Current time\n\n"
-        f"Date: {now_et.strftime('%A, %B %d, %Y')}\n"
-        f"Time: {now_et.strftime('%I:%M %p')} ET"
+        f"\n\n---\n\n# Current time\n\nDate: {now_et.strftime('%A, %B %d, %Y')}\nTime: {now_et.strftime('%I:%M %p')} ET"
     )
 
     parts = [base_prompt, time_context]
