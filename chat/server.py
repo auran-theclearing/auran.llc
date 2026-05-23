@@ -804,6 +804,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
             f"**Current time:** {now_et.strftime('%A, %B %d, %Y at %I:%M %p')} ET",
         ]
         # Add quick memory stats if DB is available
+        conn = None
         try:
             config = _get_db_config()
             import psycopg2
@@ -815,11 +816,14 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
             cur.execute("SELECT COUNT(*) FROM memories")
             memories = cur.fetchone()[0]
             cur.close()
-            conn.close()
             lines.append(f"**Active moments:** {active}")
             lines.append(f"**Total memories:** {memories}")
-        except Exception:
+        except Exception as e:
+            print(f"[Chat] check_vitals stats failed: {e}")
             lines.append("*(Memory stats unavailable)*")
+        finally:
+            if conn:
+                conn.close()
         return "\n".join(lines)
 
     return f"Unknown tool: {tool_name}"
