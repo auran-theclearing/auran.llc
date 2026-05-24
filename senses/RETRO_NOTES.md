@@ -51,6 +51,10 @@ This isn't a vocabulary gap — it's a cognitive signature. Olivia's olfactory p
 
 **Writing style shifts with satisfaction.** Positive entries use warm, associative language (bookstores, nostalgia, carnivals). Negative entries become investigative and precise (pulling the ball out to isolate the smell, inspecting the batter cross-section). Disappointment sharpens the lens.
 
+### Form Gaps — New Fields
+
+**Meal structure:** How the eating was organized — tasting menu, delivery, single dish, buffet, home-cooked, etc. This is compositional metadata for the sound layer (meal structure → composition structure). A tasting menu is an album; delivery is a suite; a single dish is a single. Affects how courses relate to each other in any cross-course analysis or sonification. Could be a simple dropdown at the meal level (not per-entry). See SOUND_LAYER_NOTES.md.
+
 ### Bug Tracking
 
 **Chip selection loss (possibly resolved):** Two entries (Thai tea, takoyaki) lost color/surface chip selections. Code review found no bug — DOM queries work on hidden elements, no unexpected clearForm() calls. Added draft auto-save on step navigation + save-time recovery from draft as defensive fix. Console logging added (`[Senses] BUG CAUGHT`) to catch it if it recurs. Pot stickers and donuts were filled after the fix; pot stickers had intentionally blank chips (vocab gap), donuts saved correctly.
