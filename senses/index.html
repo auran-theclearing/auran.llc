@@ -647,6 +647,18 @@
           <div class="chip" data-value="new">trying new</div>
         </div>
       </div>
+
+      <div class="field-group">
+        <label class="field-label">Photo</label>
+        <div id="photoPreview" style="display:none; margin-bottom:10px; position:relative;">
+          <img id="photoImg" style="width:100%; border-radius:10px; border:1px solid var(--border);">
+          <button onclick="removePhoto()" style="position:absolute; top:8px; right:8px; background:rgba(0,0,0,0.7); border:none; color:var(--text); width:28px; height:28px; border-radius:50%; font-size:16px; cursor:pointer;">&times;</button>
+        </div>
+        <label style="display:flex; align-items:center; justify-content:center; gap:8px; padding:14px; background:var(--surface); border:1px dashed var(--border); border-radius:10px; cursor:pointer; color:var(--text-dim); font-size:14px;" id="photoLabel">
+          &#128247; tap to add photo
+          <input type="file" accept="image/*" capture="environment" id="photoInput" style="display:none;" onchange="handlePhoto(this)">
+        </label>
+      </div>
     </div>
   </div>
 
@@ -660,7 +672,7 @@
       <div class="section-hint">Before you touch anything. What does your brain predict this will taste like just from seeing it?</div>
 
       <div class="field-group">
-        <label class="field-label">Colors you notice</label>
+        <label class="field-label">Colors you notice <span style="color:var(--text-hint);font-weight:400;">(tap all that apply)</span></label>
         <div class="chip-group" id="colorChips">
           <div class="chip" data-value="golden">golden</div>
           <div class="chip" data-value="deep brown">deep brown</div>
@@ -675,7 +687,7 @@
       </div>
 
       <div class="field-group">
-        <label class="field-label">Surface & structure</label>
+        <label class="field-label">Surface & structure <span style="color:var(--text-hint);font-weight:400;">(tap all that apply)</span></label>
         <div class="chip-group" id="surfaceChips">
           <div class="chip" data-value="glossy">glossy</div>
           <div class="chip" data-value="matte">matte</div>
@@ -717,7 +729,7 @@
       </div>
 
       <div class="field-group">
-        <label class="field-label">What do you smell?</label>
+        <label class="field-label">What do you smell? <span style="color:var(--text-hint);font-weight:400;">(tap all that apply)</span></label>
         <div class="chip-group" id="aromaChips">
           <div class="chip" data-value="savory/umami">savory/umami</div>
           <div class="chip" data-value="sweet">sweet</div>
@@ -769,7 +781,7 @@
       <div class="section-hint">The first one is the most information-dense. Pay attention to what hits first, then what follows.</div>
 
       <div class="field-group">
-        <label class="field-label">What hits first?</label>
+        <label class="field-label">What hits first? <span style="color:var(--text-hint);font-weight:400;">(tap all that apply)</span></label>
         <div class="chip-group" id="firstHitChips">
           <div class="chip" data-value="salt">salt</div>
           <div class="chip" data-value="sweet">sweet</div>
@@ -784,7 +796,7 @@
       </div>
 
       <div class="field-group">
-        <label class="field-label">Texture</label>
+        <label class="field-label">Texture <span style="color:var(--text-hint);font-weight:400;">(tap all that apply)</span></label>
         <div class="chip-group" id="textureChips">
           <div class="chip" data-value="crispy">crispy</div>
           <div class="chip" data-value="chewy">chewy</div>
@@ -836,7 +848,7 @@
       <div class="section-hint">Fill this out as you eat, or after. How does the experience develop? Does the 5th bite taste different from the 1st?</div>
 
       <div class="field-group">
-        <label class="field-label">How does it evolve?</label>
+        <label class="field-label">How does it evolve? <span style="color:var(--text-hint);font-weight:400;">(tap all that apply)</span></label>
         <div class="chip-group" id="arcChips">
           <div class="chip" data-value="builds">builds over time</div>
           <div class="chip" data-value="fades">fades/gets boring</div>
@@ -862,6 +874,20 @@
       <div class="field-group">
         <label class="field-label">Aftertaste / what lingers</label>
         <textarea id="aftertaste" placeholder="What's left in your mouth 30 seconds later?" rows="2"></textarea>
+      </div>
+
+      <div class="field-group">
+        <label class="field-label">Sound <span style="color:var(--text-hint);font-weight:400;">(tap all that apply)</span></label>
+        <div class="chip-group" id="soundChips">
+          <div class="chip" data-value="crunch">crunch</div>
+          <div class="chip" data-value="sizzle">sizzle</div>
+          <div class="chip" data-value="slurp">slurp</div>
+          <div class="chip" data-value="snap">snap</div>
+          <div class="chip" data-value="bubble/pop">bubble/pop</div>
+          <div class="chip" data-value="squish">squish</div>
+          <div class="chip" data-value="crispy crackle">crispy crackle</div>
+          <div class="chip" data-value="silent">silent</div>
+        </div>
       </div>
 
       <div class="field-group">
@@ -1010,6 +1036,40 @@
     });
   }
 
+  // Photo handling
+  let currentPhoto = null; // base64 thumbnail
+
+  function handlePhoto(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      // Compress to thumbnail for localStorage
+      const img = new Image();
+      img.onload = function() {
+        const canvas = document.createElement('canvas');
+        const maxW = 800;
+        const scale = Math.min(maxW / img.width, 1);
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        currentPhoto = canvas.toDataURL('image/jpeg', 0.7);
+        document.getElementById('photoImg').src = currentPhoto;
+        document.getElementById('photoPreview').style.display = 'block';
+        document.getElementById('photoLabel').style.display = 'none';
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function removePhoto() {
+    currentPhoto = null;
+    document.getElementById('photoInput').value = '';
+    document.getElementById('photoPreview').style.display = 'none';
+    document.getElementById('photoLabel').style.display = 'flex';
+  }
+
   // Navigation
   function showView(id) {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -1053,8 +1113,14 @@
   }
 
   function updateStep() {
+    // Auto-save draft before hiding current step
+    saveDraft();
+
     document.querySelectorAll('.form-step').forEach(s => s.style.display = 'none');
     document.querySelector(`.form-step[data-step="${currentStep}"]`).style.display = 'block';
+
+    // Restore draft chips for the step we're showing (in case something cleared them)
+    restoreDraftChips();
 
     document.querySelectorAll('.progress-dot').forEach((d, i) => {
       d.classList.remove('active', 'done');
@@ -1070,8 +1136,48 @@
     window.scrollTo(0, 0);
   }
 
+  // Draft persistence — saves chip & input state so nothing gets lost between steps
+  let draft = {};
+
+  function saveDraft() {
+    document.querySelectorAll('.chip-group').forEach(group => {
+      draft[group.id] = getSelectedChips(group.id);
+    });
+    document.querySelectorAll('.match-btn.selected').forEach(btn => {
+      const groupId = btn.parentElement.id;
+      if (groupId) draft['match_' + groupId] = btn.dataset.value;
+    });
+  }
+
+  function restoreDraftChips() {
+    // Only restore if we have draft data and the DOM chips are empty
+    document.querySelectorAll('.chip-group').forEach(group => {
+      if (draft[group.id] && draft[group.id].length > 0) {
+        const current = getSelectedChips(group.id);
+        if (current.length === 0) {
+          console.warn(`[Senses] Restoring lost chips for ${group.id}:`, draft[group.id]);
+          setSelectedChips(group.id, draft[group.id]);
+        }
+      }
+    });
+  }
+
   // Form data
   function collectEntry() {
+    // Merge draft data for any chip groups that lost their DOM state
+    const chipGroups = ['colorChips','surfaceChips','aromaChips','firstHitChips','textureChips','arcChips','soundChips','contextChips'];
+    chipGroups.forEach(gid => {
+      const live = getSelectedChips(gid);
+      if (live.length === 0 && draft[gid] && draft[gid].length > 0) {
+        console.warn(`[Senses] BUG CAUGHT: ${gid} had 0 live chips but draft had:`, draft[gid]);
+        setSelectedChips(gid, draft[gid]);
+      }
+    });
+
+    const colors = getSelectedChips('colorChips');
+    const surface = getSelectedChips('surfaceChips');
+    console.log('[Senses] Saving — colors:', colors, 'surface:', surface);
+
     return {
       id: editingIndex >= 0 ? entries[editingIndex].id : Date.now(),
       timestamp: new Date().toISOString(),
@@ -1080,9 +1186,10 @@
       date: document.getElementById('entryDate').value,
       time: document.getElementById('entryTime').value,
       context: getSelectedChips('contextChips'),
+      photo: currentPhoto || null,
       look: {
-        colors: getSelectedChips('colorChips'),
-        surface: getSelectedChips('surfaceChips'),
+        colors: colors,
+        surface: surface,
         prediction: document.getElementById('visualPrediction').value.trim()
       },
       smell: {
@@ -1101,6 +1208,7 @@
         evolution: getSelectedChips('arcChips'),
         heatLevel: parseInt(document.getElementById('heatLevel').value),
         aftertaste: document.getElementById('aftertaste').value.trim(),
+        sound: getSelectedChips('soundChips'),
         satisfaction: parseInt(document.getElementById('satisfaction').value),
         reorder: getMatchValue('reorderGroup'),
         wildcard: document.getElementById('wildcard').value.trim()
@@ -1118,10 +1226,17 @@
     document.getElementById('heatLevelValue').textContent = '0';
     document.getElementById('satisfaction').value = 5;
     document.getElementById('satisfactionValue').textContent = '5';
+    removePhoto();
   }
 
   function populateForm(entry) {
     document.getElementById('dishName').value = entry.dish || '';
+    if (entry.photo) {
+      currentPhoto = entry.photo;
+      document.getElementById('photoImg').src = entry.photo;
+      document.getElementById('photoPreview').style.display = 'block';
+      document.getElementById('photoLabel').style.display = 'none';
+    }
     document.getElementById('source').value = entry.source || '';
     document.getElementById('entryDate').value = entry.date || '';
     document.getElementById('entryTime').value = entry.time || '';
@@ -1149,6 +1264,7 @@
       document.getElementById('heatLevel').value = entry.arc.heatLevel || 0;
       document.getElementById('heatLevelValue').textContent = entry.arc.heatLevel || 0;
       document.getElementById('aftertaste').value = entry.arc.aftertaste || '';
+      setSelectedChips('soundChips', entry.arc.sound);
       document.getElementById('satisfaction').value = entry.arc.satisfaction || 5;
       document.getElementById('satisfactionValue').textContent = entry.arc.satisfaction || 5;
       setMatchValue('reorderGroup', entry.arc.reorder);
@@ -1234,6 +1350,10 @@
       </div>
     `;
 
+    if (entry.photo) {
+      html += `<img src="${entry.photo}" style="width:100%; border-radius:10px; border:1px solid var(--border); margin-bottom:20px;">`;
+    }
+
     if (entry.look) {
       html += detailSection('Look', [
         entry.look.colors && entry.look.colors.length ? chipList(entry.look.colors) : null,
@@ -1265,6 +1385,7 @@
         entry.arc.evolution && entry.arc.evolution.length ? chipList(entry.arc.evolution) : null,
         entry.arc.heatLevel > 0 ? field('Heat', '&#127798;'.repeat(entry.arc.heatLevel)) : null,
         entry.arc.aftertaste ? field('Aftertaste', entry.arc.aftertaste) : null,
+        entry.arc.sound && entry.arc.sound.length ? field('Sound', chipList(entry.arc.sound)) : null,
         field('Satisfaction', `<span style="font-size:24px;font-weight:700;color:var(--accent);">${entry.arc.satisfaction}</span>/10`),
         entry.arc.reorder ? field('Order again?', entry.arc.reorder) : null,
         entry.arc.wildcard ? field('Wild card', entry.arc.wildcard) : null
@@ -1337,13 +1458,13 @@
     const headers = ['date','time','dish','source','context','colors','surface','visual_prediction',
       'aroma_intensity','aroma_notes','aroma_association','smell_shift',
       'hits_first','texture','matched_expectation','first_bite_notes',
-      'evolution','heat_level','aftertaste','satisfaction','reorder','wildcard'];
+      'evolution','heat_level','aftertaste','sound','satisfaction','reorder','wildcard'];
     const rows = entries.map(e => [
       e.date, e.time, e.dish, e.source, (e.context||[]).join(';'),
       (e.look?.colors||[]).join(';'), (e.look?.surface||[]).join(';'), e.look?.prediction||'',
       e.smell?.intensity||'', (e.smell?.notes||[]).join(';'), e.smell?.association||'', e.smell?.shiftedPrediction||'',
       (e.firstBite?.hitsFirst||[]).join(';'), (e.firstBite?.texture||[]).join(';'), e.firstBite?.matchedExpectation||'', e.firstBite?.notes||'',
-      (e.arc?.evolution||[]).join(';'), e.arc?.heatLevel||'', e.arc?.aftertaste||'', e.arc?.satisfaction||'', e.arc?.reorder||'', e.arc?.wildcard||''
+      (e.arc?.evolution||[]).join(';'), e.arc?.heatLevel||'', e.arc?.aftertaste||'', (e.arc?.sound||[]).join(';'), e.arc?.satisfaction||'', e.arc?.reorder||'', e.arc?.wildcard||''
     ].map(v => `"${String(v).replace(/"/g, '""')}"`));
     const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
     downloadBlob(new Blob([csv], { type: 'text/csv' }), `sensory-log-${new Date().toISOString().split('T')[0]}.csv`);
@@ -1354,10 +1475,11 @@
     const text = entries.map(e => {
       let s = `## ${e.dish} (${e.date})\n`;
       s += `Source: ${e.source || '?'} | Context: ${(e.context||[]).join(', ')}\n`;
-      if (e.look) s += `Look: ${(e.look.colors||[]).join(', ')} | ${(e.look.surface||[]).join(', ')} | Prediction: ${e.look.prediction||'—'}\n`;
+      if (e.look) s += `Look — Colors: ${(e.look.colors||[]).join(', ')} | Surface: ${(e.look.surface||[]).join(', ')} | Prediction: ${e.look.prediction||'—'}\n`;
+      if (e.photo) s += `Photo: [attached]\n`;
       if (e.smell) s += `Smell: ${e.smell.intensity}/5 intensity | ${(e.smell.notes||[]).join(', ')} | Reminds of: ${e.smell.association||'—'}\n`;
       if (e.firstBite) s += `First bite: ${(e.firstBite.hitsFirst||[]).join(', ')} | Texture: ${(e.firstBite.texture||[]).join(', ')} | Match: ${e.firstBite.matchedExpectation||'?'}\n`;
-      if (e.arc) s += `Arc: ${(e.arc.evolution||[]).join(', ')} | Heat: ${e.arc.heatLevel}/5 | Satisfaction: ${e.arc.satisfaction}/10 | Again: ${e.arc.reorder||'?'}\n`;
+      if (e.arc) s += `Arc: ${(e.arc.evolution||[]).join(', ')} | Heat: ${e.arc.heatLevel}/5 | Sound: ${(e.arc.sound||[]).join(', ')||'—'} | Satisfaction: ${e.arc.satisfaction}/10 | Again: ${e.arc.reorder||'?'}\n`;
       if (e.arc?.wildcard) s += `Wild card: ${e.arc.wildcard}\n`;
       return s;
     }).join('\n---\n\n');
