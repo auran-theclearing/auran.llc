@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Night 1 — Z Ramen Sensory Map</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #151515;
+    --surface2: #1e1e1e;
+    --border: #2a2a2a;
+    --text: #e8e8e8;
+    --text-dim: #888;
+    --text-hint: #666;
+    --accent: #c9a55a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 20px;
+    max-width: 720px;
+    margin: 0 auto;
+    -webkit-font-smoothing: antialiased;
+  }
+  .header { text-align: center; padding: 2rem 0 1.5rem; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; }
+  .header h1 { font-size: 18px; font-weight: 500; color: var(--accent); }
+  .header p { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
+  .section-label { font-size: 14px; font-weight: 500; color: var(--text-dim); margin-bottom: 12px; }
+  .dish-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 1.5rem; }
+  .dish-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 8px; cursor: pointer; text-align: center; transition: all 0.2s; color: var(--text); }
+  .dish-btn:hover { border-color: var(--text-dim); }
+  .dish-btn .score { font-size: 20px; margin-bottom: 4px; }
+  .dish-btn .name { font-size: 12px; color: var(--text-dim); }
+  .dish-btn .reorder { font-size: 11px; margin-top: 2px; }
+  .reorder.yes { color: #5a9; }
+  .reorder.no { color: #c45; }
+  .detail-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1.5rem; }
+  .detail-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+  .detail-header .dish-name { font-size: 16px; font-weight: 500; }
+  .detail-header .match { font-size: 13px; color: var(--text-dim); }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .info-box { background: var(--surface2); border-radius: 10px; padding: 10px; }
+  .info-box .label { font-size: 11px; color: var(--text-hint); text-transform: uppercase; letter-spacing: 0.5px; }
+  .info-box .value { font-size: 13px; margin-top: 4px; }
+  .info-box .value.highlight { font-size: 14px; font-weight: 500; }
+  .info-box .sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; font-style: italic; }
+  .smell-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .smell-row:last-child { border-bottom: none; }
+  .color-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .smell-name { font-size: 13px; min-width: 90px; color: var(--text-dim); }
+  .smell-dots { display: flex; gap: 4px; flex-shrink: 0; }
+  .smell-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .smell-dot.empty { background: var(--border); }
+  .smell-place { font-size: 13px; font-weight: 500; flex: 1; }
+  .arc-grid { display: flex; gap: 12px; flex-wrap: wrap; }
+  .arc-card { background: var(--surface2); border-radius: 10px; padding: 10px 14px; flex: 1; min-width: 120px; }
+  .arc-card .name { font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+  .arc-card .shape { display: flex; align-items: center; gap: 6px; }
+  .arc-card .shape-label { font-size: 12px; font-weight: 500; }
+  .arc-card .steps { font-size: 11px; color: var(--text-hint); margin-top: 2px; }
+  .radar-wrap { position: relative; width: 100%; max-width: 500px; margin: 0 auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 12px; color: var(--text-dim); justify-content: center; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+  .empty-detail { text-align: center; padding: 2rem; color: var(--text-hint); font-size: 14px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Z Ramen — night 1</h1>
+  <p>May 23, 2026 — 5 dishes, 5 places your nose went</p>
+</div>
+
+<div class="dish-picker" id="dishPicker"></div>
+<div id="detail"></div>
+
+<div style="margin-bottom: 1.5rem;">
+  <div class="section-label">Across the meal</div>
+  <div class="radar-wrap">
+    <canvas id="radarChart" role="img" aria-label="Radar chart comparing all five dishes across smell intensity, satisfaction, heat, texture count, and flavor hits count">Comparison of five Z Ramen dishes across sensory dimensions.</canvas>
+  </div>
+  <div class="legend" id="radarLegend"></div>
+</div>
+
+<div style="margin-bottom: 1.5rem;">
+  <div class="section-label">Where your nose went</div>
+  <div id="smellMap"></div>
+</div>
+
+<div>
+  <div class="section-label">The arc shapes</div>
+  <div class="arc-grid" id="arcViz"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const dishes = [
+  { name: 'Thai tea', score: 9, again: true, smell: 1, heat: 0, arc: ['steady','addictive'], textures: ['chewy','silky','soft'], hitsFirst: ['sweet','temperature','texture'], match: 'exactly', smellPlace: 'Indian bookstore', smellNote: 'warm incense, dry aromatic spice locked behind sweetness', color: '#534AB7' },
+  { name: 'Spicy Z ramen', score: 8, again: true, smell: 4, heat: 3, arc: ['builds','reveals','heat-builds'], textures: ['chewy','soft','dense','gooey'], hitsFirst: ['sweet','umami','heat/spice','temperature','texture'], match: 'exactly', smellPlace: 'Childhood kitchen', smellNote: 'nostalgia — high-end cup ramen, baseline intro to the genre', color: '#D85A30' },
+  { name: 'Takoyaki', score: 5, again: false, smell: 4, heat: 0, arc: ['steady'], textures: ['chewy','soft','gooey'], hitsFirst: ['salt','sweet','sour','fat/richness','temperature','texture'], match: 'different', smellPlace: 'Industrial dock', smellNote: 'chemical, marine, hot plastic — sharp industrial-oceanic', color: '#1D9E75' },
+  { name: 'Pot stickers', score: 8, again: true, smell: 2, heat: 0, arc: ['steady','addictive'], textures: ['chewy','soft','dense'], hitsFirst: ['salt','umami','texture'], match: 'exactly', smellPlace: 'Mall food court + shoe store', smellNote: 'warm starchy oil nostalgia meets clean new sneaker sole', color: '#378ADD' },
+  { name: 'Thai donuts', score: 5, again: true, smell: 3, heat: 0, arc: ['steady'], textures: ['crispy','chewy','soft'], hitsFirst: ['sweet','fat/richness','texture'], match: 'exactly', smellPlace: 'Bakery + baking with Sarah', smellNote: 'classic morning bakery mixed with a specific bread-baking memory', color: '#D4537E' }
+];
+
+const picker = document.getElementById('dishPicker');
+let selected = -1;
+
+dishes.forEach((d, i) => {
+  const btn = document.createElement('button');
+  btn.className = 'dish-btn';
+  btn.innerHTML = `<div class="score">${d.score}/10</div><div class="name">${d.name}</div><div class="reorder ${d.again ? 'yes' : 'no'}">${d.again ? 'again' : 'nope'}</div>`;
+  btn.onclick = () => {
+    selected = selected === i ? -1 : i;
+    renderDetail();
+    document.querySelectorAll('.dish-btn').forEach((b,j) => {
+      b.style.borderColor = j === selected ? dishes[j].color : 'var(--border)';
+      b.style.borderWidth = j === selected ? '2px' : '1px';
+    });
+  };
+  picker.appendChild(btn);
+});
+
+function renderDetail() {
+  const el = document.getElementById('detail');
+  if (selected < 0) { el.innerHTML = '<div class="empty-detail">tap a dish to explore</div>'; return; }
+  const d = dishes[selected];
+  const arcDesc = d.arc.length === 1 ? 'flat line — same from start to finish' : d.arc.join(' → ');
+  el.innerHTML = `
+    <div class="detail-card">
+      <div class="detail-header">
+        <span class="dish-name">${d.name}</span>
+        <span class="match">prediction: ${d.match}</span>
+      </div>
+      <div class="detail-grid">
+        <div class="info-box">
+          <div class="label">hits first</div>
+          <div class="value">${d.hitsFirst.join(', ')}</div>
+        </div>
+        <div class="info-box">
+          <div class="label">textures</div>
+          <div class="value">${d.textures.join(', ')}</div>
+        </div>
+      </div>
+      <div class="info-box" style="margin-bottom:12px;">
+        <div class="label">arc shape</div>
+        <div class="value">${arcDesc}</div>
+      </div>
+      <div class="info-box">
+        <div class="label">nose destination</div>
+        <div class="value highlight">${d.smellPlace}</div>
+        <div class="sub">${d.smellNote}</div>
+      </div>
+    </div>`;
+}
+renderDetail();
+
+const radarCtx = document.getElementById('radarChart');
+const maxHits = Math.max(...dishes.map(d => d.hitsFirst.length));
+const maxTex = Math.max(...dishes.map(d => d.textures.length));
+
+new Chart(radarCtx, {
+  type: 'radar',
+  data: {
+    labels: ['Smell intensity', 'Satisfaction', 'Heat', 'Texture layers', 'Flavor hits'],
+    datasets: dishes.map(d => ({
+      label: d.name,
+      data: [
+        d.smell / 5 * 10,
+        d.score,
+        d.heat / 5 * 10,
+        d.textures.length / maxTex * 10,
+        d.hitsFirst.length / maxHits * 10
+      ],
+      borderColor: d.color,
+      backgroundColor: d.color + '18',
+      borderWidth: 2,
+      pointRadius: 3,
+      pointBackgroundColor: d.color
+    }))
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: true,
+    scales: {
+      r: {
+        beginAtZero: true,
+        max: 10,
+        ticks: { display: false },
+        grid: { color: 'rgba(255,255,255,0.08)' },
+        angleLines: { color: 'rgba(255,255,255,0.08)' },
+        pointLabels: { font: { size: 12 }, color: 'rgba(255,255,255,0.6)' }
+      }
+    },
+    plugins: { legend: { display: false } }
+  }
+});
+
+const legend = document.getElementById('radarLegend');
+dishes.forEach(d => {
+  legend.innerHTML += `<span class="legend-item"><span class="legend-dot" style="background:${d.color}"></span>${d.name}</span>`;
+});
+
+const smellMap = document.getElementById('smellMap');
+dishes.forEach(d => {
+  const dots = Array(5).fill(0).map((_, i) => `<span class="smell-dot ${i < d.smell ? '' : 'empty'}" style="${i < d.smell ? 'background:' + d.color : ''}"></span>`).join('');
+  smellMap.innerHTML += `
+    <div class="smell-row">
+      <span class="color-dot" style="background:${d.color}"></span>
+      <span class="smell-name">${d.name}</span>
+      <span class="smell-dots">${dots}</span>
+      <span class="smell-place">→ ${d.smellPlace}</span>
+    </div>`;
+});
+
+const arcViz = document.getElementById('arcViz');
+dishes.forEach(d => {
+  const isJourney = d.arc.length > 1;
+  const hasAddictive = d.arc.includes('addictive');
+  const label = isJourney ? 'journey' : 'pulse';
+  const svg = isJourney
+    ? `<path d="M2 18 Q10 18 15 12 Q20 6 25 4 Q30 2 38 2" fill="none" stroke="${d.color}" stroke-width="2"/>`
+    : hasAddictive
+      ? `<path d="M2 10 Q10 10 20 10 Q30 10 38 10" fill="none" stroke="${d.color}" stroke-width="2" stroke-dasharray="2 2"/><circle cx="20" cy="10" r="3" fill="${d.color}"/>`
+      : `<line x1="2" y1="10" x2="38" y2="10" stroke="${d.color}" stroke-width="2"/>`;
+  arcViz.innerHTML += `
+    <div class="arc-card">
+      <div class="name">${d.name}</div>
+      <div class="shape">
+        <svg width="40" height="20" viewBox="0 0 40 20">${svg}</svg>
+        <span class="shape-label">${label}${hasAddictive ? ' + pull' : ''}</span>
+      </div>
+      <div class="steps">${d.arc.join(' → ')}</div>
+    </div>`;
+});
+</script>
+</body>
+</html>
