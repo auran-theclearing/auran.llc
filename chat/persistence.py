@@ -67,6 +67,9 @@ def run_migration():
     conn = None
     try:
         conn = _get_conn()
+        # Migration SQL has its own BEGIN/COMMIT — use autocommit to avoid
+        # nesting with psycopg2's implicit transaction management
+        conn.autocommit = True
         cur = conn.cursor()
         cur.execute("""
             SELECT EXISTS (
@@ -83,7 +86,6 @@ def run_migration():
             )
             with open(migration_path) as f:
                 cur.execute(f.read())
-            conn.commit()
             logger.info("Created conversations and messages tables")
         cur.close()
     except Exception as e:
@@ -131,10 +133,10 @@ def ensure_conversation(
                 """,
                 (conv_id, channel, json.dumps(metadata or {})),
             )
-            conn.commit()
             _current_conversation_id = conv_id
             logger.info(f"Created new conversation: {conv_id}")
 
+        conn.commit()
         cur.close()
     except Exception as e:
         logger.warning(f"ensure_conversation failed: {e}")
@@ -361,6 +363,14 @@ def persist_message_batch(messages: list[dict]) -> int:
 
     except Exception as e:
         logger.error(f"persist_message_batch failed: {e}")
+        # Rollback uncommitted work — without this, count reflects execute()
+        # calls that ran before the failure, not actual committed rows
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        count = 0
     finally:
         _close_conn(conn)
 
@@ -475,8 +485,9 @@ def get_conversation_transcript(
         lines.append("")
 
         # Include tool blocks (recall searches, etc.)
-        if include_tool_blocks and msg.get("tool_blocks"):
-            for block in msg["tool_blocks"]:
+        tool_blocks = msg.get("tool_blocks")
+        if include_tool_blocks and tool_blocks and isinstance(tool_blocks, list):
+            for block in tool_blocks:
                 if block.get("type") == "tool_use":
                     lines.append(f"> 🔮 **{block.get('name', 'tool')}**: `{json.dumps(block.get('input', {}))}`")
                 elif block.get("type") == "tool_result":
@@ -595,12 +606,23 @@ def get_max_seq(conversation_id: str | None = None) -> int:
 def import_from_session_json(session_data: dict) -> int:
     """One-time import: load existing session.json messages into the DB.
 
-    Gated by a checkpoint row — will only import once per conversation.
-    Subsequent calls (e.g. server restarts) are no-ops.
+    Gated by TWO checks:
+    1. Checkpoint row — prevents re-import for the same conversation
+    2. Existing messages — prevents importing stale session.json into a
+       conversation that already has messages (e.g. after /conversation/new
+       rotated the conversation but session.json wasn't cleared)
     """
     # Check if we've already imported for this conversation
     if has_bootstrap_checkpoint():
         logger.info("Bootstrap import already recorded — skipping")
+        return 0
+
+    # Don't import into a conversation that already has messages —
+    # this catches the case where the conversation was rotated but
+    # session.json still has the old conversation's messages
+    existing_seq = get_max_seq()
+    if existing_seq > 0:
+        logger.info(f"Conversation already has {existing_seq} messages — skipping bootstrap import")
         return 0
 
     messages = session_data.get("messages", [])

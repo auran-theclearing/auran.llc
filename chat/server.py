@@ -220,9 +220,11 @@ def check_basic_auth(request: Request) -> bool:
     if not auth.startswith("Basic "):
         return False
     try:
+        import hmac
+
         decoded = base64.b64decode(auth[6:]).decode("utf-8")
         user, passwd = decoded.split(":", 1)
-        return user == CHAT_USER and passwd == CHAT_PASS
+        return hmac.compare_digest(user, CHAT_USER) and hmac.compare_digest(passwd, CHAT_PASS)
     except Exception:
         return False
 
