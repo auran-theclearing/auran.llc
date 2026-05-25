@@ -264,7 +264,7 @@ async def index():
 async def startup_persistence():
     """Initialize conversation persistence on server start."""
     try:
-        from persistence import run_migration, import_from_session_json, ensure_conversation
+        from persistence import ensure_conversation, import_from_session_json, run_migration
 
         run_migration()
         ensure_conversation(channel="chat")
@@ -388,15 +388,16 @@ async def save_session(request: Request):
 
         # Persist any messages the DB doesn't have yet (catch client-only messages)
         try:
-            from persistence import get_conversation_messages, persist_message_batch
+            from persistence import get_max_seq, persist_message_batch
 
-            existing = get_conversation_messages()
-            existing_count = len(existing)
-            if len(messages) > existing_count:
-                new_msgs = messages[existing_count:]
+            db_seq = get_max_seq()
+            if len(messages) > db_seq:
+                new_msgs = messages[db_seq:]
                 persisted = persist_message_batch(new_msgs)
                 if persisted:
-                    print(f"[Persistence] Session sync: persisted {persisted} new messages to DB")
+                    print(
+                        f"[Persistence] Session sync: persisted {persisted} new messages to DB (seq {db_seq} → {db_seq + persisted})"
+                    )
         except Exception as e:
             print(f"[Persistence] Session sync to DB failed (non-fatal): {e}")
 
@@ -1011,6 +1012,7 @@ async def chat(request: Request):
     # --- Persist user message to DB (fire-and-forget, never blocks) ---
     try:
         from persistence import persist_message as _persist
+
         if messages and messages[-1]["role"] == "user":
             _persist(role="user", content=messages[-1]["content"])
     except Exception as e:
@@ -1331,6 +1333,7 @@ async def chat(request: Request):
             # --- Persist assistant response to DB ---
             try:
                 from persistence import persist_message as _persist
+
                 tool_blocks_persist = []
                 for tc in tool_calls:
                     tool_blocks_persist.append({"type": "tool_use", "name": tc["name"], "input": tc["input"]})

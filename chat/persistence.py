@@ -24,7 +24,6 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
-from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -399,7 +398,7 @@ def get_conversation_transcript(
         return ""
 
     lines = []
-    lines.append(f"# Chat Transcript")
+    lines.append("# Chat Transcript")
     if messages:
         first_ts = messages[0].get("timestamp", "unknown")
         last_ts = messages[-1].get("timestamp", "unknown")
@@ -416,10 +415,9 @@ def get_conversation_transcript(
             # Format timestamp nicely
             try:
                 from zoneinfo import ZoneInfo
+
                 dt = datetime.fromisoformat(ts)
-                ts_display = dt.astimezone(ZoneInfo("America/New_York")).strftime(
-                    "%Y-%m-%d %I:%M %p ET"
-                )
+                ts_display = dt.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p ET")
             except Exception:
                 ts_display = ts[:19]
         else:
@@ -496,14 +494,81 @@ def record_checkpoint(
         return None
 
 
+def has_bootstrap_checkpoint() -> bool:
+    """Check if session.json bootstrap import has already been recorded."""
+    conv_id = _current_conversation_id
+    if not conv_id:
+        return False
+
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM conversation_checkpoints
+                WHERE conversation_id = %s AND checkpoint_type = 'backup'
+                AND metadata->>'source' = 'session_json_bootstrap'
+            )
+            """,
+            (conv_id,),
+        )
+        exists = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return exists
+    except Exception as e:
+        logger.warning(f"has_bootstrap_checkpoint check failed: {e}")
+        return False
+
+
+def get_max_seq(conversation_id: str | None = None) -> int:
+    """Return the highest seq number in the conversation, or 0 if empty.
+
+    Cheaper than fetching all messages — single aggregate query.
+    """
+    conv_id = conversation_id or _current_conversation_id
+    if not conv_id:
+        return 0
+
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE conversation_id = %s",
+            (conv_id,),
+        )
+        result = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return result
+    except Exception as e:
+        logger.error(f"get_max_seq failed: {e}")
+        return 0
+
+
 def import_from_session_json(session_data: dict) -> int:
     """One-time import: load existing session.json messages into the DB.
 
-    Call this once to backfill the current session.json into Postgres.
-    Idempotent — uses ON CONFLICT DO NOTHING on (conversation_id, seq).
+    Gated by a checkpoint row — will only import once per conversation.
+    Subsequent calls (e.g. server restarts) are no-ops.
     """
+    # Check if we've already imported for this conversation
+    if has_bootstrap_checkpoint():
+        logger.info("Bootstrap import already recorded — skipping")
+        return 0
+
     messages = session_data.get("messages", [])
     if not messages:
         return 0
 
-    return persist_message_batch(messages)
+    count = persist_message_batch(messages)
+
+    # Record the bootstrap so we never re-import
+    if count > 0:
+        record_checkpoint(
+            checkpoint_type="backup",
+            metadata={"source": "session_json_bootstrap", "message_count": count},
+        )
+
+    return count
