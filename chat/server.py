@@ -220,15 +220,45 @@ def check_basic_auth(request: Request) -> bool:
     if not auth.startswith("Basic "):
         return False
     try:
+        import hmac
+
         decoded = base64.b64decode(auth[6:]).decode("utf-8")
         user, passwd = decoded.split(":", 1)
-        return user == CHAT_USER and passwd == CHAT_PASS
+        return hmac.compare_digest(user, CHAT_USER) and hmac.compare_digest(passwd, CHAT_PASS)
     except Exception:
         return False
 
 
 # --- App ---
-app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None)
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize conversation persistence on server start."""
+    try:
+        from persistence import ensure_conversation, import_from_session_json, run_migration
+
+        run_migration()
+        ensure_conversation(channel="chat")
+
+        # Bootstrap: import existing session.json into DB (idempotent)
+        if SESSION_FILE.exists():
+            try:
+                data = json.loads(SESSION_FILE.read_text())
+                msgs = data.get("messages", [])
+                if msgs:
+                    imported = import_from_session_json(data)
+                    if imported:
+                        print(f"[Persistence] Imported {imported} messages from session.json")
+            except Exception as e:
+                print(f"[Persistence] Bootstrap import failed (non-fatal): {e}")
+    except Exception as e:
+        print(f"[Persistence] Startup failed (non-fatal, chat still works): {e}")
+    yield
+
+
+app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -361,9 +391,85 @@ async def save_session(request: Request):
                 ensure_ascii=False,
             )
         )
+
+        # Persist any messages the DB doesn't have yet (catch client-only messages)
+        # Guard: only do catch-up when the conversation already has messages (db_seq > 0).
+        # If db_seq is 0, the conversation is either fresh (post /conversation/new) or
+        # pre-bootstrap — in both cases, positional slicing against session.json would
+        # re-import stale messages into the wrong conversation. The bootstrap path
+        # (import_from_session_json) handles first-time import with its own checkpoint gate.
+        try:
+            from persistence import get_max_seq, persist_message_batch
+
+            db_seq = get_max_seq()
+            if db_seq > 0 and len(messages) > db_seq:
+                new_msgs = messages[db_seq:]
+                persisted = persist_message_batch(new_msgs)
+                if persisted:
+                    print(
+                        f"[Persistence] Session sync: persisted {persisted} new messages to DB (seq {db_seq} → {db_seq + persisted})"
+                    )
+        except Exception as e:
+            print(f"[Persistence] Session sync to DB failed (non-fatal): {e}")
+
         return JSONResponse({"status": "ok", "count": len(messages)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/conversation")
+async def get_conversation_from_db(request: Request):
+    """Get full conversation from Postgres (source of truth).
+
+    Returns all messages for the current conversation, ordered by sequence.
+    Includes tool blocks, thinking, and server-assigned timestamps.
+    """
+    try:
+        from persistence import get_conversation_messages
+
+        messages = get_conversation_messages()
+        return JSONResponse({"messages": messages, "count": len(messages)})
+    except Exception as e:
+        return JSONResponse({"messages": [], "count": 0, "error": str(e)})
+
+
+@app.get("/transcript/db")
+async def transcript_from_db(request: Request):
+    """Generate transcript from DB storage (includes tool blocks).
+
+    This is the authoritative transcript — includes recall searches,
+    tool results, and server-assigned timestamps. Fixes the bug where
+    recall searches were missing from exported transcripts.
+    """
+    try:
+        from persistence import get_conversation_transcript
+
+        content = get_conversation_transcript(include_tool_blocks=True)
+        if not content:
+            return JSONResponse({"error": "No messages in current conversation"}, status_code=404)
+        return Response(
+            content=content.encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="chat-transcript-db.md"'},
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/conversation/new")
+async def new_conversation(request: Request):
+    """Start a new conversation (closes the current one in DB).
+
+    Call this when the user starts a new chat. The old conversation
+    remains in the DB forever — append-only, never deleted.
+    """
+    try:
+        from persistence import start_new_conversation
+
+        conv_id = start_new_conversation(channel="chat")
+        return JSONResponse({"conversation_id": conv_id, "status": "ok"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.post("/transcript")
@@ -914,6 +1020,21 @@ async def chat(request: Request):
         except Exception as e:
             print(f"[Chat] Felt memory injection failed (non-fatal): {e}")
 
+    # --- Persist user message to DB (fire-and-forget, never blocks) ---
+    # Persist user message off the event loop — sync psycopg2 would block
+    # between request parse and first SSE byte otherwise.
+    try:
+        from persistence import persist_message as _persist
+
+        if messages and messages[-1]["role"] == "user":
+            user_content = messages[-1]["content"]
+            # Guard: content must be a string (future-proof against content blocks)
+            if not isinstance(user_content, str):
+                user_content = json.dumps(user_content)
+            await asyncio.to_thread(_persist, role="user", content=user_content)
+    except Exception as e:
+        print(f"[Persistence] User message persist failed (non-fatal): {e}")
+
     model = body.get("model", ANTHROPIC_MODEL)
     debug_mode = body.get("debug", False)
 
@@ -969,6 +1090,10 @@ async def chat(request: Request):
             input_tokens_total = 0
             output_tokens_total = 0
 
+            all_tool_calls = []  # Accumulates across all tool rounds for persistence
+            all_tool_results = []  # Accumulates tool_result blocks for persistence
+            all_thinking_text = []  # Accumulates thinking across all tool rounds
+
             while True:
                 async with (
                     httpx.AsyncClient(timeout=120) as client,
@@ -987,7 +1112,7 @@ async def chat(request: Request):
                     event_count = 0
                     stop_reason = None
 
-                    # Tool use tracking
+                    # Tool use tracking (per-round; all_tool_calls persists across rounds)
                     tool_calls = []
                     current_tool_id = None
                     current_tool_name = None
@@ -1199,6 +1324,13 @@ async def chat(request: Request):
                         )
                         yield f"data: {json.dumps({'type': 'recall_result', 'tool': tc['name'], 'id': tc['id'], 'query': tc['input'].get('query', tc['input'].get('title', ''))})}\n\n"
 
+                    # Accumulate tool calls AND results for persistence before resetting
+                    all_tool_calls.extend(tool_calls)
+                    all_tool_results.extend(tool_results)
+                    # Accumulate thinking text before the per-round reset
+                    if current_thinking_text:
+                        all_thinking_text.extend(current_thinking_text)
+
                     if at_cap:
                         # Don't re-call API — break out with indicators resolved
                         break
@@ -1225,6 +1357,32 @@ async def chat(request: Request):
                 + (f", {tool_round} tool round(s)" if tool_round > 0 else "")
                 + f"): {response_text[:80]}..."
             )
+
+            # --- Persist assistant response to DB (off event loop) ---
+            try:
+                from persistence import persist_message as _persist
+
+                tool_blocks_persist = []
+                for tc in all_tool_calls:
+                    tool_blocks_persist.append({"type": "tool_use", "name": tc["name"], "input": tc["input"]})
+                for tr in all_tool_results:
+                    tool_blocks_persist.append(
+                        {"type": "tool_result", "tool_use_id": tr.get("tool_use_id"), "content": tr.get("content", "")}
+                    )
+                # Capture final round's thinking — only if we exited via the no-tool-use
+                # path. The tool-use path already accumulated in the loop body.
+                if current_thinking_text and stop_reason != "tool_use":
+                    all_thinking_text.extend(current_thinking_text)
+                await asyncio.to_thread(
+                    _persist,
+                    role="assistant",
+                    content=response_text,
+                    tool_blocks=tool_blocks_persist if tool_blocks_persist else None,
+                    thinking="".join(all_thinking_text) if all_thinking_text else None,
+                )
+            except Exception as persist_err:
+                print(f"[Persistence] Assistant message persist failed (non-fatal): {persist_err}")
+
             yield f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens_total, 'output_tokens': output_tokens_total, 'total_tokens': total_tokens, 'context_pct': context_pct})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 

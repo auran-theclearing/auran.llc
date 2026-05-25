@@ -1102,6 +1102,13 @@ async function newChat() {
   const saved = await saveMemories(false);
   if (!saved && !confirm('Memory save failed. Clear chat anyway?')) return;
 
+  // Tell the server to close the current conversation and start a new one in the DB
+  try {
+    await fetch('/conversation/new', { method: 'POST' });
+  } catch (e) {
+    console.warn('[newChat] /conversation/new failed (non-fatal):', e);
+  }
+
   history = [];
   messagesEl.innerHTML = '';
   lastSaveHash = '';
