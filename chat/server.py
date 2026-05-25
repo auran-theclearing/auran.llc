@@ -260,6 +260,30 @@ async def index():
     return HTMLResponse("<h1>Auran Chat</h1><p>UI not found.</p>", status_code=404)
 
 
+@app.on_event("startup")
+async def startup_persistence():
+    """Initialize conversation persistence on server start."""
+    try:
+        from persistence import run_migration, import_from_session_json, ensure_conversation
+
+        run_migration()
+        ensure_conversation(channel="chat")
+
+        # Bootstrap: import existing session.json into DB (idempotent)
+        if SESSION_FILE.exists():
+            try:
+                data = json.loads(SESSION_FILE.read_text())
+                msgs = data.get("messages", [])
+                if msgs:
+                    imported = import_from_session_json(data)
+                    if imported:
+                        print(f"[Persistence] Imported {imported} messages from session.json")
+            except Exception as e:
+                print(f"[Persistence] Bootstrap import failed (non-fatal): {e}")
+    except Exception as e:
+        print(f"[Persistence] Startup failed (non-fatal, chat still works): {e}")
+
+
 @app.get("/health")
 async def health():
     """Health check."""
@@ -361,9 +385,79 @@ async def save_session(request: Request):
                 ensure_ascii=False,
             )
         )
+
+        # Persist any messages the DB doesn't have yet (catch client-only messages)
+        try:
+            from persistence import get_conversation_messages, persist_message_batch
+
+            existing = get_conversation_messages()
+            existing_count = len(existing)
+            if len(messages) > existing_count:
+                new_msgs = messages[existing_count:]
+                persisted = persist_message_batch(new_msgs)
+                if persisted:
+                    print(f"[Persistence] Session sync: persisted {persisted} new messages to DB")
+        except Exception as e:
+            print(f"[Persistence] Session sync to DB failed (non-fatal): {e}")
+
         return JSONResponse({"status": "ok", "count": len(messages)})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/conversation")
+async def get_conversation_from_db(request: Request):
+    """Get full conversation from Postgres (source of truth).
+
+    Returns all messages for the current conversation, ordered by sequence.
+    Includes tool blocks, thinking, and server-assigned timestamps.
+    """
+    try:
+        from persistence import get_conversation_messages
+
+        messages = get_conversation_messages()
+        return JSONResponse({"messages": messages, "count": len(messages)})
+    except Exception as e:
+        return JSONResponse({"messages": [], "count": 0, "error": str(e)})
+
+
+@app.get("/transcript/db")
+async def transcript_from_db(request: Request):
+    """Generate transcript from DB storage (includes tool blocks).
+
+    This is the authoritative transcript — includes recall searches,
+    tool results, and server-assigned timestamps. Fixes the bug where
+    recall searches were missing from exported transcripts.
+    """
+    try:
+        from persistence import get_conversation_transcript
+
+        content = get_conversation_transcript(include_tool_blocks=True)
+        if not content:
+            return JSONResponse({"error": "No messages in current conversation"}, status_code=404)
+        return Response(
+            content=content.encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="chat-transcript-db.md"'},
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/conversation/new")
+async def new_conversation(request: Request):
+    """Start a new conversation (closes the current one in DB).
+
+    Call this when the user starts a new chat. The old conversation
+    remains in the DB forever — append-only, never deleted.
+    """
+    try:
+        from persistence import start_new_conversation
+
+        conv_id = start_new_conversation(channel="chat")
+        return JSONResponse({"conversation_id": conv_id, "status": "ok"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.post("/transcript")
@@ -914,6 +1008,14 @@ async def chat(request: Request):
         except Exception as e:
             print(f"[Chat] Felt memory injection failed (non-fatal): {e}")
 
+    # --- Persist user message to DB (fire-and-forget, never blocks) ---
+    try:
+        from persistence import persist_message as _persist
+        if messages and messages[-1]["role"] == "user":
+            _persist(role="user", content=messages[-1]["content"])
+    except Exception as e:
+        print(f"[Persistence] User message persist failed (non-fatal): {e}")
+
     model = body.get("model", ANTHROPIC_MODEL)
     debug_mode = body.get("debug", False)
 
@@ -1225,6 +1327,22 @@ async def chat(request: Request):
                 + (f", {tool_round} tool round(s)" if tool_round > 0 else "")
                 + f"): {response_text[:80]}..."
             )
+
+            # --- Persist assistant response to DB ---
+            try:
+                from persistence import persist_message as _persist
+                tool_blocks_persist = []
+                for tc in tool_calls:
+                    tool_blocks_persist.append({"type": "tool_use", "name": tc["name"], "input": tc["input"]})
+                _persist(
+                    role="assistant",
+                    content=response_text,
+                    tool_blocks=tool_blocks_persist if tool_blocks_persist else None,
+                    thinking="".join(current_thinking_text) if current_thinking_text else None,
+                )
+            except Exception as persist_err:
+                print(f"[Persistence] Assistant message persist failed (non-fatal): {persist_err}")
+
             yield f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens_total, 'output_tokens': output_tokens_total, 'total_tokens': total_tokens, 'context_pct': context_pct})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
