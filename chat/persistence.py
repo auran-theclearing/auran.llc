@@ -53,8 +53,18 @@ def _get_conn():
         )
 
 
+def _close_conn(conn):
+    """Safely close a connection, ignoring errors."""
+    if conn:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def run_migration():
     """Run the conversations migration if tables don't exist."""
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -76,9 +86,10 @@ def run_migration():
             conn.commit()
             logger.info("Created conversations and messages tables")
         cur.close()
-        conn.close()
     except Exception as e:
         logger.warning(f"Migration check failed (non-fatal): {e}")
+    finally:
+        _close_conn(conn)
 
 
 def ensure_conversation(
@@ -91,6 +102,7 @@ def ensure_conversation(
     if _current_conversation_id:
         return _current_conversation_id
 
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -124,12 +136,13 @@ def ensure_conversation(
             logger.info(f"Created new conversation: {conv_id}")
 
         cur.close()
-        conn.close()
     except Exception as e:
         logger.warning(f"ensure_conversation failed: {e}")
         # Generate a local ID so messages still flow; will retry DB on next call
         if not _current_conversation_id:
             _current_conversation_id = str(uuid4())
+    finally:
+        _close_conn(conn)
 
     return _current_conversation_id
 
@@ -141,6 +154,7 @@ def start_new_conversation(
     """Explicitly start a new conversation (closes the current one)."""
     global _current_conversation_id
 
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -166,7 +180,6 @@ def start_new_conversation(
         )
         conn.commit()
         cur.close()
-        conn.close()
 
         _current_conversation_id = conv_id
         logger.info(f"Started new conversation: {conv_id}")
@@ -175,6 +188,8 @@ def start_new_conversation(
         logger.warning(f"start_new_conversation failed: {e}")
         _current_conversation_id = str(uuid4())
         return _current_conversation_id
+    finally:
+        _close_conn(conn)
 
 
 def persist_message(
@@ -195,6 +210,7 @@ def persist_message(
     conv_id = ensure_conversation()
     max_retries = 2  # Handle seq collision from concurrent writes
 
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -243,7 +259,6 @@ def persist_message(
                 )
                 conn.commit()
                 cur.close()
-                conn.close()
                 return msg_id
 
             # Seq collision — another write landed first. Retry with fresh seq.
@@ -253,12 +268,13 @@ def persist_message(
         logger.error("persist_message: exhausted retries on seq collision")
         conn.commit()
         cur.close()
-        conn.close()
         return None
 
     except Exception as e:
         logger.error(f"persist_message failed: {e}")
         return None
+    finally:
+        _close_conn(conn)
 
 
 def persist_message_batch(messages: list[dict]) -> int:
@@ -275,6 +291,7 @@ def persist_message_batch(messages: list[dict]) -> int:
     conv_id = ensure_conversation()
     count = 0
 
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -333,11 +350,12 @@ def persist_message_batch(messages: list[dict]) -> int:
 
         conn.commit()
         cur.close()
-        conn.close()
         logger.info(f"Batch persisted {count} messages to conversation {conv_id}")
 
     except Exception as e:
         logger.error(f"persist_message_batch failed: {e}")
+    finally:
+        _close_conn(conn)
 
     return count
 
@@ -356,6 +374,7 @@ def get_conversation_messages(
     if not conv_id:
         return []
 
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -387,12 +406,13 @@ def get_conversation_messages(
             messages.append(msg)
 
         cur.close()
-        conn.close()
         return messages
 
     except Exception as e:
         logger.error(f"get_conversation_messages failed: {e}")
         return []
+    finally:
+        _close_conn(conn)
 
 
 def get_conversation_transcript(
@@ -478,6 +498,7 @@ def record_checkpoint(
     if not conv_id:
         return None
 
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -499,11 +520,12 @@ def record_checkpoint(
         )
         conn.commit()
         cur.close()
-        conn.close()
         return cp_id
     except Exception as e:
         logger.error(f"record_checkpoint failed: {e}")
         return None
+    finally:
+        _close_conn(conn)
 
 
 def has_bootstrap_checkpoint() -> bool:
@@ -512,6 +534,7 @@ def has_bootstrap_checkpoint() -> bool:
     if not conv_id:
         return False
 
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -527,11 +550,12 @@ def has_bootstrap_checkpoint() -> bool:
         )
         exists = cur.fetchone()[0]
         cur.close()
-        conn.close()
         return exists
     except Exception as e:
         logger.warning(f"has_bootstrap_checkpoint check failed: {e}")
         return False
+    finally:
+        _close_conn(conn)
 
 
 def get_max_seq(conversation_id: str | None = None) -> int:
@@ -543,6 +567,7 @@ def get_max_seq(conversation_id: str | None = None) -> int:
     if not conv_id:
         return 0
 
+    conn = None
     try:
         conn = _get_conn()
         cur = conn.cursor()
@@ -552,11 +577,12 @@ def get_max_seq(conversation_id: str | None = None) -> int:
         )
         result = cur.fetchone()[0]
         cur.close()
-        conn.close()
         return result
     except Exception as e:
         logger.error(f"get_max_seq failed: {e}")
         return 0
+    finally:
+        _close_conn(conn)
 
 
 def import_from_session_json(session_data: dict) -> int:

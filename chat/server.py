@@ -387,11 +387,16 @@ async def save_session(request: Request):
         )
 
         # Persist any messages the DB doesn't have yet (catch client-only messages)
+        # Guard: only do catch-up when the conversation already has messages (db_seq > 0).
+        # If db_seq is 0, the conversation is either fresh (post /conversation/new) or
+        # pre-bootstrap — in both cases, positional slicing against session.json would
+        # re-import stale messages into the wrong conversation. The bootstrap path
+        # (import_from_session_json) handles first-time import with its own checkpoint gate.
         try:
             from persistence import get_max_seq, persist_message_batch
 
             db_seq = get_max_seq()
-            if len(messages) > db_seq:
+            if db_seq > 0 and len(messages) > db_seq:
                 new_msgs = messages[db_seq:]
                 persisted = persist_message_batch(new_msgs)
                 if persisted:
