@@ -335,17 +335,24 @@ def persist_message_batch(messages: list[dict]) -> int:
                     json.dumps(msg.get("metadata", {})),
                 ),
             )
-            count += 1
+            if cur.rowcount > 0:
+                count += 1
 
-        # Update conversation
+        # Update conversation with actual max seq from DB (not base_seq + count
+        # which could drift if ON CONFLICT DO NOTHING silently dropped rows)
         if count > 0:
+            cur.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE conversation_id = %s",
+                (conv_id,),
+            )
+            actual_max_seq = cur.fetchone()[0]
             cur.execute(
                 """
                 UPDATE conversations
                 SET last_message_at = NOW(), message_count = %s
                 WHERE id = %s
                 """,
-                (base_seq + count, conv_id),
+                (actual_max_seq, conv_id),
             )
 
         conn.commit()

@@ -1078,6 +1078,8 @@ async def chat(request: Request):
             input_tokens_total = 0
             output_tokens_total = 0
 
+            all_tool_calls = []  # Accumulates across all tool rounds for persistence
+
             while True:
                 async with (
                     httpx.AsyncClient(timeout=120) as client,
@@ -1096,7 +1098,7 @@ async def chat(request: Request):
                     event_count = 0
                     stop_reason = None
 
-                    # Tool use tracking
+                    # Tool use tracking (per-round; all_tool_calls persists across rounds)
                     tool_calls = []
                     current_tool_id = None
                     current_tool_name = None
@@ -1308,6 +1310,9 @@ async def chat(request: Request):
                         )
                         yield f"data: {json.dumps({'type': 'recall_result', 'tool': tc['name'], 'id': tc['id'], 'query': tc['input'].get('query', tc['input'].get('title', ''))})}\n\n"
 
+                    # Accumulate tool calls for persistence before resetting
+                    all_tool_calls.extend(tool_calls)
+
                     if at_cap:
                         # Don't re-call API — break out with indicators resolved
                         break
@@ -1340,7 +1345,7 @@ async def chat(request: Request):
                 from persistence import persist_message as _persist
 
                 tool_blocks_persist = []
-                for tc in tool_calls:
+                for tc in all_tool_calls:
                     tool_blocks_persist.append({"type": "tool_use", "name": tc["name"], "input": tc["input"]})
                 _persist(
                     role="assistant",
