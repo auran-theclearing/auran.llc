@@ -193,56 +193,68 @@ def persist_message(
     Failures are logged but never raise (graceful degradation).
     """
     conv_id = ensure_conversation()
+    max_retries = 2  # Handle seq collision from concurrent writes
 
     try:
         conn = _get_conn()
         cur = conn.cursor()
 
-        # Get next sequence number
-        cur.execute(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversation_id = %s",
-            (conv_id,),
-        )
-        next_seq = cur.fetchone()[0]
-
         msg_id = str(uuid4())
         ts = timestamp or datetime.now(UTC)
 
-        cur.execute(
-            """
-            INSERT INTO messages (id, conversation_id, seq, role, content, timestamp,
-                                  tool_blocks, thinking, partial, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (conversation_id, seq) DO NOTHING
-            """,
-            (
-                msg_id,
-                conv_id,
-                next_seq,
-                role,
-                content,
-                ts,
-                json.dumps(tool_blocks) if tool_blocks else None,
-                thinking,
-                partial,
-                json.dumps(metadata or {}),
-            ),
-        )
+        for attempt in range(max_retries):
+            # Get next sequence number
+            cur.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversation_id = %s",
+                (conv_id,),
+            )
+            next_seq = cur.fetchone()[0]
 
-        # Update conversation metadata
-        cur.execute(
-            """
-            UPDATE conversations
-            SET last_message_at = %s, message_count = %s
-            WHERE id = %s
-            """,
-            (ts, next_seq, conv_id),
-        )
+            cur.execute(
+                """
+                INSERT INTO messages (id, conversation_id, seq, role, content, timestamp,
+                                      tool_blocks, thinking, partial, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (conversation_id, seq) DO NOTHING
+                """,
+                (
+                    msg_id,
+                    conv_id,
+                    next_seq,
+                    role,
+                    content,
+                    ts,
+                    json.dumps(tool_blocks) if tool_blocks else None,
+                    thinking,
+                    partial,
+                    json.dumps(metadata or {}),
+                ),
+            )
 
+            if cur.rowcount > 0:
+                # INSERT succeeded — update conversation metadata
+                cur.execute(
+                    """
+                    UPDATE conversations
+                    SET last_message_at = %s, message_count = %s
+                    WHERE id = %s
+                    """,
+                    (ts, next_seq, conv_id),
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                return msg_id
+
+            # Seq collision — another write landed first. Retry with fresh seq.
+            logger.warning(f"Seq collision on attempt {attempt + 1}, retrying")
+
+        # Exhausted retries — should never happen under single-user load
+        logger.error("persist_message: exhausted retries on seq collision")
         conn.commit()
         cur.close()
         conn.close()
-        return msg_id
+        return None
 
     except Exception as e:
         logger.error(f"persist_message failed: {e}")
