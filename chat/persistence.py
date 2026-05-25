@@ -140,13 +140,14 @@ def ensure_conversation(
         cur.close()
     except Exception as e:
         logger.warning(f"ensure_conversation failed: {e}")
-        # Generate a local ID so messages still flow; will retry DB on next call
-        if not _current_conversation_id:
-            _current_conversation_id = str(uuid4())
+        # Do NOT cache a local UUID here — it would have no DB row, causing
+        # every subsequent persist_message to silently fail on FK violation
+        # for the entire process lifetime. Leave _current_conversation_id unset
+        # so the next call retries the DB connection.
     finally:
         _close_conn(conn)
 
-    return _current_conversation_id
+    return _current_conversation_id or ""
 
 
 def start_new_conversation(
@@ -188,8 +189,10 @@ def start_new_conversation(
         return conv_id
     except Exception as e:
         logger.warning(f"start_new_conversation failed: {e}")
-        _current_conversation_id = str(uuid4())
-        return _current_conversation_id
+        # Don't cache a fake UUID — same reasoning as ensure_conversation.
+        # Leave the old conversation_id in place so at least existing messages
+        # continue to persist to the prior conversation until DB recovers.
+        return _current_conversation_id or ""
     finally:
         _close_conn(conn)
 
@@ -305,9 +308,9 @@ def persist_message_batch(messages: list[dict]) -> int:
         )
         base_seq = cur.fetchone()[0]
 
-        for i, msg in enumerate(messages, 1):
+        next_seq = base_seq + 1
+        for msg in messages:
             msg_id = str(uuid4())
-            seq = base_seq + i
             ts = msg.get("timestamp")
             if isinstance(ts, str):
                 try:
@@ -317,28 +320,41 @@ def persist_message_batch(messages: list[dict]) -> int:
             elif ts is None:
                 ts = datetime.now(UTC)
 
-            cur.execute(
-                """
-                INSERT INTO messages (id, conversation_id, seq, role, content, timestamp,
-                                      tool_blocks, thinking, partial, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (conversation_id, seq) DO NOTHING
-                """,
-                (
-                    msg_id,
-                    conv_id,
-                    seq,
-                    msg.get("role", "user"),
-                    msg.get("content", ""),
-                    ts,
-                    json.dumps(msg.get("tool_blocks")) if msg.get("tool_blocks") else None,
-                    msg.get("thinking"),
-                    msg.get("partial", False),
-                    json.dumps(msg.get("metadata", {})),
-                ),
-            )
-            if cur.rowcount > 0:
-                count += 1
+            # Retry on seq collision (same pattern as persist_message)
+            for _attempt in range(2):
+                cur.execute(
+                    """
+                    INSERT INTO messages (id, conversation_id, seq, role, content, timestamp,
+                                          tool_blocks, thinking, partial, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (conversation_id, seq) DO NOTHING
+                    """,
+                    (
+                        msg_id,
+                        conv_id,
+                        next_seq,
+                        msg.get("role", "user"),
+                        msg.get("content", ""),
+                        ts,
+                        json.dumps(msg.get("tool_blocks")) if msg.get("tool_blocks") else None,
+                        msg.get("thinking"),
+                        msg.get("partial", False),
+                        json.dumps(msg.get("metadata", {})),
+                    ),
+                )
+                if cur.rowcount > 0:
+                    count += 1
+                    next_seq += 1
+                    break
+                # Collision — re-read actual max and retry
+                cur.execute(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE conversation_id = %s",
+                    (conv_id,),
+                )
+                next_seq = cur.fetchone()[0]
+            else:
+                # Both retries failed — log and skip this message
+                logger.warning(f"Batch persist: dropped message after 2 seq collisions (seq={next_seq})")
 
         # Update conversation with actual max seq from DB (not base_seq + count
         # which could drift if ON CONFLICT DO NOTHING silently dropped rows)
@@ -380,12 +396,13 @@ def persist_message_batch(messages: list[dict]) -> int:
 def get_conversation_messages(
     conversation_id: str | None = None,
     since_seq: int = 0,
-    limit: int = 1000,
+    limit: int = 50_000,
 ) -> list[dict]:
     """Retrieve messages from a conversation.
 
     If conversation_id is None, uses the current conversation.
     Returns messages ordered by seq, starting after since_seq.
+    Limit defaults to 50,000 — effectively unbounded for our use case.
     """
     conv_id = conversation_id or _current_conversation_id
     if not conv_id:
@@ -617,9 +634,12 @@ def import_from_session_json(session_data: dict) -> int:
         logger.info("Bootstrap import already recorded — skipping")
         return 0
 
-    # Don't import into a conversation that already has messages —
-    # this catches the case where the conversation was rotated but
-    # session.json still has the old conversation's messages
+    # Belt-and-suspenders: don't import into a conversation that already has messages.
+    # This catches TWO failure modes:
+    #   (a) Crash between persist_message_batch and record_checkpoint below —
+    #       batch committed but checkpoint didn't, so has_bootstrap_checkpoint()
+    #       returns False, but the messages are already in the DB.
+    #   (b) Conversation rotated via /conversation/new but session.json not cleared.
     existing_seq = get_max_seq()
     if existing_seq > 0:
         logger.info(f"Conversation already has {existing_seq} messages — skipping bootstrap import")

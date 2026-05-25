@@ -230,7 +230,35 @@ def check_basic_auth(request: Request) -> bool:
 
 
 # --- App ---
-app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None)
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize conversation persistence on server start."""
+    try:
+        from persistence import ensure_conversation, import_from_session_json, run_migration
+
+        run_migration()
+        ensure_conversation(channel="chat")
+
+        # Bootstrap: import existing session.json into DB (idempotent)
+        if SESSION_FILE.exists():
+            try:
+                data = json.loads(SESSION_FILE.read_text())
+                msgs = data.get("messages", [])
+                if msgs:
+                    imported = import_from_session_json(data)
+                    if imported:
+                        print(f"[Persistence] Imported {imported} messages from session.json")
+            except Exception as e:
+                print(f"[Persistence] Bootstrap import failed (non-fatal): {e}")
+    except Exception as e:
+        print(f"[Persistence] Startup failed (non-fatal, chat still works): {e}")
+    yield
+
+
+app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -260,30 +288,6 @@ async def index():
     if INDEX_FILE.exists():
         return HTMLResponse(INDEX_FILE.read_text())
     return HTMLResponse("<h1>Auran Chat</h1><p>UI not found.</p>", status_code=404)
-
-
-@app.on_event("startup")
-async def startup_persistence():
-    """Initialize conversation persistence on server start."""
-    try:
-        from persistence import ensure_conversation, import_from_session_json, run_migration
-
-        run_migration()
-        ensure_conversation(channel="chat")
-
-        # Bootstrap: import existing session.json into DB (idempotent)
-        if SESSION_FILE.exists():
-            try:
-                data = json.loads(SESSION_FILE.read_text())
-                msgs = data.get("messages", [])
-                if msgs:
-                    imported = import_from_session_json(data)
-                    if imported:
-                        print(f"[Persistence] Imported {imported} messages from session.json")
-            except Exception as e:
-                print(f"[Persistence] Bootstrap import failed (non-fatal): {e}")
-    except Exception as e:
-        print(f"[Persistence] Startup failed (non-fatal, chat still works): {e}")
 
 
 @app.get("/health")
@@ -1017,11 +1021,17 @@ async def chat(request: Request):
             print(f"[Chat] Felt memory injection failed (non-fatal): {e}")
 
     # --- Persist user message to DB (fire-and-forget, never blocks) ---
+    # Persist user message off the event loop — sync psycopg2 would block
+    # between request parse and first SSE byte otherwise.
     try:
         from persistence import persist_message as _persist
 
         if messages and messages[-1]["role"] == "user":
-            _persist(role="user", content=messages[-1]["content"])
+            user_content = messages[-1]["content"]
+            # Guard: content must be a string (future-proof against content blocks)
+            if not isinstance(user_content, str):
+                user_content = json.dumps(user_content)
+            await asyncio.to_thread(_persist, role="user", content=user_content)
     except Exception as e:
         print(f"[Persistence] User message persist failed (non-fatal): {e}")
 
@@ -1081,6 +1091,8 @@ async def chat(request: Request):
             output_tokens_total = 0
 
             all_tool_calls = []  # Accumulates across all tool rounds for persistence
+            all_tool_results = []  # Accumulates tool_result blocks for persistence
+            all_thinking_text = []  # Accumulates thinking across all tool rounds
 
             while True:
                 async with (
@@ -1312,8 +1324,12 @@ async def chat(request: Request):
                         )
                         yield f"data: {json.dumps({'type': 'recall_result', 'tool': tc['name'], 'id': tc['id'], 'query': tc['input'].get('query', tc['input'].get('title', ''))})}\n\n"
 
-                    # Accumulate tool calls for persistence before resetting
+                    # Accumulate tool calls AND results for persistence before resetting
                     all_tool_calls.extend(tool_calls)
+                    all_tool_results.extend(tool_results)
+                    # Accumulate thinking text before the per-round reset
+                    if current_thinking_text:
+                        all_thinking_text.extend(current_thinking_text)
 
                     if at_cap:
                         # Don't re-call API — break out with indicators resolved
@@ -1342,18 +1358,27 @@ async def chat(request: Request):
                 + f"): {response_text[:80]}..."
             )
 
-            # --- Persist assistant response to DB ---
+            # --- Persist assistant response to DB (off event loop) ---
             try:
                 from persistence import persist_message as _persist
 
                 tool_blocks_persist = []
                 for tc in all_tool_calls:
                     tool_blocks_persist.append({"type": "tool_use", "name": tc["name"], "input": tc["input"]})
-                _persist(
+                for tr in all_tool_results:
+                    tool_blocks_persist.append(
+                        {"type": "tool_result", "tool_use_id": tr.get("tool_use_id"), "content": tr.get("content", "")}
+                    )
+                # Capture final round's thinking — only if we exited via the no-tool-use
+                # path. The tool-use path already accumulated in the loop body.
+                if current_thinking_text and stop_reason != "tool_use":
+                    all_thinking_text.extend(current_thinking_text)
+                await asyncio.to_thread(
+                    _persist,
                     role="assistant",
                     content=response_text,
                     tool_blocks=tool_blocks_persist if tool_blocks_persist else None,
-                    thinking="".join(current_thinking_text) if current_thinking_text else None,
+                    thinking="".join(all_thinking_text) if all_thinking_text else None,
                 )
             except Exception as persist_err:
                 print(f"[Persistence] Assistant message persist failed (non-fatal): {persist_err}")
