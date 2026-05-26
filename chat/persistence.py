@@ -41,6 +41,7 @@ def _get_conn():
         from memory import _get_db_config
 
         config = _get_db_config()
+        config["connect_timeout"] = 3
         return psycopg2.connect(**config)
     except Exception:
         # Fallback: direct env var connection
@@ -50,6 +51,7 @@ def _get_conn():
             dbname=os.getenv("DB_NAME", "auran"),
             user=os.getenv("DB_USER", "auran"),
             password=os.getenv("DB_PASSWORD", ""),
+            connect_timeout=3,
         )
 
 
