@@ -1023,6 +1023,7 @@ async def chat(request: Request):
     # --- Persist user message to DB (fire-and-forget, never blocks) ---
     # Persist user message off the event loop — sync psycopg2 would block
     # between request parse and first SSE byte otherwise.
+    # Uses wait_for with a 5s timeout so a hanging DB can't block the chat response.
     try:
         from persistence import persist_message as _persist
 
@@ -1031,7 +1032,10 @@ async def chat(request: Request):
             # Guard: content must be a string (future-proof against content blocks)
             if not isinstance(user_content, str):
                 user_content = json.dumps(user_content)
-            await asyncio.to_thread(_persist, role="user", content=user_content)
+            await asyncio.wait_for(
+                asyncio.to_thread(_persist, role="user", content=user_content),
+                timeout=5,
+            )
     except Exception as e:
         print(f"[Persistence] User message persist failed (non-fatal): {e}")
 
@@ -1254,6 +1258,9 @@ async def chat(request: Request):
                                         "[Chat] Warning: thinking block closed without signature — "
                                         "dropping block to avoid API 400 on next round"
                                     )
+                                # Accumulate thinking for persistence before resetting
+                                if current_thinking_text:
+                                    all_thinking_text.extend(current_thinking_text)
                                 current_thinking_text = []
                                 current_thinking_signature = None
                             elif in_text_block:
@@ -1373,12 +1380,15 @@ async def chat(request: Request):
                 # path. The tool-use path already accumulated in the loop body.
                 if current_thinking_text and stop_reason != "tool_use":
                     all_thinking_text.extend(current_thinking_text)
-                await asyncio.to_thread(
-                    _persist,
-                    role="assistant",
-                    content=response_text,
-                    tool_blocks=tool_blocks_persist if tool_blocks_persist else None,
-                    thinking="".join(all_thinking_text) if all_thinking_text else None,
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _persist,
+                        role="assistant",
+                        content=response_text,
+                        tool_blocks=tool_blocks_persist if tool_blocks_persist else None,
+                        thinking="".join(all_thinking_text) if all_thinking_text else None,
+                    ),
+                    timeout=5,
                 )
             except Exception as persist_err:
                 print(f"[Persistence] Assistant message persist failed (non-fatal): {persist_err}")
