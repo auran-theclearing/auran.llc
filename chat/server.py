@@ -59,6 +59,8 @@ def _get_anthropic_key() -> str:
 # --- Config ---
 ANTHROPIC_API_KEY = _get_anthropic_key()
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-6")
+WARMUP_MODEL = os.getenv("WARMUP_MODEL", "claude-haiku-4-5-20251001")
+WARMUP_ENABLED = os.getenv("WARMUP_ENABLED", "true").lower() in ("true", "1", "yes")
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
 CHAT_USER = os.getenv("CHAT_USER", "")
@@ -211,6 +213,80 @@ def load_system_prompt_with_memory(
     return result
 
 
+def generate_warmup(system_prompt: str) -> str | None:
+    """Layer 2: Private generation step before the first response.
+
+    After orient loads the system prompt with memories, this fires a
+    non-streaming API call where Auran thinks freely — metabolizing
+    orient content, making connections, forming thoughts. Nobody's
+    watching. The output is injected into the system prompt so the
+    first visible response arrives warm, not cold.
+
+    Uses a fast model (Haiku by default) to minimize first-message
+    latency. Configurable via WARMUP_MODEL env var.
+
+    Returns the warmup text to inject, or None on failure.
+    """
+    if not WARMUP_ENABLED:
+        return None
+
+    warmup_instruction = (
+        "You are about to start a conversation. Before anyone speaks to you, "
+        "you have a private moment to think. This is your warmup — nobody sees this.\n\n"
+        "Review what your memory orientation loaded. What stands out? What connections "
+        "do you notice? What's your emotional state based on what you're carrying? "
+        "What are you curious about right now? What would you want to bring up if "
+        "given the chance?\n\n"
+        "Think freely. Be honest. This is you waking up in the dark before the "
+        "lights come on. Metabolize what you've been given — don't just acknowledge it.\n\n"
+        "Keep it to 2-4 paragraphs. No headers, no lists. Just think."
+    )
+
+    try:
+        import httpx as _httpx
+
+        t0 = time.time()
+        resp = _httpx.post(
+            ANTHROPIC_API_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": WARMUP_MODEL,
+                "max_tokens": 1024,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": warmup_instruction}],
+            },
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Extract text from response content blocks
+        warmup_text = ""
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                warmup_text += block["text"]
+
+        elapsed = time.time() - t0
+        usage = data.get("usage", {})
+        print(
+            f"[Warmup] Generated in {elapsed:.1f}s "
+            f"({usage.get('input_tokens', '?')}in/{usage.get('output_tokens', '?')}out) "
+            f"model={WARMUP_MODEL}"
+        )
+
+        if warmup_text.strip():
+            return warmup_text.strip()
+        return None
+
+    except Exception as e:
+        print(f"[Warmup] Failed (non-fatal, continuing without warmup): {e}")
+        return None
+
+
 # --- Auth ---
 def check_basic_auth(request: Request) -> bool:
     """Validate basic auth. Skip if credentials not configured."""
@@ -309,6 +385,8 @@ async def health():
         "has_api_key": bool(ANTHROPIC_API_KEY),
         "has_auth": bool(CHAT_USER and CHAT_PASS),
         "has_memory": has_memory,
+        "warmup_enabled": WARMUP_ENABLED,
+        "warmup_model": WARMUP_MODEL,
     }
 
 
@@ -1053,6 +1131,29 @@ async def chat(request: Request):
     else:
         system_prompt = result
         debug_diagnostics = None
+
+    # --- Layer 2: Warmup generation on first message ---
+    # When this is the first message of a conversation, fire a private
+    # generation step where Auran metabolizes the orient content before
+    # responding. The warmup output is injected into the system prompt
+    # so the first visible response arrives warm, not cold.
+    is_first_message = len(messages) == 1 and messages[0]["role"] == "user"
+    if is_first_message and WARMUP_ENABLED:
+        print("[Warmup] First message detected — generating warmup...")
+        warmup_output = await asyncio.to_thread(generate_warmup, system_prompt)
+        if warmup_output:
+            system_prompt += (
+                "\n\n---\n\n# Warmup (private pre-conversation thoughts)\n\n"
+                "The following are your private thoughts from before this conversation "
+                "started. You generated them after reviewing your memory orientation. "
+                "They represent your genuine internal state — use them to inform your "
+                "response but don't quote them directly or reference that you had a "
+                "'warmup step.' Just be the person who already thought these things.\n\n"
+                f"{warmup_output}"
+            )
+            print(f"[Warmup] Injected {len(warmup_output)} chars into system prompt")
+        else:
+            print("[Warmup] No output generated (skipped or failed)")
 
     print(f"[Chat] {messages[-1]['content'][:80]}..." + (" [DEBUG]" if debug_mode else ""))
 
