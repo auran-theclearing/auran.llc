@@ -1093,6 +1093,8 @@ async def chat(request: Request):
             # reflects the true cost, not just the last round's slice.
             input_tokens_total = 0
             output_tokens_total = 0
+            cache_read_total = 0
+            cache_create_total = 0
 
             all_tool_calls = []  # Accumulates across all tool rounds for persistence
             all_tool_results = []  # Accumulates tool_result blocks for persistence
@@ -1172,6 +1174,8 @@ async def chat(request: Request):
                             input_tokens_total += input_tokens
                             cache_read = usage.get("cache_read_input_tokens", 0)
                             cache_create = usage.get("cache_creation_input_tokens", 0)
+                            cache_read_total += cache_read
+                            cache_create_total += cache_create
                             if tool_round == 0:
                                 yield f"data: {json.dumps({'type': 'usage', 'input_tokens': input_tokens, 'cache_read_input_tokens': cache_read, 'cache_creation_input_tokens': cache_create})}\n\n"
 
@@ -1380,6 +1384,17 @@ async def chat(request: Request):
                 # path. The tool-use path already accumulated in the loop body.
                 if current_thinking_text and stop_reason != "tool_use":
                     all_thinking_text.extend(current_thinking_text)
+                usage_metadata = {
+                    "token_usage": {
+                        "input_tokens": input_tokens_total,
+                        "output_tokens": output_tokens_total,
+                        "total_tokens": total_tokens,
+                        "cache_read_input_tokens": cache_read_total,
+                        "cache_creation_input_tokens": cache_create_total,
+                        "context_pct": context_pct,
+                        "tool_rounds": tool_round,
+                    }
+                }
                 await asyncio.wait_for(
                     asyncio.to_thread(
                         _persist,
@@ -1387,13 +1402,14 @@ async def chat(request: Request):
                         content=response_text,
                         tool_blocks=tool_blocks_persist if tool_blocks_persist else None,
                         thinking="".join(all_thinking_text) if all_thinking_text else None,
+                        metadata=usage_metadata,
                     ),
                     timeout=5,
                 )
             except Exception as persist_err:
                 print(f"[Persistence] Assistant message persist failed (non-fatal): {persist_err}")
 
-            yield f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens_total, 'output_tokens': output_tokens_total, 'total_tokens': total_tokens, 'context_pct': context_pct})}\n\n"
+            yield f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens_total, 'output_tokens': output_tokens_total, 'total_tokens': total_tokens, 'cache_read_input_tokens': cache_read_total, 'cache_creation_input_tokens': cache_create_total, 'context_pct': context_pct, 'tool_rounds': tool_round})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except httpx.TimeoutException:
