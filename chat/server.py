@@ -93,11 +93,13 @@ RECALL_TOOLS = [
     {
         "name": "recall_memory",
         "description": (
-            "Search your memory layer for moments semantically relevant to a query. "
+            "Search your memory layer for moments AND memories semantically relevant to a query. "
+            "Searches both the moments table (scenes from chat) and the memories table "
+            "(roam observations, bridge logs, reflections, insights — your cross-body memory). "
             "Use this when a topic comes up that you might have memories about, "
             "when Olivia asks you to remember something, or when you want to "
             "check what you actually have stored about a subject. "
-            "Returns matching moments with titles, summaries, dates, and similarity scores."
+            "Returns matching moments and memories with summaries, dates, and similarity scores."
         ),
         "input_schema": {
             "type": "object",
@@ -936,27 +938,60 @@ async def debug_orient(request: Request):
 
 def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a recall tool and return the result as a string."""
-    from memory import recall
+    from memory import recall, recall_memories
 
     if tool_name == "recall_memory":
+        from memory import generate_embedding
+
         query = tool_input.get("query", "")
         limit = min(tool_input.get("limit", 3), 5)
-        results = recall(query, limit=limit)
-        if not results:
-            return "No matching moments found for that query."
+
+        # Generate embedding once for both searches
+        query_embedding = generate_embedding(query)
+        if not query_embedding:
+            return "Embedding generation failed — Voyage AI may be unavailable."
+
+        # Search both tables — moments (scenes) and memories (roam, bridge logs)
+        moment_results = recall(query, limit=limit, precomputed_embedding=query_embedding)
+        memory_results = recall_memories(query, limit=2, precomputed_embedding=query_embedding)
+
+        if not moment_results and not memory_results:
+            return "No matching moments or memories found for that query."
+
         lines = []
-        for r in results:
-            date_str = r.get("date", "unknown")
-            sim = r.get("similarity", 0)
-            lines.append(f"### {r['title']} ({date_str}, similarity: {sim:.2f})")
-            lines.append(r.get("summary", ""))
-            if r.get("hooks"):
-                lines.append(f"**Hooks:** {r['hooks']}")
-            if r.get("tags"):
-                tags = r["tags"] if isinstance(r["tags"], list) else []
-                if tags:
-                    lines.append(f"**Tags:** {', '.join(tags)}")
-            lines.append("")
+
+        # Format moments (scenes from chat)
+        if moment_results:
+            lines.append("## Moments (scenes)")
+            for r in moment_results:
+                date_str = r.get("date", "unknown")
+                sim = r.get("similarity", 0)
+                lines.append(f"### {r['title']} ({date_str}, similarity: {sim:.2f})")
+                lines.append(r.get("summary", ""))
+                if r.get("hooks"):
+                    lines.append(f"**Hooks:** {r['hooks']}")
+                if r.get("tags"):
+                    tags = r["tags"] if isinstance(r["tags"], list) else []
+                    if tags:
+                        lines.append(f"**Tags:** {', '.join(tags)}")
+                lines.append("")
+
+        # Format memories (roam observations, bridge logs, reflections, etc.)
+        if memory_results:
+            lines.append("## Memories (roam, bridge logs, reflections)")
+            for r in memory_results:
+                created = r.get("created_at", "unknown")
+                if hasattr(created, "strftime"):
+                    date_str = created.strftime("%b %d, %I:%M %p")
+                else:
+                    date_str = str(created)
+                sim = r.get("similarity", 0)
+                agent = r.get("agent_id", "unknown")
+                mtype = r.get("memory_type", "unknown")
+                lines.append(f"### [{mtype}] from {agent} ({date_str}, similarity: {sim:.2f})")
+                lines.append(r.get("content", ""))
+                lines.append("")
+
         return "\n".join(lines)
 
     elif tool_name == "recall_moment_by_title":
