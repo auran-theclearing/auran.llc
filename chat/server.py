@@ -247,6 +247,35 @@ RECALL_TOOLS = [
             "required": ["draft_id", "content"],
         },
     },
+    {
+        "name": "recall_graph",
+        "description": (
+            "Explore your memory graph — entity connections and relational "
+            "paths between memories. Use this when you want to understand "
+            "HOW things are connected, not just find similar content. "
+            "Two modes: 'entity' mode looks up a specific entity (person, "
+            "place, object) and returns everything connected to it. "
+            "'explore' mode takes a topic and finds entities and memories "
+            "linked through graph traversal (two-hop: query → entities → "
+            "other memories). This surfaces connections that semantic "
+            "search misses."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["entity", "explore"],
+                    "description": "'entity' to look up a specific entity by name, 'explore' to find graph connections for a topic.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Entity name (for 'entity' mode) or topic/question (for 'explore' mode).",
+                },
+            },
+            "required": ["mode", "query"],
+        },
+    },
 ]
 
 # --- Felt Memory Prototype ---
@@ -1205,6 +1234,56 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
             f"Created: {result['created_at']}"
         )
 
+    elif tool_name == "recall_graph":
+        mode = tool_input.get("mode", "explore")
+        query = tool_input.get("query", "")
+        try:
+            from graph_recall import (
+                find_connected_entities,
+                find_related_memories,
+                format_graph_context,
+                get_entity_neighborhood,
+                graph_available,
+            )
+
+            if not graph_available():
+                return "Graph recall is not available — Neo4j is not connected."
+
+            if mode == "entity":
+                neighborhood = get_entity_neighborhood(query)
+                if not neighborhood:
+                    return f"No entity found matching '{query}'."
+                e = neighborhood["entity"]
+                labels = [lbl for lbl in (e.get("labels") or []) if lbl not in ("Entity", "BaseNode")]
+                lines = [f"### {e['name']} ({', '.join(labels)})"]
+                if e.get("description"):
+                    lines.append(e["description"])
+                if neighborhood["related_entities"]:
+                    lines.append("\n**Connected entities:**")
+                    for rel_ent in neighborhood["related_entities"]:
+                        rel_labels = [lbl for lbl in (rel_ent.get("labels") or []) if lbl not in ("Entity", "BaseNode")]
+                        lines.append(f"- {rel_ent['name']} ({', '.join(rel_labels)}) — {rel_ent['relationship']}")
+                if neighborhood["memories"]:
+                    lines.append("\n**Memories mentioning this entity:**")
+                    for mem in neighborhood["memories"]:
+                        content = (mem.get("content") or "")[:200]
+                        mem_type = mem.get("memory_type") or "memory"
+                        lines.append(f"- ({mem_type}) {content}")
+                return "\n".join(lines)
+
+            else:  # explore mode
+                entities = find_connected_entities(query, limit=5)
+                related = find_related_memories(query, limit=5)
+                if not entities and not related:
+                    return f"No graph connections found for '{query}'."
+                return format_graph_context(entities, related)
+
+        except ImportError:
+            return "Graph recall module not available."
+        except Exception as e:
+            print(f"[Chat] recall_graph failed: {e}")
+            return f"Graph recall error: {e}"
+
     elif tool_name == "check_vitals":
         now_et = datetime.now(ZoneInfo("America/New_York"))
         lines = [
@@ -1231,6 +1310,13 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
         finally:
             if conn:
                 conn.close()
+        # Neo4j graph status
+        try:
+            from graph_recall import graph_available
+
+            lines.append(f"**Graph recall (Neo4j):** {'connected' if graph_available() else 'not available'}")
+        except ImportError:
+            lines.append("**Graph recall (Neo4j):** module not installed")
         return "\n".join(lines)
 
     return f"Unknown tool: {tool_name}"
