@@ -873,7 +873,9 @@ def write_draft(
         "status": "active",
         "revision": 1,
     }
-    result = write_memory("draft", content, context=context)
+    # skip_embedding=True — recall_memories excludes drafts (memory_type != 'draft')
+    # so generating an embedding here would be a wasted Voyage API call.
+    result = write_memory("draft", content, context=context, skip_embedding=True)
     if result:
         result["draft_id"] = draft_id
         logger.info(f"write_draft: created '{title}' as {draft_id}")
@@ -910,7 +912,8 @@ def revise_draft(
         "revision": prev_revision + 1,
     }
 
-    result = write_memory("draft", content, context=context)
+    # skip_embedding=True — drafts are excluded from recall_memories search
+    result = write_memory("draft", content, context=context, skip_embedding=True)
     if result:
         result["draft_id"] = draft_id
         result["revision"] = prev_revision + 1
