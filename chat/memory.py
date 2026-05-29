@@ -706,10 +706,11 @@ def recall_memories(
             FROM memories
             WHERE embedding IS NOT NULL
               AND memory_type != 'draft'
+              AND agent_id != %s
             ORDER BY embedding <=> %s::vector
             LIMIT %s
             """,
-            (query_embedding, query_embedding, limit),
+            (query_embedding, AGENT_ID, query_embedding, limit),
         )
 
         columns = [desc[0] for desc in cur.description]

@@ -948,6 +948,8 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
 
         # Generate embedding once for both searches
         query_embedding = generate_embedding(query)
+        if not query_embedding:
+            return "Embedding generation failed — Voyage AI may be unavailable."
 
         # Search both tables — moments (scenes) and memories (roam, bridge logs)
         moment_results = recall(query, limit=limit, precomputed_embedding=query_embedding)
