@@ -70,7 +70,7 @@ SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 INDEX_FILE = Path(__file__).parent / "index.html"
 
 MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
-MAX_TOKENS = 24000  # Must be > thinking.budget_tokens (10000). Headroom for tool calls with long content (drafts).
+MAX_TOKENS = 32000  # Must be > thinking.budget_tokens (10000). Headroom for tool calls with long content (drafts).
 MAX_CONTEXT_TOKENS = 200_000  # Claude's context window size for usage % calc
 MAX_TOOL_ROUNDS = 3  # Max consecutive tool-use rounds per request
 
