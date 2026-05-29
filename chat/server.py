@@ -1267,8 +1267,8 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
                     lines.append("\n**Memories mentioning this entity:**")
                     for mem in neighborhood["memories"]:
                         content = (mem.get("content") or "")[:200]
-                        mem_type = mem.get("memory_type") or "memory"
-                        lines.append(f"- ({mem_type}) {content}")
+                        role = mem.get("role") or "memory"
+                        lines.append(f"- ({role}) {content}")
                 return "\n".join(lines)
 
             else:  # explore mode

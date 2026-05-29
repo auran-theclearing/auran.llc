@@ -9,7 +9,7 @@ The graph was populated by the roam agent's dual-write pipeline
 (neo4j_writer.py → neo4j-agent-memory SDK). Every roam memory gets:
 - A Message node with content, embedding, and metadata
 - Entity nodes (POLE+O: Person, Object, Location, Event, Organization)
-- Relationship edges (MENTIONS, ILLUSTRATES, REFERENCES, CORRECTS, etc.)
+- Relationship edges (MENTIONS, RELATED_TO, etc.)
 
 This module reads the graph. It never writes to it.
 
@@ -166,7 +166,7 @@ def find_connected_entities(text: str, limit: int = 5, precomputed_embedding: li
 
     Uses the existing vector index on Message nodes (created by
     neo4j-agent-memory) to find semantically similar messages, then
-    traverses MENTIONS/ILLUSTRATES edges to find connected entities.
+    traverses MENTIONS edges to find connected entities.
 
     Args:
         text: Query text for semantic search.
@@ -189,11 +189,11 @@ def find_connected_entities(text: str, limit: int = 5, precomputed_embedding: li
             with session.begin_transaction(timeout=GRAPH_QUERY_TIMEOUT_S) as tx:
                 result = tx.run(
                     """
-                    CALL db.index.vector.queryNodes('message_embedding', $k, $embedding)
+                    CALL db.index.vector.queryNodes('message_embedding_idx', $k, $embedding)
                     YIELD node AS msg, score
                     WHERE score >= $threshold
                     WITH msg, score
-                    MATCH (msg)-[r:MENTIONS|ILLUSTRATES]->(e)
+                    MATCH (msg)-[r:MENTIONS]->(e)
                     WHERE e:Entity OR e:Person OR e:Object OR e:Location
                           OR e:Event OR e:Organization
                     RETURN e.name AS name,
@@ -202,7 +202,7 @@ def find_connected_entities(text: str, limit: int = 5, precomputed_embedding: li
                            collect(DISTINCT {
                                content: left(msg.content, 200),
                                score: score,
-                               memory_type: msg.memory_type
+                               role: msg.role
                            }) AS mentions
                     ORDER BY size(mentions) DESC, max(score) DESC
                     LIMIT $limit
@@ -249,15 +249,15 @@ def find_related_memories(text: str, limit: int = 5, precomputed_embedding: list
             with session.begin_transaction(timeout=GRAPH_QUERY_TIMEOUT_S) as tx:
                 result = tx.run(
                     """
-                    CALL db.index.vector.queryNodes('message_embedding', $k, $embedding)
+                    CALL db.index.vector.queryNodes('message_embedding_idx', $k, $embedding)
                     YIELD node AS seed, score AS seed_score
                     WHERE seed_score >= $threshold
                     WITH seed, seed_score
-                    MATCH (seed)-[:MENTIONS|ILLUSTRATES]->(entity)
+                    MATCH (seed)-[:MENTIONS]->(entity)
                     WHERE entity:Entity OR entity:Person OR entity:Object
                           OR entity:Location OR entity:Event OR entity:Organization
                     WITH entity, max(seed_score) AS via_score
-                    MATCH (entity)<-[:MENTIONS|ILLUSTRATES]-(related)
+                    MATCH (entity)<-[:MENTIONS]-(related)
                     WHERE related:Message
                     WITH related, entity, via_score
                     ORDER BY via_score DESC
@@ -265,9 +265,7 @@ def find_related_memories(text: str, limit: int = 5, precomputed_embedding: list
                          collect(DISTINCT entity.name) AS via_entities,
                          max(via_score) AS relevance
                     RETURN related.content AS content,
-                           related.memory_type AS memory_type,
-                           related.created_at AS created_at,
-                           related.postgres_id AS postgres_id,
+                           related.role AS role,
                            via_entities,
                            relevance
                     ORDER BY relevance DESC
@@ -331,13 +329,11 @@ def get_entity_neighborhood(entity_name: str, limit: int = 8) -> dict | None:
             memories = session.run(
                 """
                 MATCH (e) WHERE elementId(e) = $eid
-                MATCH (msg)-[:MENTIONS|ILLUSTRATES]->(e)
+                MATCH (msg)-[:MENTIONS]->(e)
                 WHERE msg:Message
                 RETURN msg.content AS content,
-                       msg.memory_type AS memory_type,
-                       msg.created_at AS created_at,
-                       msg.postgres_id AS postgres_id
-                ORDER BY msg.created_at DESC
+                       msg.role AS role
+                ORDER BY msg.timestamp DESC
                 LIMIT $limit
                 """,
                 eid=entity["eid"],
@@ -398,8 +394,8 @@ def format_graph_context(
                 continue
             seen_content.add(content)
             via = ", ".join(m.get("via_entities") or [])
-            mem_type = m.get("memory_type") or "memory"
-            line = f"- ({mem_type}) {content}"
+            role = m.get("role") or "memory"
+            line = f"- ({role}) {content}"
             if via:
                 line += f"\n  *Connected via: {via}*"
             memory_lines.append(line)
