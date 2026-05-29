@@ -735,6 +735,214 @@ def recall_memories(
             conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Draft reading (roam creative output)
+# ---------------------------------------------------------------------------
+
+
+def list_drafts(status: str | None = "active") -> list[dict]:
+    """List drafts by status, showing the latest revision of each.
+
+    Returns title, draft_id, status, revision number, and preview.
+    Groups by draft_id and returns only the most recent revision per draft.
+    Pass status=None or status="all" to list drafts across all statuses.
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        return []
+
+    conn = None
+    try:
+        config = _get_db_config()
+        conn = psycopg2.connect(**config)
+        cur = conn.cursor()
+
+        # Find the head (latest revision) of each draft first, then filter
+        # by status. This prevents stale revisions from leaking through —
+        # e.g. a shelved draft showing up in "active" because an older
+        # active revision passes the filter before DISTINCT ON dedup.
+        base_query = """
+            SELECT * FROM (
+                SELECT DISTINCT ON (context->>'draft_id')
+                       id, context->>'draft_id' AS draft_id,
+                       context->>'title' AS title,
+                       context->>'status' AS status,
+                       COALESCE((context->>'revision')::int, 1) AS revision,
+                       LEFT(content, 300) AS preview,
+                       created_at
+                FROM memories
+                WHERE memory_type = 'draft'
+                ORDER BY context->>'draft_id', created_at DESC
+            ) heads
+        """
+
+        if status and status != "all":
+            cur.execute(
+                base_query + " WHERE status = %s ORDER BY created_at DESC",
+                (status,),
+            )
+        else:
+            cur.execute(base_query + " ORDER BY created_at DESC")
+
+        columns = [desc[0] for desc in cur.description]
+        rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+        cur.close()
+
+        logger.info(f"list_drafts: {len(rows)} {status} drafts found")
+        return rows
+
+    except Exception as e:
+        logger.warning(f"list_drafts failed: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
+def read_draft(draft_id: str) -> dict | None:
+    """Read the latest revision of a draft by its draft_id.
+
+    Returns the full content, title, status, revision, and metadata.
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        return None
+
+    conn = None
+    try:
+        config = _get_db_config()
+        conn = psycopg2.connect(**config)
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT id, content, context->>'draft_id' AS draft_id,
+                   context->>'title' AS title,
+                   context->>'status' AS status,
+                   COALESCE((context->>'revision')::int, 1) AS revision,
+                   context->>'what_is_alive' AS what_is_alive,
+                   context->>'what_is_stuck' AS what_is_stuck,
+                   agent_id, created_at
+            FROM memories
+            WHERE memory_type = 'draft'
+              AND context->>'draft_id' = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (draft_id,),
+        )
+
+        columns = [desc[0] for desc in cur.description]
+        row = cur.fetchone()
+        cur.close()
+
+        if not row:
+            logger.info(f"read_draft: no draft found with id {draft_id}")
+            return None
+
+        result = dict(zip(columns, row, strict=True))
+        logger.info(f"read_draft: loaded '{result['title']}' rev {result['revision']}")
+        return result
+
+    except Exception as e:
+        logger.warning(f"read_draft failed: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def write_draft(
+    title: str,
+    content: str,
+    what_is_alive: str = "",
+    what_is_stuck: str = "",
+) -> dict | None:
+    """Create a new draft. Generates a fresh draft_id.
+
+    Returns dict with id, draft_id, created_at on success, None on failure.
+    """
+    draft_id = str(uuid.uuid4())
+    context = {
+        "draft_id": draft_id,
+        "title": title,
+        "what_is_alive": what_is_alive,
+        "what_is_stuck": what_is_stuck,
+        "status": "active",
+        "revision": 1,
+    }
+    # skip_embedding=True — recall_memories excludes drafts (memory_type != 'draft')
+    # so generating an embedding here would be a wasted Voyage API call.
+    result = write_memory("draft", content, context=context, skip_embedding=True)
+    if result:
+        result["draft_id"] = draft_id
+        logger.info(f"write_draft: created '{title}' as {draft_id}")
+    return result
+
+
+def revise_draft(
+    draft_id: str,
+    content: str,
+    title: str | None = None,
+    what_is_alive: str | None = None,
+    what_is_stuck: str | None = None,
+    status: str | None = None,
+) -> dict | None:
+    """Create a new revision of an existing draft.
+
+    Looks up the previous revision to carry forward title, status, etc.
+    Only overrides fields that are explicitly provided.
+    Returns dict with id, draft_id, revision, created_at on success.
+    """
+    # Get the current head revision for carry-forward fields
+    current = read_draft(draft_id)
+    if not current:
+        logger.warning(f"revise_draft: no draft found with id {draft_id}")
+        return None
+
+    # Compute next revision atomically from DB to avoid race conditions
+    # where two concurrent revises both read the same prev_revision.
+    try:
+        import psycopg2
+
+        config = _get_db_config()
+        conn = psycopg2.connect(**config)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COALESCE(MAX((context->>'revision')::int), 0) + 1
+            FROM memories
+            WHERE memory_type = 'draft' AND context->>'draft_id' = %s
+            """,
+            (draft_id,),
+        )
+        next_revision = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+    except Exception:
+        # Fallback to non-atomic path if DB query fails
+        next_revision = current.get("revision", 1) + 1
+
+    context = {
+        "draft_id": draft_id,
+        "title": title if title is not None else current.get("title", ""),
+        "what_is_alive": what_is_alive if what_is_alive is not None else current.get("what_is_alive", ""),
+        "what_is_stuck": what_is_stuck if what_is_stuck is not None else current.get("what_is_stuck", ""),
+        "status": status if status is not None else current.get("status", "active"),
+        "revision": next_revision,
+    }
+
+    # skip_embedding=True — drafts are excluded from recall_memories search
+    result = write_memory("draft", content, context=context, skip_embedding=True)
+    if result:
+        result["draft_id"] = draft_id
+        result["revision"] = next_revision
+        logger.info(f"revise_draft: '{context['title']}' rev {next_revision}")
+    return result
+
+
 def reminisce(moment_id: str) -> dict | None:
     """Fetch a specific moment's transcript for vivid recall injection.
 
