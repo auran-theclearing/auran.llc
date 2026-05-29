@@ -176,13 +176,15 @@ RECALL_TOOLS = [
         },
     },
     {
-        "name": "create_draft",
+        "name": "save_draft",
         "description": (
-            "Create a new creative draft — a piece of writing you want to develop. "
-            "Use this when you write something worth keeping: fiction, wanderings, "
-            "essays, or any creative work. The draft is saved to the database and "
-            "accessible from any body (chat, roam, cowork). "
-            "Include notes on what feels alive and what's stuck."
+            "Save your creative writing as a draft. IMPORTANT: Write ONLY the "
+            "draft text in your response — no preamble, no closing remarks. The "
+            "last text block you write will be captured as the draft content. "
+            "Then call this tool with just the metadata (title, notes). "
+            "This lets Olivia see the draft as you write it and avoids tool call "
+            "size limits. The draft is saved to the database and accessible from "
+            "any body (chat, roam, cowork)."
         ),
         "input_schema": {
             "type": "object",
@@ -190,10 +192,6 @@ RECALL_TOOLS = [
                 "title": {
                     "type": "string",
                     "description": "Title for the draft.",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The full text of the draft.",
                 },
                 "what_is_alive": {
                     "type": "string",
@@ -204,7 +202,7 @@ RECALL_TOOLS = [
                     "description": "What feels stuck or needs work.",
                 },
             },
-            "required": ["title", "content"],
+            "required": ["title"],
         },
     },
     {
@@ -1076,8 +1074,16 @@ async def debug_orient(request: Request):
     return JSONResponse(result)
 
 
-def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
-    """Execute a recall tool and return the result as a string."""
+def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "") -> str:
+    """Execute a recall tool and return the result as a string.
+
+    Args:
+        tool_name: Name of the tool to execute.
+        tool_input: Tool input parameters from the model.
+        response_text: The last text block from the model's response in this turn.
+            Used by save_draft to capture only the draft content, excluding
+            any conversational preamble from earlier text blocks.
+    """
     from memory import recall, recall_memories
 
     if tool_name == "recall_memory":
@@ -1198,11 +1204,13 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
             lines.append(f"**What's stuck:** {draft['what_is_stuck']}")
         return "\n".join(lines)
 
-    elif tool_name == "create_draft":
+    elif tool_name == "save_draft":
         from memory import write_draft
 
         title = tool_input.get("title", "Untitled")
-        content = tool_input.get("content", "")
+        content = response_text.strip()
+        if not content:
+            return "No text to save — write the draft as text in your response before calling save_draft."
         result = write_draft(
             title=title,
             content=content,
@@ -1211,7 +1219,12 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
         )
         if not result:
             return "Failed to save draft."
-        return f"Draft saved: **{title}**\nDraft ID: `{result['draft_id']}`\nCreated: {result['created_at']}"
+        return (
+            f"Draft saved: **{title}**\n"
+            f"Draft ID: `{result['draft_id']}`\n"
+            f"Created: {result['created_at']}\n"
+            f"Content length: {len(content)} chars"
+        )
 
     elif tool_name == "revise_draft":
         from memory import revise_draft
@@ -1734,11 +1747,24 @@ async def chat(request: Request):
                     # can stall, and the SSE connection would go silent without this.
                     yield ": keepalive\n\n"
 
+                    # Extract the last text block for save_draft — only the draft
+                    # content, not conversational preamble from earlier text blocks.
+                    last_text_block = ""
+                    for block in reversed(content_blocks):
+                        if block.get("type") == "text":
+                            last_text_block = block["text"]
+                            break
+
                     # Execute tools and build tool results
                     tool_results = []
                     for tc in tool_calls:
                         try:
-                            result_text = await asyncio.to_thread(execute_recall_tool, tc["name"], tc["input"])
+                            result_text = await asyncio.to_thread(
+                                execute_recall_tool,
+                                tc["name"],
+                                tc["input"],
+                                last_text_block,
+                            )
                         except Exception as tool_err:
                             print(f"[Chat] Tool execution failed: {tc['name']}: {tool_err}")
                             result_text = f"Memory recall failed: {type(tool_err).__name__}: {tool_err}"
