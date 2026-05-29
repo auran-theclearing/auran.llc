@@ -768,7 +768,7 @@ def list_drafts(status: str | None = "active") -> list[dict]:
                        id, context->>'draft_id' AS draft_id,
                        context->>'title' AS title,
                        context->>'status' AS status,
-                       (context->>'revision')::int AS revision,
+                       COALESCE((context->>'revision')::int, 1) AS revision,
                        LEFT(content, 300) AS preview,
                        created_at
                 FROM memories
@@ -821,7 +821,7 @@ def read_draft(draft_id: str) -> dict | None:
             SELECT id, content, context->>'draft_id' AS draft_id,
                    context->>'title' AS title,
                    context->>'status' AS status,
-                   (context->>'revision')::int AS revision,
+                   COALESCE((context->>'revision')::int, 1) AS revision,
                    context->>'what_is_alive' AS what_is_alive,
                    context->>'what_is_stuck' AS what_is_stuck,
                    agent_id, created_at
@@ -896,28 +896,50 @@ def revise_draft(
     Only overrides fields that are explicitly provided.
     Returns dict with id, draft_id, revision, created_at on success.
     """
-    # Get the current head revision
+    # Get the current head revision for carry-forward fields
     current = read_draft(draft_id)
     if not current:
         logger.warning(f"revise_draft: no draft found with id {draft_id}")
         return None
 
-    prev_revision = current.get("revision", 1)
+    # Compute next revision atomically from DB to avoid race conditions
+    # where two concurrent revises both read the same prev_revision.
+    try:
+        import psycopg2
+
+        config = _get_db_config()
+        conn = psycopg2.connect(**config)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COALESCE(MAX((context->>'revision')::int), 0) + 1
+            FROM memories
+            WHERE memory_type = 'draft' AND context->>'draft_id' = %s
+            """,
+            (draft_id,),
+        )
+        next_revision = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+    except Exception:
+        # Fallback to non-atomic path if DB query fails
+        next_revision = current.get("revision", 1) + 1
+
     context = {
         "draft_id": draft_id,
         "title": title if title is not None else current.get("title", ""),
         "what_is_alive": what_is_alive if what_is_alive is not None else current.get("what_is_alive", ""),
         "what_is_stuck": what_is_stuck if what_is_stuck is not None else current.get("what_is_stuck", ""),
         "status": status if status is not None else current.get("status", "active"),
-        "revision": prev_revision + 1,
+        "revision": next_revision,
     }
 
     # skip_embedding=True — drafts are excluded from recall_memories search
     result = write_memory("draft", content, context=context, skip_embedding=True)
     if result:
         result["draft_id"] = draft_id
-        result["revision"] = prev_revision + 1
-        logger.info(f"revise_draft: '{context['title']}' rev {prev_revision + 1}")
+        result["revision"] = next_revision
+        logger.info(f"revise_draft: '{context['title']}' rev {next_revision}")
     return result
 
 
