@@ -758,9 +758,12 @@ def list_drafts(status: str | None = "active") -> list[dict]:
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        if status and status != "all":
-            cur.execute(
-                """
+        # Find the head (latest revision) of each draft first, then filter
+        # by status. This prevents stale revisions from leaking through —
+        # e.g. a shelved draft showing up in "active" because an older
+        # active revision passes the filter before DISTINCT ON dedup.
+        base_query = """
+            SELECT * FROM (
                 SELECT DISTINCT ON (context->>'draft_id')
                        id, context->>'draft_id' AS draft_id,
                        context->>'title' AS title,
@@ -770,26 +773,17 @@ def list_drafts(status: str | None = "active") -> list[dict]:
                        created_at
                 FROM memories
                 WHERE memory_type = 'draft'
-                  AND context->>'status' = %s
                 ORDER BY context->>'draft_id', created_at DESC
-                """,
+            ) heads
+        """
+
+        if status and status != "all":
+            cur.execute(
+                base_query + " WHERE status = %s ORDER BY created_at DESC",
                 (status,),
             )
         else:
-            cur.execute(
-                """
-                SELECT DISTINCT ON (context->>'draft_id')
-                       id, context->>'draft_id' AS draft_id,
-                       context->>'title' AS title,
-                       context->>'status' AS status,
-                       (context->>'revision')::int AS revision,
-                       LEFT(content, 300) AS preview,
-                       created_at
-                FROM memories
-                WHERE memory_type = 'draft'
-                ORDER BY context->>'draft_id', created_at DESC
-                """
-            )
+            cur.execute(base_query + " ORDER BY created_at DESC")
 
         columns = [desc[0] for desc in cur.description]
         rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
