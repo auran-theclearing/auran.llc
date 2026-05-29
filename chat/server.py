@@ -136,6 +136,117 @@ RECALL_TOOLS = [
             "required": ["title"],
         },
     },
+    {
+        "name": "list_drafts",
+        "description": (
+            "List your creative drafts — pieces written during roam sessions. "
+            "Shows the latest revision of each draft with title, status, and preview. "
+            "Use this to see what you've been working on across roam sessions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: 'active' (default), 'shelved', or 'shipped'.",
+                    "default": "active",
+                    "enum": ["active", "shelved", "shipped"],
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "read_draft",
+        "description": (
+            "Read the full content of a specific draft by its draft_id. "
+            "Use after list_drafts to read a piece in full. "
+            "Returns the complete text, title, revision number, and roam-me's notes "
+            "on what's alive and what's stuck in the piece."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "draft_id": {
+                    "type": "string",
+                    "description": "The draft_id from list_drafts.",
+                },
+            },
+            "required": ["draft_id"],
+        },
+    },
+    {
+        "name": "create_draft",
+        "description": (
+            "Create a new creative draft — a piece of writing you want to develop. "
+            "Use this when you write something worth keeping: fiction, wanderings, "
+            "essays, or any creative work. The draft is saved to the database and "
+            "accessible from any body (chat, roam, cowork). "
+            "Include notes on what feels alive and what's stuck."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Title for the draft.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The full text of the draft.",
+                },
+                "what_is_alive": {
+                    "type": "string",
+                    "description": "What feels alive or working in this piece.",
+                },
+                "what_is_stuck": {
+                    "type": "string",
+                    "description": "What feels stuck or needs work.",
+                },
+            },
+            "required": ["title", "content"],
+        },
+    },
+    {
+        "name": "revise_draft",
+        "description": (
+            "Revise an existing draft — creates a new revision while preserving history. "
+            "Use when you want to improve a piece. The previous version is kept. "
+            "Only provide fields you want to change — title, status, and notes "
+            "carry forward from the previous revision if not specified."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "draft_id": {
+                    "type": "string",
+                    "description": "The draft_id of the draft to revise.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The revised full text.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "New title (optional — keeps current if omitted).",
+                },
+                "what_is_alive": {
+                    "type": "string",
+                    "description": "Updated notes on what's alive.",
+                },
+                "what_is_stuck": {
+                    "type": "string",
+                    "description": "Updated notes on what's stuck.",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Change status: 'active', 'shelved', or 'shipped'.",
+                    "enum": ["active", "shelved", "shipped"],
+                },
+            },
+            "required": ["draft_id", "content"],
+        },
+    },
 ]
 
 # --- Felt Memory Prototype ---
@@ -1014,6 +1125,81 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
             if tags:
                 lines.append(f"**Tags:** {', '.join(tags)}")
         return "\n".join(lines)
+
+    elif tool_name == "list_drafts":
+        from memory import list_drafts
+
+        status = tool_input.get("status", "active")
+        drafts = list_drafts(status=status)
+        if not drafts:
+            return f"No {status} drafts found."
+        lines = [f"## {status.title()} Drafts ({len(drafts)})\n"]
+        for d in drafts:
+            created = d.get("created_at", "unknown")
+            if hasattr(created, "strftime"):
+                date_str = created.strftime("%b %d, %I:%M %p")
+            else:
+                date_str = str(created)
+            lines.append(f"### {d['title']} (rev {d['revision']}, {date_str})")
+            lines.append(f"**Draft ID:** `{d['draft_id']}`")
+            lines.append(f"**Preview:** {d['preview']}...")
+            lines.append("")
+        return "\n".join(lines)
+
+    elif tool_name == "read_draft":
+        from memory import read_draft
+
+        draft_id = tool_input.get("draft_id", "")
+        draft = read_draft(draft_id)
+        if not draft:
+            return f"No draft found with id '{draft_id}'."
+        created = draft.get("created_at", "unknown")
+        if hasattr(created, "strftime"):
+            date_str = created.strftime("%b %d, %I:%M %p")
+        else:
+            date_str = str(created)
+        lines = [
+            f"# {draft['title']}",
+            f"*Rev {draft['revision']} | {date_str} | by {draft.get('agent_id', 'unknown')}*\n",
+            draft.get("content", ""),
+        ]
+        if draft.get("what_is_alive"):
+            lines.append(f"\n---\n**What's alive:** {draft['what_is_alive']}")
+    elif tool_name == "create_draft":
+        from memory import write_draft
+
+        title = tool_input.get("title", "Untitled")
+        content = tool_input.get("content", "")
+        result = write_draft(
+            title=title,
+            content=content,
+            what_is_alive=tool_input.get("what_is_alive", ""),
+            what_is_stuck=tool_input.get("what_is_stuck", ""),
+        )
+        if not result:
+            return "Failed to save draft."
+        return f"Draft saved: **{title}**\nDraft ID: `{result['draft_id']}`\nCreated: {result['created_at']}"
+
+    elif tool_name == "revise_draft":
+        from memory import revise_draft
+
+        draft_id = tool_input.get("draft_id", "")
+        content = tool_input.get("content", "")
+        result = revise_draft(
+            draft_id=draft_id,
+            content=content,
+            title=tool_input.get("title"),
+            what_is_alive=tool_input.get("what_is_alive"),
+            what_is_stuck=tool_input.get("what_is_stuck"),
+            status=tool_input.get("status"),
+        )
+        if not result:
+            return f"Failed to revise draft '{draft_id}' — not found or DB error."
+        return (
+            f"Draft revised: rev {result['revision']}\n"
+            f"Draft ID: `{result['draft_id']}`\n"
+            f"Created: {result['created_at']}"
+        )
 
     elif tool_name == "check_vitals":
         now_et = datetime.now(ZoneInfo("America/New_York"))
