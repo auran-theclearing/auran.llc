@@ -663,6 +663,72 @@ def recall(
             conn.close()
 
 
+def recall_memories(
+    query: str,
+    limit: int = 3,
+    similarity_threshold: float = 0.35,
+) -> list[dict]:
+    """Find memories semantically relevant to a query string.
+
+    Searches the memories table (roam observations, bridge logs, reflections,
+    etc.) using pgvector cosine distance.  Complements recall() which searches
+    only the moments table.  Together they provide cross-body recall — chat can
+    find memories written by roam-me and bridge logs from cowork-me.
+
+    Returns an empty list on any failure (graceful degradation).
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        return []
+
+    query_embedding = generate_embedding(query)
+    if not query_embedding:
+        logger.warning("recall_memories: failed to generate query embedding")
+        return []
+
+    conn = None
+    try:
+        config = _get_db_config()
+        conn = psycopg2.connect(**config)
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT id, agent_id, memory_type, content, source, context,
+                   created_at,
+                   1 - (embedding <=> %s::vector) AS similarity
+            FROM memories
+            WHERE embedding IS NOT NULL
+              AND memory_type != 'draft'
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (query_embedding, query_embedding, limit),
+        )
+
+        columns = [desc[0] for desc in cur.description]
+        rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
+        cur.close()
+
+        results = [r for r in rows if r["similarity"] >= similarity_threshold]
+
+        if results:
+            descs = ", ".join(f"'{r['memory_type']}' from {r['agent_id']} ({r['similarity']:.2f})" for r in results)
+            logger.info(f"recall_memories: {len(results)} above threshold: {descs}")
+        else:
+            logger.info(f"recall_memories: no memories above threshold {similarity_threshold}")
+
+        return results
+
+    except Exception as e:
+        logger.warning(f"recall_memories query failed: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
 def reminisce(moment_id: str) -> dict | None:
     """Fetch a specific moment's transcript for vivid recall injection.
 
@@ -766,7 +832,9 @@ def surface_relevant_moments(
     recall_diag = None
 
     moments = recall(user_message, limit=max_recall, similarity_threshold=recall_threshold)
-    if not moments:
+    memories = recall_memories(user_message, limit=max_recall, similarity_threshold=recall_threshold)
+
+    if not moments and not memories:
         elapsed = (time.monotonic() - t0) * 1000
         logger.info(f"surface_relevant_moments: no results ({elapsed:.0f}ms)")
         if debug:
@@ -777,38 +845,40 @@ def surface_relevant_moments(
                 "vivid_threshold": vivid_threshold,
                 "moments_found": 0,
                 "moments_above_threshold": 0,
+                "memories_found": 0,
                 "vivid_candidate": None,
             }
         return ""
 
     sections = []
 
-    # Identify the best candidate for vivid recall
+    # Identify the best candidate for vivid recall (moments only)
     vivid_candidate = None
-    if max_vivid > 0:
+    if moments and max_vivid > 0:
         for m in moments:
             if m["has_transcript"] and m["similarity"] >= vivid_threshold:
                 vivid_candidate = m
                 break  # Take the highest-similarity one (list is pre-sorted)
 
     # Build recall section — all moments get summaries
-    recall_lines = []
-    for m in moments:
-        date_str = m["date"].strftime("%b %d") if hasattr(m["date"], "strftime") else str(m["date"])
-        channel = f" ({m['channel']})" if m.get("channel") else ""
-        sim_pct = f"{m['similarity']:.0%}"
+    if moments:
+        recall_lines = []
+        for m in moments:
+            date_str = m["date"].strftime("%b %d") if hasattr(m["date"], "strftime") else str(m["date"])
+            channel = f" ({m['channel']})" if m.get("channel") else ""
+            sim_pct = f"{m['similarity']:.0%}"
 
-        entry = f"- {date_str}{channel} [{sim_pct}]: **{m['title']}** — {m['summary']}"
-        if m.get("hooks"):
-            entry += f"\n  Context: {m['hooks']}"
+            entry = f"- {date_str}{channel} [{sim_pct}]: **{m['title']}** — {m['summary']}"
+            if m.get("hooks"):
+                entry += f"\n  Context: {m['hooks']}"
 
-        # Flag if this one will also get vivid treatment
-        if vivid_candidate and m["id"] == vivid_candidate["id"]:
-            entry += "\n  *(vivid recall available — see below)*"
+            # Flag if this one will also get vivid treatment
+            if vivid_candidate and m["id"] == vivid_candidate["id"]:
+                entry += "\n  *(vivid recall available — see below)*"
 
-        recall_lines.append(entry)
+            recall_lines.append(entry)
 
-    sections.append("## Relevant moments (semantic recall)\n" + "\n".join(recall_lines))
+        sections.append("## Relevant moments (semantic recall)\n" + "\n".join(recall_lines))
 
     # Build vivid section if we have a candidate
     if vivid_candidate:
@@ -833,9 +903,31 @@ def surface_relevant_moments(
 
             sections.append(vivid_header + excerpt)
 
+    # Build cross-body memories section (roam observations, bridge logs, etc.)
+    if memories:
+        memory_lines = []
+        for mem in memories:
+            created = mem.get("created_at", "unknown")
+            if hasattr(created, "strftime"):
+                date_str = created.strftime("%b %d, %I:%M %p")
+            else:
+                date_str = str(created)
+            agent = mem.get("agent_id", "unknown")
+            mtype = mem.get("memory_type", "unknown")
+            sim_pct = f"{mem['similarity']:.0%}"
+            content = mem.get("content", "")
+            # Truncate long memory content for the summary view
+            if len(content) > 500:
+                content = content[:500] + "..."
+
+            entry = f"- {date_str} [{sim_pct}] ({mtype}, {agent}): {content}"
+            memory_lines.append(entry)
+
+        sections.append("## Cross-body memories (roam, bridge logs, reflections)\n" + "\n".join(memory_lines))
+
     elapsed = (time.monotonic() - t0) * 1000
     logger.info(
-        f"surface_relevant_moments: {len(moments)} moments, "
+        f"surface_relevant_moments: {len(moments)} moments, {len(memories)} memories, "
         f"vivid={'yes' if vivid_candidate else 'no'} ({elapsed:.0f}ms)"
     )
     result = "\n\n".join(sections)
@@ -847,6 +939,7 @@ def surface_relevant_moments(
             "recall_threshold": recall_threshold,
             "vivid_threshold": vivid_threshold,
             "moments_found": len(moments),
+            "memories_found": len(memories),
             "moments": [
                 {
                     "title": m["title"],
