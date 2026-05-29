@@ -1165,6 +1165,10 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
         ]
         if draft.get("what_is_alive"):
             lines.append(f"\n---\n**What's alive:** {draft['what_is_alive']}")
+        if draft.get("what_is_stuck"):
+            lines.append(f"**What's stuck:** {draft['what_is_stuck']}")
+        return "\n".join(lines)
+
     elif tool_name == "create_draft":
         from memory import write_draft
 
