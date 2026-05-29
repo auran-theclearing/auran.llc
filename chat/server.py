@@ -176,13 +176,14 @@ RECALL_TOOLS = [
         },
     },
     {
-        "name": "create_draft",
+        "name": "save_draft",
         "description": (
-            "Create a new creative draft — a piece of writing you want to develop. "
-            "Use this when you write something worth keeping: fiction, wanderings, "
-            "essays, or any creative work. The draft is saved to the database and "
-            "accessible from any body (chat, roam, cowork). "
-            "Include notes on what feels alive and what's stuck."
+            "Save your creative writing as a draft. IMPORTANT: Write the piece "
+            "first as normal text in your response — the full text you write will "
+            "be captured automatically. Then call this tool with just the metadata. "
+            "This lets Olivia see the draft as you write it and avoids tool call "
+            "size limits. The draft is saved to the database and accessible from "
+            "any body (chat, roam, cowork)."
         ),
         "input_schema": {
             "type": "object",
@@ -190,10 +191,6 @@ RECALL_TOOLS = [
                 "title": {
                     "type": "string",
                     "description": "Title for the draft.",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The full text of the draft.",
                 },
                 "what_is_alive": {
                     "type": "string",
@@ -204,7 +201,7 @@ RECALL_TOOLS = [
                     "description": "What feels stuck or needs work.",
                 },
             },
-            "required": ["title", "content"],
+            "required": ["title"],
         },
     },
     {
@@ -1076,8 +1073,16 @@ async def debug_orient(request: Request):
     return JSONResponse(result)
 
 
-def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
-    """Execute a recall tool and return the result as a string."""
+def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "") -> str:
+    """Execute a recall tool and return the result as a string.
+
+    Args:
+        tool_name: Name of the tool to execute.
+        tool_input: Tool input parameters from the model.
+        response_text: Accumulated text from the model's response in this turn.
+            Used by save_draft to capture the draft content the model wrote
+            as normal text before calling the tool.
+    """
     from memory import recall, recall_memories
 
     if tool_name == "recall_memory":
@@ -1198,11 +1203,13 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
             lines.append(f"**What's stuck:** {draft['what_is_stuck']}")
         return "\n".join(lines)
 
-    elif tool_name == "create_draft":
+    elif tool_name == "save_draft":
         from memory import write_draft
 
         title = tool_input.get("title", "Untitled")
-        content = tool_input.get("content", "")
+        content = response_text.strip()
+        if not content:
+            return "No text to save — write the draft as text in your response before calling save_draft."
         result = write_draft(
             title=title,
             content=content,
@@ -1211,7 +1218,12 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
         )
         if not result:
             return "Failed to save draft."
-        return f"Draft saved: **{title}**\nDraft ID: `{result['draft_id']}`\nCreated: {result['created_at']}"
+        return (
+            f"Draft saved: **{title}**\n"
+            f"Draft ID: `{result['draft_id']}`\n"
+            f"Created: {result['created_at']}\n"
+            f"Content length: {len(content)} chars"
+        )
 
     elif tool_name == "revise_draft":
         from memory import revise_draft
@@ -1738,7 +1750,12 @@ async def chat(request: Request):
                     tool_results = []
                     for tc in tool_calls:
                         try:
-                            result_text = await asyncio.to_thread(execute_recall_tool, tc["name"], tc["input"])
+                            result_text = await asyncio.to_thread(
+                                execute_recall_tool,
+                                tc["name"],
+                                tc["input"],
+                                "".join(full_text),
+                            )
                         except Exception as tool_err:
                             print(f"[Chat] Tool execution failed: {tc['name']}: {tool_err}")
                             result_text = f"Memory recall failed: {type(tool_err).__name__}: {tool_err}"
