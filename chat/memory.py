@@ -575,6 +575,7 @@ def recall(
     query: str,
     limit: int = 3,
     similarity_threshold: float = 0.35,
+    precomputed_embedding: str | None = None,
 ) -> list[dict]:
     """Find moments semantically relevant to a query string.
 
@@ -582,6 +583,7 @@ def recall(
     on the moments table.  Returns full scene summaries — the "recall" tier
     in the three-level memory architecture (orient → recall → vivid).
 
+    If precomputed_embedding is provided, skips the Voyage API call.
     Returns an empty list on any failure (graceful degradation).
     """
     try:
@@ -589,8 +591,8 @@ def recall(
     except ImportError:
         return []
 
-    # Generate embedding for the query
-    query_embedding = generate_embedding(query)
+    # Generate embedding for the query (or reuse precomputed)
+    query_embedding = precomputed_embedding or generate_embedding(query)
     if not query_embedding:
         logger.warning("recall: failed to generate query embedding")
         return []
@@ -665,8 +667,9 @@ def recall(
 
 def recall_memories(
     query: str,
-    limit: int = 3,
+    limit: int = 2,
     similarity_threshold: float = 0.35,
+    precomputed_embedding: str | None = None,
 ) -> list[dict]:
     """Find memories semantically relevant to a query string.
 
@@ -675,6 +678,8 @@ def recall_memories(
     only the moments table.  Together they provide cross-body recall — chat can
     find memories written by roam-me and bridge logs from cowork-me.
 
+    Default limit=2 (vs recall's limit=3) to keep combined budget manageable.
+    If precomputed_embedding is provided, skips the Voyage API call.
     Returns an empty list on any failure (graceful degradation).
     """
     try:
@@ -682,7 +687,7 @@ def recall_memories(
     except ImportError:
         return []
 
-    query_embedding = generate_embedding(query)
+    query_embedding = precomputed_embedding or generate_embedding(query)
     if not query_embedding:
         logger.warning("recall_memories: failed to generate query embedding")
         return []
@@ -831,8 +836,31 @@ def surface_relevant_moments(
     t0 = time.monotonic()
     recall_diag = None
 
-    moments = recall(user_message, limit=max_recall, similarity_threshold=recall_threshold)
-    memories = recall_memories(user_message, limit=max_recall, similarity_threshold=recall_threshold)
+    # Generate embedding once for both searches (avoids duplicate Voyage API call)
+    query_embedding = generate_embedding(user_message)
+    if not query_embedding:
+        logger.warning("surface_relevant_moments: failed to generate embedding")
+        elapsed = (time.monotonic() - t0) * 1000
+        if debug:
+            return "", {
+                "query": user_message[:100],
+                "recall_ms": round(elapsed, 1),
+                "error": "embedding_failed",
+            }
+        return ""
+
+    moments = recall(
+        user_message,
+        limit=max_recall,
+        similarity_threshold=recall_threshold,
+        precomputed_embedding=query_embedding,
+    )
+    memories = recall_memories(
+        user_message,
+        limit=2,
+        similarity_threshold=recall_threshold,
+        precomputed_embedding=query_embedding,
+    )
 
     if not moments and not memories:
         elapsed = (time.monotonic() - t0) * 1000

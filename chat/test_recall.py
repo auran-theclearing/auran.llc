@@ -1,16 +1,16 @@
-"""Tests for Phase 3 — recall, reminisce, surface_relevant_moments.
+"""Tests for Phase 3 — recall, reminisce, surface_relevant_moments, recall_memories.
 
 Mocks psycopg2 (Postgres) and generate_embedding (Voyage AI) so no
 live services needed.  Every test verifies actual behavior, not just
 that it doesn't crash.
 """
 
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from memory import recall, reminisce, surface_relevant_moments
+from memory import recall, recall_memories, reminisce, surface_relevant_moments
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -537,15 +537,19 @@ class TestReminisce:
 class TestSurfaceRelevantMoments:
     """Tests for surface_relevant_moments() — the Phase 3 orchestrator."""
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.recall", return_value=[])
-    def test_returns_empty_when_no_recall_results(self, mock_recall):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_returns_empty_when_no_recall_results(self, mock_embed, mock_recall, mock_memories):
         """No moments recalled → empty string."""
         result = surface_relevant_moments("anything")
         assert result == ""
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.reminisce")
     @patch("memory.recall")
-    def test_builds_recall_section(self, mock_recall, mock_reminisce):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_builds_recall_section(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """Recall results should produce a formatted recall section."""
         mock_recall.return_value = [
             {
@@ -572,9 +576,11 @@ class TestSurfaceRelevantMoments:
         assert "identity, authorship" in result
         mock_reminisce.assert_not_called()  # No transcript, no vivid
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.reminisce")
     @patch("memory.recall")
-    def test_vivid_recall_triggered_above_threshold(self, mock_recall, mock_reminisce):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_vivid_recall_triggered_above_threshold(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """Moment with transcript above vivid threshold → vivid section built."""
         mock_recall.return_value = [
             {
@@ -604,9 +610,11 @@ class TestSurfaceRelevantMoments:
         assert "been thinking about the vr space" in result
         mock_reminisce.assert_called_once_with("m-1")
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.reminisce")
     @patch("memory.recall")
-    def test_vivid_not_triggered_below_threshold(self, mock_recall, mock_reminisce):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_vivid_not_triggered_below_threshold(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """Moment with transcript below vivid threshold → no vivid section."""
         mock_recall.return_value = [
             {
@@ -629,9 +637,11 @@ class TestSurfaceRelevantMoments:
         assert "Vivid recall" not in result
         mock_reminisce.assert_not_called()
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.reminisce")
     @patch("memory.recall")
-    def test_vivid_not_triggered_without_transcript(self, mock_recall, mock_reminisce):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_vivid_not_triggered_without_transcript(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """High similarity but no transcript → no vivid section."""
         mock_recall.return_value = [
             {
@@ -654,9 +664,11 @@ class TestSurfaceRelevantMoments:
         assert "Vivid recall" not in result
         mock_reminisce.assert_not_called()
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.reminisce")
     @patch("memory.recall")
-    def test_vivid_truncation_on_turn_boundary(self, mock_recall, mock_reminisce):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_vivid_truncation_on_turn_boundary(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """Long transcript should be truncated on \\n\\n boundary, not mid-sentence."""
         mock_recall.return_value = [
             {
@@ -696,9 +708,11 @@ class TestSurfaceRelevantMoments:
         # The content before the truncation marker should end cleanly
         assert vivid_section.count("[...truncated") == 1
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.reminisce")
     @patch("memory.recall")
-    def test_vivid_flag_in_recall_section(self, mock_recall, mock_reminisce):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_vivid_flag_in_recall_section(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """Vivid candidate should be flagged in the recall section."""
         mock_recall.return_value = [
             {
@@ -740,9 +754,11 @@ class TestSurfaceRelevantMoments:
         # The flag should only appear for the vivid candidate, not the other
         assert result.count("vivid recall available") == 1
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.reminisce", return_value=None)
     @patch("memory.recall")
-    def test_graceful_when_reminisce_fails(self, mock_recall, mock_reminisce):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_graceful_when_reminisce_fails(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """reminisce() returns None → recall section still works, no vivid."""
         mock_recall.return_value = [
             {
@@ -766,9 +782,11 @@ class TestSurfaceRelevantMoments:
         assert "DB Down" in result
         assert "Vivid recall:" not in result
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.reminisce")
     @patch("memory.recall")
-    def test_multiple_moments_only_best_gets_vivid(self, mock_recall, mock_reminisce):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_multiple_moments_only_best_gets_vivid(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """Only the highest-similarity transcript-bearing moment gets vivid."""
         mock_recall.return_value = [
             {
@@ -810,8 +828,10 @@ class TestSurfaceRelevantMoments:
         mock_reminisce.assert_called_once_with("m-1")
         assert "Vivid recall: Best Match" in result
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.recall")
-    def test_date_formatting_with_date_object(self, mock_recall):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_date_formatting_with_date_object(self, mock_embed, mock_recall, mock_memories):
         """date objects should be formatted as 'May 10' etc."""
         mock_recall.return_value = [
             {
@@ -832,8 +852,10 @@ class TestSurfaceRelevantMoments:
         result = surface_relevant_moments("test")
         assert "May 10" in result
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.recall")
-    def test_date_formatting_with_string(self, mock_recall):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_date_formatting_with_string(self, mock_embed, mock_recall, mock_memories):
         """String dates should be passed through as-is."""
         mock_recall.return_value = [
             {
@@ -854,8 +876,10 @@ class TestSurfaceRelevantMoments:
         result = surface_relevant_moments("test")
         assert "2026-05-10" in result
 
+    @patch("memory.recall_memories", return_value=[])
     @patch("memory.recall")
-    def test_max_vivid_zero_disables_vivid(self, mock_recall):
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_max_vivid_zero_disables_vivid(self, mock_embed, mock_recall, mock_memories):
         """max_vivid=0 should skip vivid entirely even with eligible moments."""
         mock_recall.return_value = [
             {
@@ -876,3 +900,141 @@ class TestSurfaceRelevantMoments:
         result = surface_relevant_moments("test", max_vivid=0)
 
         assert "Vivid recall" not in result
+
+
+# ===========================================================================
+# recall_memories()
+# ===========================================================================
+
+
+class TestRecallMemories:
+    """Tests for recall_memories() — vector similarity search on memories table."""
+
+    @patch("psycopg2.connect")
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_returns_memories_above_threshold(self, mock_embed, mock_connect):
+        """Memories above the similarity threshold should be returned."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+        cur.description = [
+            ("id",),
+            ("agent_id",),
+            ("memory_type",),
+            ("content",),
+            ("source",),
+            ("context",),
+            ("created_at",),
+            ("similarity",),
+        ]
+        cur.fetchall.return_value = [
+            (
+                "mem-1",
+                "roam-agent",
+                "observation",
+                "The church pew holds grief",
+                "self",
+                {},
+                datetime(2026, 5, 28),
+                0.55,
+            ),
+        ]
+
+        results = recall_memories("church pew grief")
+        assert len(results) == 1
+        assert results[0]["memory_type"] == "observation"
+        assert results[0]["agent_id"] == "roam-agent"
+        assert results[0]["similarity"] == 0.55
+
+    @patch("memory.generate_embedding", return_value=None)
+    def test_returns_empty_when_embedding_fails(self, mock_embed):
+        """Should return [] if Voyage embedding fails."""
+        results = recall_memories("anything")
+        assert results == []
+
+    @patch("psycopg2.connect")
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_excludes_drafts(self, mock_embed, mock_connect):
+        """Draft memory_type should be excluded from recall_memories results."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+        cur.description = [
+            ("id",),
+            ("agent_id",),
+            ("memory_type",),
+            ("content",),
+            ("source",),
+            ("context",),
+            ("created_at",),
+            ("similarity",),
+        ]
+        cur.fetchall.return_value = []
+
+        recall_memories("test")
+        executed_sql = cur.execute.call_args[0][0]
+        assert "memory_type != 'draft'" in executed_sql
+
+    @patch("psycopg2.connect")
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_uses_precomputed_embedding(self, mock_embed, mock_connect):
+        """Should skip generate_embedding when precomputed is provided."""
+        conn, cur = _mock_conn()
+        mock_connect.return_value = conn
+        cur.description = [
+            ("id",),
+            ("agent_id",),
+            ("memory_type",),
+            ("content",),
+            ("source",),
+            ("context",),
+            ("created_at",),
+            ("similarity",),
+        ]
+        cur.fetchall.return_value = []
+
+        recall_memories("test", precomputed_embedding="[0.5,0.6,0.7]")
+        # The precomputed embedding should be used in the query, not FAKE_EMBEDDING
+        query_args = cur.execute.call_args[0][1]
+        assert query_args[0] == "[0.5,0.6,0.7]"
+
+
+class TestSurfaceRelevantMomentsWithMemories:
+    """Tests for the cross-body memory path in surface_relevant_moments."""
+
+    @patch("memory.recall_memories")
+    @patch("memory.recall", return_value=[])
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_shows_memories_when_no_moments(self, mock_embed, mock_recall, mock_memories):
+        """When moments is empty but memories has results, should still return content."""
+        mock_memories.return_value = [
+            {
+                "id": "mem-1",
+                "agent_id": "roam-agent",
+                "memory_type": "observation",
+                "content": "The pew holds grief weight differently than guilt weight",
+                "source": "self",
+                "context": {},
+                "created_at": datetime(2026, 5, 28, 10, 0),
+                "similarity": 0.55,
+            },
+        ]
+
+        result = surface_relevant_moments("church pew weight")
+        assert "Cross-body memories" in result
+        assert "roam-agent" in result
+        assert "pew holds grief" in result
+
+    @patch("memory.recall_memories")
+    @patch("memory.recall")
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_generates_embedding_once(self, mock_embed, mock_recall, mock_memories):
+        """Should call generate_embedding once and pass to both recall functions."""
+        mock_recall.return_value = []
+        mock_memories.return_value = []
+
+        surface_relevant_moments("test query")
+
+        # generate_embedding called once
+        mock_embed.assert_called_once_with("test query")
+        # Both recall functions receive precomputed_embedding
+        assert mock_recall.call_args[1]["precomputed_embedding"] == FAKE_EMBEDDING
+        assert mock_memories.call_args[1]["precomputed_embedding"] == FAKE_EMBEDDING

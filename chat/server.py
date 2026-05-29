@@ -941,12 +941,17 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
     from memory import recall, recall_memories
 
     if tool_name == "recall_memory":
+        from memory import generate_embedding
+
         query = tool_input.get("query", "")
         limit = min(tool_input.get("limit", 3), 5)
 
+        # Generate embedding once for both searches
+        query_embedding = generate_embedding(query)
+
         # Search both tables — moments (scenes) and memories (roam, bridge logs)
-        moment_results = recall(query, limit=limit)
-        memory_results = recall_memories(query, limit=limit)
+        moment_results = recall(query, limit=limit, precomputed_embedding=query_embedding)
+        memory_results = recall_memories(query, limit=2, precomputed_embedding=query_embedding)
 
         if not moment_results and not memory_results:
             return "No matching moments or memories found for that query."
