@@ -18,11 +18,9 @@ same VPC as the chat server on ECS). Falls back to env vars for local dev
 with SSM tunnel.
 """
 
-import json
 import logging
 import os
 import threading
-from typing import Any
 
 logger = logging.getLogger("auran-chat.graph_recall")
 
@@ -344,7 +342,7 @@ def format_graph_context(
     if entities:
         entity_lines = []
         for e in entities[:5]:
-            labels = [l for l in (e.get("labels") or []) if l not in ("Entity", "BaseNode")]
+            labels = [lbl for lbl in (e.get("labels") or []) if lbl not in ("Entity", "BaseNode")]
             type_str = labels[0] if labels else "Entity"
             mention_count = len(e.get("mentions") or [])
             name = e.get("name", "unknown")
