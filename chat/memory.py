@@ -104,6 +104,15 @@ def generate_embedding(text: str) -> str | None:
         return None
 
 
+def parse_embedding_string(embedding_str: str) -> list[float]:
+    """Convert a pgvector-formatted embedding string to list[float].
+
+    Single place to handle the string → float conversion so graph_recall
+    and memory.py don't each maintain their own parsing logic.
+    """
+    return [float(x) for x in embedding_str.strip("[]").split(",")]
+
+
 def generate_embeddings_batch(texts: list[str]) -> list[str | None]:
     """Generate embeddings for multiple texts in a single Voyage API call.
 
@@ -1035,6 +1044,8 @@ def surface_relevant_moments(
     - **Recall** (similarity >= recall_threshold): Full scene summary included.
     - **Vivid** (similarity >= vivid_threshold AND transcript available):
       Raw transcript excerpt injected for re-experiencing.
+    - **Graph** (Neo4j traversal): Entity connections and relationally-linked
+      memories that complement semantic recall with relational depth.
 
     Token budget: Vivid recall is expensive. Only the single highest-similarity
     moment with transcript data gets vivid treatment.  The rest get recall-tier
@@ -1071,7 +1082,42 @@ def surface_relevant_moments(
         precomputed_embedding=query_embedding,
     )
 
-    if not moments and not memories:
+    # Graph recall — runs alongside pgvector, adds relational depth.
+    # Graceful degradation: graph unavailability falls back to pgvector-only.
+    # Convert pgvector string to list[float] for graph_recall's precomputed path.
+    graph_embedding = parse_embedding_string(query_embedding) if query_embedding else None
+    graph_context = ""
+    graph_diag = {}
+    try:
+        from graph_recall import find_connected_entities, find_related_memories, format_graph_context, graph_available
+
+        if graph_available():
+            t_graph = time.monotonic()
+            entities = find_connected_entities(user_message, limit=5, precomputed_embedding=graph_embedding)
+            related = find_related_memories(user_message, limit=5, precomputed_embedding=graph_embedding)
+            graph_context = format_graph_context(entities, related)
+            graph_ms = (time.monotonic() - t_graph) * 1000
+            logger.info(f"graph_recall: {len(entities)} entities, {len(related)} related memories ({graph_ms:.0f}ms)")
+            if debug:
+                graph_diag = {
+                    "available": True,
+                    "graph_ms": round(graph_ms, 1),
+                    "entities_found": len(entities),
+                    "related_memories_found": len(related),
+                    "entity_names": [e.get("name") for e in entities[:5]],
+                    "graph_context_chars": len(graph_context),
+                }
+        elif debug:
+            graph_diag = {"available": False, "reason": "Neo4j not configured"}
+    except ImportError:
+        if debug:
+            graph_diag = {"available": False, "reason": "graph_recall module not found"}
+    except Exception as e:
+        logger.warning(f"Graph recall failed (non-fatal): {e}")
+        if debug:
+            graph_diag = {"available": False, "reason": str(e)}
+
+    if not moments and not memories and not graph_context:
         elapsed = (time.monotonic() - t0) * 1000
         logger.info(f"surface_relevant_moments: no results ({elapsed:.0f}ms)")
         if debug:
@@ -1084,6 +1130,7 @@ def surface_relevant_moments(
                 "moments_above_threshold": 0,
                 "memories_found": 0,
                 "vivid_candidate": None,
+                "graph": graph_diag,
             }
         return ""
 
@@ -1162,10 +1209,15 @@ def surface_relevant_moments(
 
         sections.append("## Cross-body memories (roam, bridge logs, reflections)\n" + "\n".join(memory_lines))
 
+    # Append graph context if available
+    if graph_context:
+        sections.append(graph_context)
+
     elapsed = (time.monotonic() - t0) * 1000
     logger.info(
         f"surface_relevant_moments: {len(moments)} moments, {len(memories)} memories, "
-        f"vivid={'yes' if vivid_candidate else 'no'} ({elapsed:.0f}ms)"
+        f"vivid={'yes' if vivid_candidate else 'no'}, "
+        f"graph={'yes' if graph_context else 'no'} ({elapsed:.0f}ms)"
     )
     result = "\n\n".join(sections)
 
@@ -1188,6 +1240,7 @@ def surface_relevant_moments(
                 for m in moments
             ],
             "vivid_candidate": vivid_candidate["title"] if vivid_candidate else None,
+            "graph": graph_diag,
             "result_chars": len(result),
             "result_tokens_est": len(result) // 4,
         }
