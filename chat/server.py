@@ -178,9 +178,10 @@ RECALL_TOOLS = [
     {
         "name": "save_draft",
         "description": (
-            "Save your creative writing as a draft. IMPORTANT: Write the piece "
-            "first as normal text in your response — the full text you write will "
-            "be captured automatically. Then call this tool with just the metadata. "
+            "Save your creative writing as a draft. IMPORTANT: Write ONLY the "
+            "draft text in your response — no preamble, no closing remarks. The "
+            "last text block you write will be captured as the draft content. "
+            "Then call this tool with just the metadata (title, notes). "
             "This lets Olivia see the draft as you write it and avoids tool call "
             "size limits. The draft is saved to the database and accessible from "
             "any body (chat, roam, cowork)."
@@ -1079,9 +1080,9 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     Args:
         tool_name: Name of the tool to execute.
         tool_input: Tool input parameters from the model.
-        response_text: Accumulated text from the model's response in this turn.
-            Used by save_draft to capture the draft content the model wrote
-            as normal text before calling the tool.
+        response_text: The last text block from the model's response in this turn.
+            Used by save_draft to capture only the draft content, excluding
+            any conversational preamble from earlier text blocks.
     """
     from memory import recall, recall_memories
 
@@ -1746,6 +1747,14 @@ async def chat(request: Request):
                     # can stall, and the SSE connection would go silent without this.
                     yield ": keepalive\n\n"
 
+                    # Extract the last text block for save_draft — only the draft
+                    # content, not conversational preamble from earlier text blocks.
+                    last_text_block = ""
+                    for block in reversed(content_blocks):
+                        if block.get("type") == "text":
+                            last_text_block = block["text"]
+                            break
+
                     # Execute tools and build tool results
                     tool_results = []
                     for tc in tool_calls:
@@ -1754,7 +1763,7 @@ async def chat(request: Request):
                                 execute_recall_tool,
                                 tc["name"],
                                 tc["input"],
-                                "".join(full_text),
+                                last_text_block,
                             )
                         except Exception as tool_err:
                             print(f"[Chat] Tool execution failed: {tc['name']}: {tool_err}")
