@@ -148,9 +148,9 @@ RECALL_TOOLS = [
             "properties": {
                 "status": {
                     "type": "string",
-                    "description": "Filter by status: 'active' (default), 'shelved', or 'shipped'.",
+                    "description": "Filter by status: 'active' (default), 'shelved', 'shipped', or 'all' to see everything.",
                     "default": "active",
-                    "enum": ["active", "shelved", "shipped"],
+                    "enum": ["active", "shelved", "shipped", "all"],
                 },
             },
             "required": [],

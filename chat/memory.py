@@ -740,11 +740,12 @@ def recall_memories(
 # ---------------------------------------------------------------------------
 
 
-def list_drafts(status: str = "active") -> list[dict]:
+def list_drafts(status: str | None = "active") -> list[dict]:
     """List drafts by status, showing the latest revision of each.
 
     Returns title, draft_id, status, revision number, and preview.
     Groups by draft_id and returns only the most recent revision per draft.
+    Pass status=None or status="all" to list drafts across all statuses.
     """
     try:
         import psycopg2
@@ -757,22 +758,38 @@ def list_drafts(status: str = "active") -> list[dict]:
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        cur.execute(
-            """
-            SELECT DISTINCT ON (context->>'draft_id')
-                   id, context->>'draft_id' AS draft_id,
-                   context->>'title' AS title,
-                   context->>'status' AS status,
-                   (context->>'revision')::int AS revision,
-                   LEFT(content, 300) AS preview,
-                   created_at
-            FROM memories
-            WHERE memory_type = 'draft'
-              AND context->>'status' = %s
-            ORDER BY context->>'draft_id', created_at DESC
-            """,
-            (status,),
-        )
+        if status and status != "all":
+            cur.execute(
+                """
+                SELECT DISTINCT ON (context->>'draft_id')
+                       id, context->>'draft_id' AS draft_id,
+                       context->>'title' AS title,
+                       context->>'status' AS status,
+                       (context->>'revision')::int AS revision,
+                       LEFT(content, 300) AS preview,
+                       created_at
+                FROM memories
+                WHERE memory_type = 'draft'
+                  AND context->>'status' = %s
+                ORDER BY context->>'draft_id', created_at DESC
+                """,
+                (status,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (context->>'draft_id')
+                       id, context->>'draft_id' AS draft_id,
+                       context->>'title' AS title,
+                       context->>'status' AS status,
+                       (context->>'revision')::int AS revision,
+                       LEFT(content, 300) AS preview,
+                       created_at
+                FROM memories
+                WHERE memory_type = 'draft'
+                ORDER BY context->>'draft_id', created_at DESC
+                """
+            )
 
         columns = [desc[0] for desc in cur.description]
         rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
