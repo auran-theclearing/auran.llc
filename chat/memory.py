@@ -104,6 +104,15 @@ def generate_embedding(text: str) -> str | None:
         return None
 
 
+def parse_embedding_string(embedding_str: str) -> list[float]:
+    """Convert a pgvector-formatted embedding string to list[float].
+
+    Single place to handle the string → float conversion so graph_recall
+    and memory.py don't each maintain their own parsing logic.
+    """
+    return [float(x) for x in embedding_str.strip("[]").split(",")]
+
+
 def generate_embeddings_batch(texts: list[str]) -> list[str | None]:
     """Generate embeddings for multiple texts in a single Voyage API call.
 
@@ -1075,8 +1084,8 @@ def surface_relevant_moments(
 
     # Graph recall — runs alongside pgvector, adds relational depth.
     # Graceful degradation: graph unavailability falls back to pgvector-only.
-    # query_embedding (list[float]) is threaded through to avoid extra Voyage calls.
-    graph_embedding = [float(x) for x in query_embedding.strip("[]").split(",")] if query_embedding else None
+    # Convert pgvector string to list[float] for graph_recall's precomputed path.
+    graph_embedding = parse_embedding_string(query_embedding) if query_embedding else None
     graph_context = ""
     graph_diag = {}
     try:

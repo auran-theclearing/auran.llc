@@ -1272,8 +1272,12 @@ def execute_recall_tool(tool_name: str, tool_input: dict) -> str:
                 return "\n".join(lines)
 
             else:  # explore mode
-                entities = find_connected_entities(query, limit=5)
-                related = find_related_memories(query, limit=5)
+                # Generate embedding once, pass to both (avoid 2x Voyage calls)
+                from graph_recall import _resolve_embedding
+
+                explore_embedding = _resolve_embedding(query)
+                entities = find_connected_entities(query, limit=5, precomputed_embedding=explore_embedding)
+                related = find_related_memories(query, limit=5, precomputed_embedding=explore_embedding)
                 if not entities and not related:
                     return f"No graph connections found for '{query}'."
                 return format_graph_context(entities, related)

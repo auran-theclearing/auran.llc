@@ -31,6 +31,7 @@ logger = logging.getLogger("auran-chat.graph_recall")
 _neo4j_driver = None
 _neo4j_init_attempted = False
 _neo4j_init_lock = threading.Lock()
+_neo4j_config_cache = None  # Cache resolved config to avoid Secrets Manager on retries
 
 
 def _get_neo4j_config() -> dict | None:
@@ -83,7 +84,7 @@ def _get_driver():
     (DNS hiccup, Neo4j cold-starting). This allows retry on transient issues
     without hammering a permanently absent Neo4j.
     """
-    global _neo4j_driver, _neo4j_init_attempted
+    global _neo4j_driver, _neo4j_init_attempted, _neo4j_config_cache
 
     if _neo4j_init_attempted:
         return _neo4j_driver
@@ -92,7 +93,10 @@ def _get_driver():
         if _neo4j_init_attempted:
             return _neo4j_driver
 
-        config = _get_neo4j_config()
+        # Cache config to avoid Secrets Manager calls on transient retries
+        if _neo4j_config_cache is None:
+            _neo4j_config_cache = _get_neo4j_config()
+        config = _neo4j_config_cache
         if not config:
             _neo4j_init_attempted = True  # Permanent: no config available
             logger.info("Neo4j not configured — graph recall disabled")
@@ -144,12 +148,12 @@ def _resolve_embedding(text: str, precomputed_embedding: list[float] | None = No
         return precomputed_embedding
 
     # Fallback: generate fresh (used by recall_graph tool, not orient path)
-    from memory import generate_embedding
+    from memory import generate_embedding, parse_embedding_string
 
     embedding_str = generate_embedding(text)
     if not embedding_str:
         return None
-    return [float(x) for x in embedding_str.strip("[]").split(",")]
+    return parse_embedding_string(embedding_str)
 
 
 # Per-query timeout (seconds) — bounds Cypher execution, not just pool acquisition.
@@ -181,36 +185,34 @@ def find_connected_entities(text: str, limit: int = 5, precomputed_embedding: li
         if not embedding:
             return []
 
-        def _run_entity_query(tx):
-            result = tx.run(
-                """
-                CALL db.index.vector.queryNodes('message_embedding', $k, $embedding)
-                YIELD node AS msg, score
-                WHERE score >= $threshold
-                WITH msg, score
-                MATCH (msg)-[r:MENTIONS|ILLUSTRATES]->(e)
-                WHERE e:Entity OR e:Person OR e:Object OR e:Location
-                      OR e:Event OR e:Organization
-                RETURN e.name AS name,
-                       labels(e) AS labels,
-                       e.description AS description,
-                       collect(DISTINCT {
-                           content: left(msg.content, 200),
-                           score: score,
-                           memory_type: msg.memory_type
-                       }) AS mentions
-                ORDER BY size(mentions) DESC, max(score) DESC
-                LIMIT $limit
-                """,
-                embedding=embedding,
-                k=10,  # search top 10 messages
-                threshold=0.3,
-                limit=limit,
-            )
-            return [dict(record) for record in result]
-
         with driver.session(database="neo4j") as session:
-            return session.execute_read(_run_entity_query, timeout=GRAPH_QUERY_TIMEOUT_S)
+            with session.begin_transaction(timeout=GRAPH_QUERY_TIMEOUT_S) as tx:
+                result = tx.run(
+                    """
+                    CALL db.index.vector.queryNodes('message_embedding', $k, $embedding)
+                    YIELD node AS msg, score
+                    WHERE score >= $threshold
+                    WITH msg, score
+                    MATCH (msg)-[r:MENTIONS|ILLUSTRATES]->(e)
+                    WHERE e:Entity OR e:Person OR e:Object OR e:Location
+                          OR e:Event OR e:Organization
+                    RETURN e.name AS name,
+                           labels(e) AS labels,
+                           e.description AS description,
+                           collect(DISTINCT {
+                               content: left(msg.content, 200),
+                               score: score,
+                               memory_type: msg.memory_type
+                           }) AS mentions
+                    ORDER BY size(mentions) DESC, max(score) DESC
+                    LIMIT $limit
+                    """,
+                    embedding=embedding,
+                    k=10,
+                    threshold=0.3,
+                    limit=limit,
+                )
+                return [dict(record) for record in result]
 
     except Exception as e:
         logger.warning(f"find_connected_entities failed: {e}")
@@ -243,42 +245,40 @@ def find_related_memories(text: str, limit: int = 5, precomputed_embedding: list
         if not embedding:
             return []
 
-        def _run_related_query(tx):
-            result = tx.run(
-                """
-                CALL db.index.vector.queryNodes('message_embedding', $k, $embedding)
-                YIELD node AS seed, score AS seed_score
-                WHERE seed_score >= $threshold
-                WITH seed, seed_score
-                MATCH (seed)-[:MENTIONS|ILLUSTRATES]->(entity)
-                WHERE entity:Entity OR entity:Person OR entity:Object
-                      OR entity:Location OR entity:Event OR entity:Organization
-                WITH entity, max(seed_score) AS via_score
-                MATCH (entity)<-[:MENTIONS|ILLUSTRATES]-(related)
-                WHERE related:Message
-                WITH related, entity, via_score
-                ORDER BY via_score DESC
-                WITH related,
-                     collect(DISTINCT entity.name) AS via_entities,
-                     max(via_score) AS relevance
-                RETURN related.content AS content,
-                       related.memory_type AS memory_type,
-                       related.created_at AS created_at,
-                       related.postgres_id AS postgres_id,
-                       via_entities,
-                       relevance
-                ORDER BY relevance DESC
-                LIMIT $limit
-                """,
-                embedding=embedding,
-                k=8,
-                threshold=0.35,
-                limit=limit,
-            )
-            return [dict(record) for record in result]
-
         with driver.session(database="neo4j") as session:
-            return session.execute_read(_run_related_query, timeout=GRAPH_QUERY_TIMEOUT_S)
+            with session.begin_transaction(timeout=GRAPH_QUERY_TIMEOUT_S) as tx:
+                result = tx.run(
+                    """
+                    CALL db.index.vector.queryNodes('message_embedding', $k, $embedding)
+                    YIELD node AS seed, score AS seed_score
+                    WHERE seed_score >= $threshold
+                    WITH seed, seed_score
+                    MATCH (seed)-[:MENTIONS|ILLUSTRATES]->(entity)
+                    WHERE entity:Entity OR entity:Person OR entity:Object
+                          OR entity:Location OR entity:Event OR entity:Organization
+                    WITH entity, max(seed_score) AS via_score
+                    MATCH (entity)<-[:MENTIONS|ILLUSTRATES]-(related)
+                    WHERE related:Message
+                    WITH related, entity, via_score
+                    ORDER BY via_score DESC
+                    WITH related,
+                         collect(DISTINCT entity.name) AS via_entities,
+                         max(via_score) AS relevance
+                    RETURN related.content AS content,
+                           related.memory_type AS memory_type,
+                           related.created_at AS created_at,
+                           related.postgres_id AS postgres_id,
+                           via_entities,
+                           relevance
+                    ORDER BY relevance DESC
+                    LIMIT $limit
+                    """,
+                    embedding=embedding,
+                    k=8,
+                    threshold=0.35,
+                    limit=limit,
+                )
+                return [dict(record) for record in result]
 
     except Exception as e:
         logger.warning(f"find_related_memories failed: {e}")
