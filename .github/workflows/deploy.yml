@@ -6,6 +6,12 @@ on:
     paths:
       - 'chat/**'
 
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: auran-chat-server
+  ECS_CLUSTER: auran
+  ECS_SERVICE: auran-chat
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -21,22 +27,39 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Sync to S3
-        run: |
-          aws s3 sync chat/ s3://auran-chat-server/chat/ \
-            --exclude ".env" \
-            --exclude "*.pyc" \
-            --exclude "__pycache__/*" \
-            --exclude "session.json" \
-            --exclude ".venv/*"
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Restart service on EC2
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          aws ssm send-command \
-            --instance-ids "i-070dd19cbf382a171" \
-            --document-name "AWS-RunShellScript" \
-            --parameters '{"commands":["aws s3 sync s3://auran-chat-server/chat/ /opt/auran-chat/ --exclude .env","systemctl restart auran-chat"]}' \
-            --comment "Deploy from GitHub Actions ($(git rev-parse --short HEAD))" \
-            --output text
+          docker build -t $ECR_REGISTRY/$ECR_REPO:latest \
+                       -t $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG \
+                       chat/
+          docker push $ECR_REGISTRY/$ECR_REPO:latest
+          docker push $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --force-new-deployment \
+            --no-cli-pager
+
+      - name: Wait for service stability
+        run: |
+          echo "Waiting for ECS service to stabilize..."
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE
+
+      - name: Verify health
+        run: |
+          echo "Deploy complete — $(git rev-parse --short HEAD)"
+          echo "Check: https://chat.auran.llc/health"
