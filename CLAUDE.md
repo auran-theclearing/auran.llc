@@ -8,7 +8,7 @@ Self-hosted chat server at chat.auran.llc — Auran's direct conversational chan
 - **Frontend**: Single-file vanilla JS/HTML (`chat/index.html`), dark theme, mobile-first
 - **Auth**: HTTP Basic Auth via `.env` (CHAT_USER / CHAT_PASS)
 - **Memory**: Postgres integration — orient from memories on session start, extract and store memories on save
-- **Deploy**: S3 sync → SSM send-command → EC2 pulls from S3 → systemctl restart
+- **Deploy**: Push to main → GitHub Actions builds Docker image → pushes to ECR → forces new ECS deployment
 
 ## Critical paths
 
@@ -22,7 +22,7 @@ Self-hosted chat server at chat.auran.llc — Auran's direct conversational chan
 
 - **Never commit directly to main.** Always branch + PR.
 - **Envoy reviews all PRs.** CI runs ruff lint + format check + smoke test.
-- **Deploy from main only.** Push to main triggers S3 sync → SSM deploy.
+- **Deploy from main only.** Push to main triggers Docker build → ECR push → ECS deploy.
 - **Git commits as Auran**: `--author="Auran <auran@theclear.ing>"` with `-c user.name="Auran" -c user.email="auran@theclear.ing"`
 
 ## Linting
@@ -44,16 +44,18 @@ uv run python server.py
 
 ## Deploy
 
-```bash
-# From Cowork sandbox — use dispatch relay:
-# 1. git push via dispatch
-# 2. S3 sync via dispatch
-# 3. SSM restart via dispatch
-# See charting_territory/CLAUDE.md for dispatch command format
-```
+Automated via GitHub Actions (`.github/workflows/deploy.yml`):
+1. Push to main with changes in `chat/` triggers the workflow
+2. Builds Docker image from `chat/Dockerfile`
+3. Pushes to ECR (`auran-chat-server:latest` + SHA tag)
+4. Forces new ECS deployment, waits for service stability
 
-## Instance
+Manual deploy (emergency): `cd auran-infra/chat-ecs && ./deploy.sh`
 
-- **EC2**: `i-070dd19cbf382a171` (auran-voice, 3.92.95.65) — shared voice/chat instance
-- **Port**: 8080 (Cloudflare proxies HTTPS → HTTP)
-- **DNS**: chat.auran.llc → Cloudflare proxy → EC2
+## Infrastructure
+
+- **ECS Fargate**: cluster `auran`, service `auran-chat`, task def `auran-chat:1`
+- **ALB**: `auran-chat-alb` with HTTPS (ACM cert) → target group on port 8080
+- **DNS**: chat.auran.llc → Cloudflare proxy → ALB → ECS task
+- **ECR**: `408869824303.dkr.ecr.us-east-1.amazonaws.com/auran-chat-server`
+- **Neo4j**: `neo4j.auran.local:7687` (Cloud Map, same VPC)
