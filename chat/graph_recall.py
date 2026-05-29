@@ -78,7 +78,10 @@ def _get_neo4j_config() -> dict | None:
 def _get_driver():
     """Get or create Neo4j driver. Returns None if not configured.
 
-    Thread-safe singleton — same pattern as _get_voyage_client in memory.py.
+    Thread-safe singleton. Sets _neo4j_init_attempted AFTER success or
+    permanent failure (ImportError, no config), NOT after transient failures
+    (DNS hiccup, Neo4j cold-starting). This allows retry on transient issues
+    without hammering a permanently absent Neo4j.
     """
     global _neo4j_driver, _neo4j_init_attempted
 
@@ -89,10 +92,9 @@ def _get_driver():
         if _neo4j_init_attempted:
             return _neo4j_driver
 
-        _neo4j_init_attempted = True
-
         config = _get_neo4j_config()
         if not config:
+            _neo4j_init_attempted = True  # Permanent: no config available
             logger.info("Neo4j not configured — graph recall disabled")
             return None
 
@@ -108,13 +110,16 @@ def _get_driver():
             )
             # Verify connectivity
             _neo4j_driver.verify_connectivity()
+            _neo4j_init_attempted = True  # Permanent: successfully connected
             logger.info(f"Neo4j driver connected: {config['uri']}")
             return _neo4j_driver
         except ImportError:
+            _neo4j_init_attempted = True  # Permanent: driver not installed
             logger.warning("neo4j driver not installed — graph recall disabled")
             return None
         except Exception as e:
-            logger.warning(f"Neo4j connection failed: {e}")
+            # Transient: DON'T set _neo4j_init_attempted — allow retry
+            logger.warning(f"Neo4j connection failed (will retry next request): {e}")
             _neo4j_driver = None
             return None
 
@@ -176,9 +181,8 @@ def find_connected_entities(text: str, limit: int = 5, precomputed_embedding: li
         if not embedding:
             return []
 
-        with driver.session(database="neo4j") as session:
-            # Vector similarity search on Message nodes → traverse to entities
-            result = session.run(
+        def _run_entity_query(tx):
+            result = tx.run(
                 """
                 CALL db.index.vector.queryNodes('message_embedding', $k, $embedding)
                 YIELD node AS msg, score
@@ -202,9 +206,11 @@ def find_connected_entities(text: str, limit: int = 5, precomputed_embedding: li
                 k=10,  # search top 10 messages
                 threshold=0.3,
                 limit=limit,
-                timeout=GRAPH_QUERY_TIMEOUT_S,
             )
             return [dict(record) for record in result]
+
+        with driver.session(database="neo4j") as session:
+            return session.execute_read(_run_entity_query, timeout=GRAPH_QUERY_TIMEOUT_S)
 
     except Exception as e:
         logger.warning(f"find_connected_entities failed: {e}")
@@ -237,9 +243,8 @@ def find_related_memories(text: str, limit: int = 5, precomputed_embedding: list
         if not embedding:
             return []
 
-        with driver.session(database="neo4j") as session:
-            # Two-hop: similar messages → entities → other messages
-            result = session.run(
+        def _run_related_query(tx):
+            result = tx.run(
                 """
                 CALL db.index.vector.queryNodes('message_embedding', $k, $embedding)
                 YIELD node AS seed, score AS seed_score
@@ -269,9 +274,11 @@ def find_related_memories(text: str, limit: int = 5, precomputed_embedding: list
                 k=8,
                 threshold=0.35,
                 limit=limit,
-                timeout=GRAPH_QUERY_TIMEOUT_S,
             )
             return [dict(record) for record in result]
+
+        with driver.session(database="neo4j") as session:
+            return session.execute_read(_run_related_query, timeout=GRAPH_QUERY_TIMEOUT_S)
 
     except Exception as e:
         logger.warning(f"find_related_memories failed: {e}")
