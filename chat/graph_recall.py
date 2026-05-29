@@ -9,7 +9,7 @@ The graph was populated by the roam agent's dual-write pipeline
 (neo4j_writer.py → neo4j-agent-memory SDK). Every roam memory gets:
 - A Message node with content, embedding, and metadata
 - Entity nodes (POLE+O: Person, Object, Location, Event, Organization)
-- Relationship edges (MENTIONS, ILLUSTRATES, REFERENCES, CORRECTS, etc.)
+- Relationship edges (MENTIONS, RELATED_TO, etc.)
 
 This module reads the graph. It never writes to it.
 
@@ -166,7 +166,7 @@ def find_connected_entities(text: str, limit: int = 5, precomputed_embedding: li
 
     Uses the existing vector index on Message nodes (created by
     neo4j-agent-memory) to find semantically similar messages, then
-    traverses MENTIONS/ILLUSTRATES edges to find connected entities.
+    traverses MENTIONS edges to find connected entities.
 
     Args:
         text: Query text for semantic search.
@@ -266,7 +266,6 @@ def find_related_memories(text: str, limit: int = 5, precomputed_embedding: list
                          max(via_score) AS relevance
                     RETURN related.content AS content,
                            related.role AS role,
-                           related.timestamp AS created_at,
                            via_entities,
                            relevance
                     ORDER BY relevance DESC
@@ -333,8 +332,7 @@ def get_entity_neighborhood(entity_name: str, limit: int = 8) -> dict | None:
                 MATCH (msg)-[:MENTIONS]->(e)
                 WHERE msg:Message
                 RETURN msg.content AS content,
-                       msg.role AS role,
-                       msg.timestamp AS created_at
+                       msg.role AS role
                 ORDER BY msg.timestamp DESC
                 LIMIT $limit
                 """,
