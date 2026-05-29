@@ -1074,7 +1074,9 @@ def surface_relevant_moments(
     )
 
     # Graph recall — runs alongside pgvector, adds relational depth.
-    # Fire-and-forget pattern: graph unavailability doesn't break recall.
+    # Graceful degradation: graph unavailability falls back to pgvector-only.
+    # query_embedding (list[float]) is threaded through to avoid extra Voyage calls.
+    graph_embedding = [float(x) for x in query_embedding.strip("[]").split(",")] if query_embedding else None
     graph_context = ""
     graph_diag = {}
     try:
@@ -1082,8 +1084,8 @@ def surface_relevant_moments(
 
         if graph_available():
             t_graph = time.monotonic()
-            entities = find_connected_entities(user_message, limit=5)
-            related = find_related_memories(user_message, limit=5)
+            entities = find_connected_entities(user_message, limit=5, precomputed_embedding=graph_embedding)
+            related = find_related_memories(user_message, limit=5, precomputed_embedding=graph_embedding)
             graph_context = format_graph_context(entities, related)
             graph_ms = (time.monotonic() - t_graph) * 1000
             logger.info(f"graph_recall: {len(entities)} entities, {len(related)} related memories ({graph_ms:.0f}ms)")

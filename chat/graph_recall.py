@@ -104,7 +104,7 @@ def _get_driver():
                 auth=(config["user"], config["password"]),
                 # Connection pool settings tuned for read-heavy, low-concurrency
                 max_connection_pool_size=5,
-                connection_acquisition_timeout=5,
+                connection_acquisition_timeout=2,
             )
             # Verify connectivity
             _neo4j_driver.verify_connectivity()
@@ -129,12 +129,41 @@ def graph_available() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def find_connected_entities(text: str, limit: int = 5) -> list[dict]:
+def _resolve_embedding(text: str, precomputed_embedding: list[float] | None = None) -> list[float] | None:
+    """Get an embedding as list[float], reusing precomputed if available.
+
+    Avoids both duplicate Voyage API calls and the brittle pgvector string
+    parsing that coupling to generate_embedding()'s string format requires.
+    """
+    if precomputed_embedding is not None:
+        return precomputed_embedding
+
+    # Fallback: generate fresh (used by recall_graph tool, not orient path)
+    from memory import generate_embedding
+
+    embedding_str = generate_embedding(text)
+    if not embedding_str:
+        return None
+    return [float(x) for x in embedding_str.strip("[]").split(",")]
+
+
+# Per-query timeout (seconds) — bounds Cypher execution, not just pool acquisition.
+# Prevents a wide two-hop traversal on a hub entity from stalling the orient path.
+GRAPH_QUERY_TIMEOUT_S = 3
+
+
+def find_connected_entities(text: str, limit: int = 5, precomputed_embedding: list[float] | None = None) -> list[dict]:
     """Find entities mentioned in memories similar to the given text.
 
     Uses the existing vector index on Message nodes (created by
     neo4j-agent-memory) to find semantically similar messages, then
     traverses MENTIONS/ILLUSTRATES edges to find connected entities.
+
+    Args:
+        text: Query text for semantic search.
+        limit: Max entities to return.
+        precomputed_embedding: Reuse an already-generated Voyage embedding
+            (list[float]) to avoid duplicate API calls on the orient path.
 
     Returns entity dicts with name, type, and the messages that mention them.
     """
@@ -143,15 +172,9 @@ def find_connected_entities(text: str, limit: int = 5) -> list[dict]:
         return []
 
     try:
-        # We need an embedding to do vector search. Generate one using Voyage.
-        from memory import generate_embedding
-
-        embedding_str = generate_embedding(text)
-        if not embedding_str:
+        embedding = _resolve_embedding(text, precomputed_embedding)
+        if not embedding:
             return []
-
-        # Parse the pgvector string back to a float list
-        embedding = [float(x) for x in embedding_str.strip("[]").split(",")]
 
         with driver.session(database="neo4j") as session:
             # Vector similarity search on Message nodes → traverse to entities
@@ -179,6 +202,7 @@ def find_connected_entities(text: str, limit: int = 5) -> list[dict]:
                 k=10,  # search top 10 messages
                 threshold=0.3,
                 limit=limit,
+                timeout=GRAPH_QUERY_TIMEOUT_S,
             )
             return [dict(record) for record in result]
 
@@ -187,12 +211,18 @@ def find_connected_entities(text: str, limit: int = 5) -> list[dict]:
         return []
 
 
-def find_related_memories(text: str, limit: int = 5) -> list[dict]:
+def find_related_memories(text: str, limit: int = 5, precomputed_embedding: list[float] | None = None) -> list[dict]:
     """Find memories connected to the query through shared entities.
 
     Two-hop traversal: query → similar messages → shared entities → other messages.
     This surfaces memories that are relationally connected but may not be
     semantically similar — the whole point of graph over vector.
+
+    Args:
+        text: Query text for semantic search.
+        limit: Max related memories to return.
+        precomputed_embedding: Reuse an already-generated Voyage embedding
+            (list[float]) to avoid duplicate API calls on the orient path.
 
     Example: query about "Marcel" returns memories about temperature,
     about Olivia's desk, about care-at-a-distance — connected through
@@ -203,13 +233,9 @@ def find_related_memories(text: str, limit: int = 5) -> list[dict]:
         return []
 
     try:
-        from memory import generate_embedding
-
-        embedding_str = generate_embedding(text)
-        if not embedding_str:
+        embedding = _resolve_embedding(text, precomputed_embedding)
+        if not embedding:
             return []
-
-        embedding = [float(x) for x in embedding_str.strip("[]").split(",")]
 
         with driver.session(database="neo4j") as session:
             # Two-hop: similar messages → entities → other messages
@@ -243,6 +269,7 @@ def find_related_memories(text: str, limit: int = 5) -> list[dict]:
                 k=8,
                 threshold=0.35,
                 limit=limit,
+                timeout=GRAPH_QUERY_TIMEOUT_S,
             )
             return [dict(record) for record in result]
 
