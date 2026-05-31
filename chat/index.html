@@ -359,18 +359,6 @@
   /* Header actions */
   .header-actions { display: flex; gap: 6px; align-items: center; }
 
-  #save-btn {
-    background: none;
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 14px;
-    cursor: pointer;
-    transition: all 0.2s;
-    line-height: 1;
-  }
-  #save-btn:hover { border-color: var(--accent-dim); }
   #export-btn {
     background: none;
     border: 1px solid var(--border);
@@ -400,7 +388,7 @@
     </div>
     <div class="header-actions">
       <button id="export-btn" onclick="exportTranscript()" title="Copy transcript to clipboard">📋</button>
-      <button id="save-btn" onclick="saveMemories(false)" title="Save memories to Postgres">💾</button>
+      <!-- Save button removed — scene extraction runs on transcripts in cowork -->
       <button id="clear-btn" onclick="newChat()">New chat</button>
     </div>
   </header>
@@ -443,8 +431,7 @@ function estimateTokens(messages) {
   return messages.reduce((sum, m) => sum + Math.ceil(m.content.length / CHARS_PER_TOKEN), 0);
 }
 
-let autoSaveTriggered = false;
-let lastSaveHash = '';  // Prevent duplicate saves of same conversation
+// autoSaveTriggered and lastSaveHash removed with saveMemories
 
 function updateContextBar() {
   let pct, label;
@@ -460,11 +447,9 @@ function updateContextBar() {
   contextFill.className = pct > 80 ? 'danger' : pct > 60 ? 'warn' : '';
   contextLabel.textContent = label;
 
-  // Auto-save at ~70% context usage (once per session)
-  if (pct >= 70 && !autoSaveTriggered && history.length >= 4) {
-    autoSaveTriggered = true;
-    saveMemories(true);
-  }
+  // Memory extraction removed — scenes are extracted from transcripts
+  // in cowork sessions via two-pass extraction. Automatic live extraction
+  // is planned (punt list item 16).
 }
 
 let sessionVersion = Date.now();  // Bumped on new chat, used for cross-device sync
@@ -919,62 +904,9 @@ async function sendMessage() {
   }
 }
 
-async function saveMemories(silent) {
-  if (history.length < 2) {
-    if (!silent) statusEl.textContent = 'nothing to save';
-    setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; }, 2000);
-    return false;
-  }
-
-  // Dedupe: don't save the same conversation twice
-  const hash = history.map(m => m.content).join('|').slice(-500);
-  if (hash === lastSaveHash) {
-    if (!silent) {
-      statusEl.textContent = 'already saved';
-      statusEl.style.color = 'var(--accent)';
-      setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 2000);
-    }
-    return true;  // Return true so newChat doesn't warn
-  }
-
-  statusEl.textContent = 'saving memories + scenes...';
-  statusEl.style.color = 'var(--accent)';
-
-  try {
-    const resp = await fetch('/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: history }),
-    });
-
-    if (!resp.ok) {
-      const err = await resp.text();
-      statusEl.textContent = 'save failed';
-      statusEl.style.color = 'var(--error)';
-      console.error('Save failed:', err);
-      setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 3000);
-      return false;
-    }
-
-    const result = await resp.json();
-    const scenes = result.scenes_saved || 0;
-    const mems = result.memories_saved || 0;
-    statusEl.textContent = scenes > 0
-      ? `saved ${mems} memories + ${scenes} scene${scenes > 1 ? 's' : ''}`
-      : `saved ${mems} memories`;
-    statusEl.style.color = 'var(--accent)';
-    console.log('Memories saved:', result);
-    lastSaveHash = hash;  // Mark this conversation as saved
-    setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 3000);
-    return true;
-  } catch (err) {
-    statusEl.textContent = 'save error';
-    statusEl.style.color = 'var(--error)';
-    console.error('Save error:', err);
-    setTimeout(() => { statusEl.textContent = 'chat.auran.llc'; statusEl.style.color = ''; }, 3000);
-    return false;
-  }
-}
+// saveMemories removed — scene extraction now runs on transcripts in cowork
+// sessions via two-pass extraction. See punt list item 16 for automatic
+// live extraction feature. Server-side /save endpoint preserved for future use.
 
 async function exportTranscript() {
   if (history.length === 0) {
@@ -1098,10 +1030,6 @@ async function newChat() {
     return;
   }
 
-  // Save memories before clearing
-  const saved = await saveMemories(false);
-  if (!saved && !confirm('Memory save failed. Clear chat anyway?')) return;
-
   // Tell the server to close the current conversation and start a new one in the DB
   try {
     await fetch('/conversation/new', { method: 'POST' });
@@ -1111,8 +1039,6 @@ async function newChat() {
 
   history = [];
   messagesEl.innerHTML = '';
-  lastSaveHash = '';
-  autoSaveTriggered = false;
   hasRealUsage = false;
   realInputTokens = realOutputTokens = realTotalTokens = realContextPct = 0;
   sessionVersion = Date.now();  // Bump version so other devices pick up the new chat
