@@ -38,8 +38,7 @@ jobs:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build --no-cache \
-                       --build-arg BUILD_SHA=$IMAGE_TAG \
+          docker build --build-arg BUILD_SHA=$IMAGE_TAG \
                        -t $ECR_REGISTRY/$ECR_REPO:latest \
                        -t $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG \
                        chat/
