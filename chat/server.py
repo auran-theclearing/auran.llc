@@ -502,7 +502,10 @@ async def auth_middleware(request: Request, call_next):
 async def index():
     """Serve the chat UI."""
     if INDEX_FILE.exists():
-        return HTMLResponse(INDEX_FILE.read_text())
+        return HTMLResponse(
+            INDEX_FILE.read_text(),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
     return HTMLResponse("<h1>Auran Chat</h1><p>UI not found.</p>", status_code=404)
 
 
@@ -521,6 +524,7 @@ async def health():
 
     return {
         "status": "ok",
+        "build": os.environ.get("BUILD_SHA", "dev"),
         "model": ANTHROPIC_MODEL,
         "has_api_key": bool(ANTHROPIC_API_KEY),
         "has_auth": bool(CHAT_USER and CHAT_PASS),

@@ -13,7 +13,9 @@ COPY server.py memory.py persistence.py graph_recall.py system_prompt.txt ./
 COPY migrations/ ./migrations/
 COPY index.html ./
 
+ARG BUILD_SHA=dev
 ENV PYTHONUNBUFFERED=1
+ENV BUILD_SHA=${BUILD_SHA}
 
 EXPOSE 8080
 
