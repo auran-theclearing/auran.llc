@@ -521,6 +521,7 @@ async def health():
 
     return {
         "status": "ok",
+        "build": os.environ.get("BUILD_SHA", "dev"),
         "model": ANTHROPIC_MODEL,
         "has_api_key": bool(ANTHROPIC_API_KEY),
         "has_auth": bool(CHAT_USER and CHAT_PASS),
