@@ -78,8 +78,10 @@ MAX_API_RETRIES = 3  # Retry transient API failures before giving up
 RETRY_BASE_DELAY = 1.0  # Base delay for exponential backoff (seconds)
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "claude-sonnet-4-20250514")
 
-# Module-level generation state for /chat/status endpoint
-_chat_state = {"generating": False, "started_at": None}
+# Module-level generation state for /chat/status endpoint.
+# active_count handles overlapping requests (double-send, retry race, two devices)
+# so /chat/status reports generating=True until ALL tasks finish.
+_chat_state = {"active_count": 0}
 
 # Strong references to background API tasks — prevents GC before completion.
 # Python 3.12+ event loop only holds weak refs to tasks, so fire-and-forget
@@ -551,8 +553,7 @@ async def chat_status():
     """Lightweight endpoint for client to check if a response is in-progress.
     Used on visibility change to decide whether to poll or fetch."""
     return {
-        "generating": _chat_state["generating"],
-        "started_at": _chat_state["started_at"],
+        "generating": _chat_state["active_count"] > 0,
     }
 
 
@@ -1521,8 +1522,7 @@ async def chat(request: Request):
     async def _run_api_call(event_queue: asyncio.Queue):
         """Run the full Anthropic API call, pushing SSE events to the queue.
         Continues to completion even if the client disconnects."""
-        _chat_state["generating"] = True
-        _chat_state["started_at"] = time.time()
+        _chat_state["active_count"] += 1
         t0 = time.time()
 
         try:
@@ -1580,7 +1580,6 @@ async def chat(request: Request):
 
                 while True:
                     # --- Retry loop with exponential backoff ---
-                    last_error = None
                     retry_succeeded = False
                     for attempt in range(MAX_API_RETRIES + 1):
                         try:
@@ -1601,7 +1600,6 @@ async def chat(request: Request):
                                             f"data: {json.dumps({'type': 'status', 'text': f'Retrying ({attempt + 1}/{MAX_API_RETRIES})...'})}\n\n"
                                         )
                                         await asyncio.sleep(delay)
-                                        last_error = (resp.status_code, error_msg)
                                         continue
 
                                     # Non-retryable or exhausted retries — try fallback model
@@ -1614,7 +1612,6 @@ async def chat(request: Request):
                                         await event_queue.put(
                                             f"data: {json.dumps({'type': 'status', 'text': f'Switching to fallback model...'})}\n\n"
                                         )
-                                        last_error = (resp.status_code, error_msg)
                                         break  # Break retry loop to restart with fallback
 
                                     print(f"[Chat] API error {resp.status_code}: {error_msg}")
@@ -1824,7 +1821,6 @@ async def chat(request: Request):
                             break
 
                         except (httpx.TimeoutException, httpx.ConnectError) as e:
-                            last_error = e
                             if attempt < MAX_API_RETRIES:
                                 delay = RETRY_BASE_DELAY * (2**attempt)
                                 print(
@@ -1999,8 +1995,7 @@ async def chat(request: Request):
                 print(f"[Chat] Unexpected error: {type(e).__name__}: {e}")
                 await event_queue.put(f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n")
         finally:
-            _chat_state["generating"] = False
-            _chat_state["started_at"] = None
+            _chat_state["active_count"] = max(0, _chat_state["active_count"] - 1)
             await event_queue.put(None)  # Sentinel: stream complete
 
     async def stream_response():

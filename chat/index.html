@@ -1069,24 +1069,35 @@ loadHistory().then(() => {
 
 // Mobile lifecycle: persist partial response when page goes to background,
 // and RECOVER completed response when page returns to foreground.
+let _wasStreamingWhenHidden = false;
+let _recoveryPollHandle = null;
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && isStreaming) {
-    // Page is going to background while streaming — force immediate save
-    savePendingResponse(_streamingFullText, _streamingThinkingText);
-  } else if (!document.hidden) {
-    // Page returned to foreground — check if server completed a response
-    // while we were backgrounded. This handles the mobile tab-switch bug:
-    // server continues the API call and persists, we just need to fetch it.
+  if (document.hidden) {
+    // Clear any active recovery poll when going to background
+    if (_recoveryPollHandle) {
+      clearInterval(_recoveryPollHandle);
+      _recoveryPollHandle = null;
+    }
+    if (isStreaming) {
+      // Page is going to background while streaming — flag it + save partial
+      _wasStreamingWhenHidden = true;
+      savePendingResponse(_streamingFullText, _streamingThinkingText);
+    }
+  } else if (!document.hidden && _wasStreamingWhenHidden) {
+    // Page returned to foreground after an interrupted stream — recover.
+    // Only runs when we actually lost a stream, not on every tab switch.
+    _wasStreamingWhenHidden = false;
     (async () => {
       try {
         const status = await fetch('/chat/status').then(r => r.json());
         if (status.generating) {
-          // Still generating — show indicator, poll until done
+          // Still generating — poll until done
           console.log('[Recovery] Server still generating, waiting...');
-          const poll = setInterval(async () => {
+          _recoveryPollHandle = setInterval(async () => {
             const s = await fetch('/chat/status').then(r => r.json());
             if (!s.generating) {
-              clearInterval(poll);
+              clearInterval(_recoveryPollHandle);
+              _recoveryPollHandle = null;
               await loadHistory();
               renderMessages();
             }
@@ -1097,7 +1108,6 @@ document.addEventListener('visibilitychange', () => {
           renderMessages();
         }
       } catch(e) {
-        // Fallback: just reload history
         await loadHistory();
         renderMessages();
       }
