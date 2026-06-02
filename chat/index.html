@@ -831,6 +831,10 @@ async function sendMessage() {
             realContextPct = event.context_pct || 0;
             hasRealUsage = true;
             updateContextBar();
+          } else if (event.type === 'status') {
+            // Server status events (retry, fallback, parse warnings)
+            console.log('[Status]', event.text);
+            contentEl.textContent = fullText + (fullText ? '\n' : '') + '[' + event.text + ']';
           } else if (event.type === 'error') {
             receivedError = true;
             // Force-save what we have before the error annotation
@@ -1067,11 +1071,57 @@ loadHistory().then(() => {
   }
 });
 
-// Mobile lifecycle: persist partial response when page goes to background
+// Mobile lifecycle: persist partial response when page goes to background,
+// and RECOVER completed response when page returns to foreground.
+let _wasStreamingWhenHidden = false;
+let _recoveryPollHandle = null;
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && isStreaming) {
-    // Page is going to background while streaming — force immediate save
-    savePendingResponse(_streamingFullText, _streamingThinkingText);
+  if (document.hidden) {
+    // Clear any active recovery poll when going to background
+    if (_recoveryPollHandle) {
+      clearInterval(_recoveryPollHandle);
+      _recoveryPollHandle = null;
+    }
+    if (isStreaming) {
+      // Page is going to background while streaming — flag it + save partial
+      _wasStreamingWhenHidden = true;
+      savePendingResponse(_streamingFullText, _streamingThinkingText);
+    }
+  } else if (!document.hidden && _wasStreamingWhenHidden) {
+    // Page returned to foreground after an interrupted stream — recover.
+    // Only runs when we actually lost a stream, not on every tab switch.
+    _wasStreamingWhenHidden = false;
+    (async () => {
+      try {
+        const status = await fetch('/chat/status').then(r => r.json());
+        if (status.generating) {
+          // Still generating — poll until done, max 5 minutes
+          console.log('[Recovery] Server still generating, waiting...');
+          const pollStart = Date.now();
+          const MAX_POLL_MS = 5 * 60 * 1000;
+          _recoveryPollHandle = setInterval(async () => {
+            const s = await fetch('/chat/status').then(r => r.json());
+            if (!s.generating || (Date.now() - pollStart > MAX_POLL_MS)) {
+              clearInterval(_recoveryPollHandle);
+              _recoveryPollHandle = null;
+              if (Date.now() - pollStart > MAX_POLL_MS) {
+                console.warn('[Recovery] Poll timed out after 5 min, loading whatever is available');
+              }
+              await loadHistory();
+              renderMessages();
+            }
+          }, 2000);
+        } else {
+          // Generation finished while we were away — fetch the result
+          await loadHistory();
+          renderMessages();
+        }
+      } catch(e) {
+        console.warn('[Recovery] status check failed:', e);
+        await loadHistory();
+        renderMessages();
+      }
+    })();
   }
 });
 
