@@ -76,7 +76,7 @@ MAX_TOOL_ROUNDS = 3  # Max consecutive tool-use rounds per request
 HEARTBEAT_INTERVAL = 15  # seconds — keepalive interval during upstream stalls
 MAX_API_RETRIES = 3  # Retry transient API failures before giving up
 RETRY_BASE_DELAY = 1.0  # Base delay for exponential backoff (seconds)
-FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "claude-sonnet-4-20250514")
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "claude-sonnet-4-6")
 
 # Module-level generation state for /chat/status endpoint.
 # active_count handles overlapping requests (double-send, retry race, two devices)
@@ -1610,7 +1610,7 @@ async def chat(request: Request):
                                         current_model = FALLBACK_MODEL
                                         payload["model"] = current_model
                                         await event_queue.put(
-                                            f"data: {json.dumps({'type': 'status', 'text': f'Switching to fallback model...'})}\n\n"
+                                            f"data: {json.dumps({'type': 'status', 'text': 'Switching to fallback model...'})}\n\n"
                                         )
                                         break  # Break retry loop to restart with fallback
 
@@ -1837,7 +1837,7 @@ async def chat(request: Request):
                                 current_model = FALLBACK_MODEL
                                 payload["model"] = current_model
                                 await event_queue.put(
-                                    f"data: {json.dumps({'type': 'status', 'text': f'Switching to fallback model...'})}\n\n"
+                                    f"data: {json.dumps({'type': 'status', 'text': 'Switching to fallback model...'})}\n\n"
                                 )
                                 break  # Break retry loop to restart with fallback
                             # Fallback model also failed
@@ -2007,6 +2007,11 @@ async def chat(request: Request):
         # Strong reference prevents GC before task completes (Python 3.12+)
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
+        if len(_background_tasks) > 3:
+            print(
+                f"[Chat] WARNING: {len(_background_tasks)} concurrent background tasks — "
+                f"possible double-send or reconnect storm"
+            )
         try:
             while True:
                 event = await event_queue.get()

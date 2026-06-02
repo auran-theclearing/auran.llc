@@ -831,6 +831,10 @@ async function sendMessage() {
             realContextPct = event.context_pct || 0;
             hasRealUsage = true;
             updateContextBar();
+          } else if (event.type === 'status') {
+            // Server status events (retry, fallback, parse warnings)
+            console.log('[Status]', event.text);
+            contentEl.textContent = fullText + (fullText ? '\n' : '') + '[' + event.text + ']';
           } else if (event.type === 'error') {
             receivedError = true;
             // Force-save what we have before the error annotation
@@ -1108,6 +1112,7 @@ document.addEventListener('visibilitychange', () => {
           renderMessages();
         }
       } catch(e) {
+        console.warn('[Recovery] status check failed:', e);
         await loadHistory();
         renderMessages();
       }
