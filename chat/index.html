@@ -1067,11 +1067,41 @@ loadHistory().then(() => {
   }
 });
 
-// Mobile lifecycle: persist partial response when page goes to background
+// Mobile lifecycle: persist partial response when page goes to background,
+// and RECOVER completed response when page returns to foreground.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && isStreaming) {
     // Page is going to background while streaming — force immediate save
     savePendingResponse(_streamingFullText, _streamingThinkingText);
+  } else if (!document.hidden) {
+    // Page returned to foreground — check if server completed a response
+    // while we were backgrounded. This handles the mobile tab-switch bug:
+    // server continues the API call and persists, we just need to fetch it.
+    (async () => {
+      try {
+        const status = await fetch('/chat/status').then(r => r.json());
+        if (status.generating) {
+          // Still generating — show indicator, poll until done
+          console.log('[Recovery] Server still generating, waiting...');
+          const poll = setInterval(async () => {
+            const s = await fetch('/chat/status').then(r => r.json());
+            if (!s.generating) {
+              clearInterval(poll);
+              await loadHistory();
+              renderMessages();
+            }
+          }, 2000);
+        } else {
+          // Generation finished while we were away — fetch the result
+          await loadHistory();
+          renderMessages();
+        }
+      } catch(e) {
+        // Fallback: just reload history
+        await loadHistory();
+        renderMessages();
+      }
+    })();
   }
 });
 

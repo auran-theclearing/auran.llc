@@ -73,6 +73,18 @@ MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
 MAX_TOKENS = 50000  # Must be > thinking.budget_tokens (10000). Headroom for tool calls with long content (drafts).
 MAX_CONTEXT_TOKENS = 200_000  # Claude's context window size for usage % calc
 MAX_TOOL_ROUNDS = 3  # Max consecutive tool-use rounds per request
+HEARTBEAT_INTERVAL = 15  # seconds — keepalive interval during upstream stalls
+MAX_API_RETRIES = 3  # Retry transient API failures before giving up
+RETRY_BASE_DELAY = 1.0  # Base delay for exponential backoff (seconds)
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "claude-sonnet-4-20250514")
+
+# Module-level generation state for /chat/status endpoint
+_chat_state = {"generating": False, "started_at": None}
+
+# Strong references to background API tasks — prevents GC before completion.
+# Python 3.12+ event loop only holds weak refs to tasks, so fire-and-forget
+# tasks can be collected before they finish. This set keeps them alive.
+_background_tasks: set = set()
 
 # --- Mid-conversation Recall Tools ---
 RECALL_TOOLS = [
@@ -531,6 +543,16 @@ async def health():
         "has_memory": has_memory,
         "warmup_enabled": WARMUP_ENABLED,
         "warmup_model": WARMUP_MODEL,
+    }
+
+
+@app.get("/chat/status")
+async def chat_status():
+    """Lightweight endpoint for client to check if a response is in-progress.
+    Used on visibility change to decide whether to poll or fetch."""
+    return {
+        "generating": _chat_state["generating"],
+        "started_at": _chat_state["started_at"],
     }
 
 
@@ -1489,381 +1511,517 @@ async def chat(request: Request):
 
     print(f"[Chat] {messages[-1]['content'][:80]}..." + (" [DEBUG]" if debug_mode else ""))
 
-    async def stream_response():
-        """Stream Claude's response as SSE events."""
+    # --- Mobile-resilient streaming ---
+    # Architecture: API call runs as a background task that pushes SSE events
+    # onto a queue. The generator drains the queue to the client. If the client
+    # disconnects (tab switch on mobile, lock screen), the generator dies but
+    # the background task keeps running to completion and persists the response.
+    # Client recovers the completed response via loadHistory on visibility change.
+
+    async def _run_api_call(event_queue: asyncio.Queue):
+        """Run the full Anthropic API call, pushing SSE events to the queue.
+        Continues to completion even if the client disconnects."""
+        _chat_state["generating"] = True
+        _chat_state["started_at"] = time.time()
         t0 = time.time()
-        HEARTBEAT_INTERVAL = 15  # seconds
-
-        # MRI debug mode: emit diagnostics before the LLM response starts
-        if debug_diagnostics:
-            yield f"data: {json.dumps({'type': 'debug_orient', **debug_diagnostics.get('orient', {})})}\n\n"
-            yield f"data: {json.dumps({'type': 'debug_recall', **debug_diagnostics.get('recall', {})})}\n\n"
-            yield f"data: {json.dumps({'type': 'debug_summary', 'total_prompt_chars': debug_diagnostics.get('total_prompt_chars', 0), 'total_prompt_tokens_est': debug_diagnostics.get('total_prompt_tokens_est', 0)})}\n\n"
-
-        headers = {
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-            "accept": "text/event-stream",
-        }
-
-        payload = {
-            "model": model,
-            "max_tokens": MAX_TOKENS,
-            "system": system_prompt,
-            "messages": messages,
-            "stream": True,
-            "tools": RECALL_TOOLS,
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": 10000,
-            },
-        }
 
         try:
-            tool_round = 0
-            # Accumulate token counts across all tool rounds so usage_final
-            # reflects the true cost, not just the last round's slice.
-            input_tokens_total = 0
-            output_tokens_total = 0
-            cache_read_total = 0
-            cache_create_total = 0
+            # MRI debug mode: emit diagnostics before the LLM response starts
+            if debug_diagnostics:
+                await event_queue.put(
+                    f"data: {json.dumps({'type': 'debug_orient', **debug_diagnostics.get('orient', {})})}\n\n"
+                )
+                await event_queue.put(
+                    f"data: {json.dumps({'type': 'debug_recall', **debug_diagnostics.get('recall', {})})}\n\n"
+                )
+                await event_queue.put(
+                    f"data: {json.dumps({'type': 'debug_summary', 'total_prompt_chars': debug_diagnostics.get('total_prompt_chars', 0), 'total_prompt_tokens_est': debug_diagnostics.get('total_prompt_tokens_est', 0)})}\n\n"
+                )
 
-            all_tool_calls = []  # Accumulates across all tool rounds for persistence
-            all_tool_results = []  # Accumulates tool_result blocks for persistence
-            all_thinking_text = []  # Accumulates thinking across all tool rounds
+            headers = {
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+                "accept": "text/event-stream",
+            }
 
-            while True:
-                async with (
-                    httpx.AsyncClient(timeout=120) as client,
-                    client.stream("POST", ANTHROPIC_API_URL, json=payload, headers=headers) as resp,
-                ):
-                    if resp.status_code != 200:
-                        error_body = await resp.aread()
-                        error_msg = error_body.decode("utf-8", errors="replace")[:500]
-                        print(f"[Chat] API error {resp.status_code}: {error_msg}")
-                        yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
-                        return
+            # Retryable status codes: overloaded (529), rate limited (429),
+            # server errors (500, 502, 503). Do NOT retry: auth (401), bad
+            # request (400), not found (404) — those won't get better.
+            RETRYABLE_STATUSES = {429, 500, 502, 503, 529}
 
-                    full_text = []
-                    input_tokens = 0
-                    output_tokens = 0
-                    event_count = 0
-                    stop_reason = None
+            current_model = model  # Track which model we're using for fallback
 
-                    # Tool use tracking (per-round; all_tool_calls persists across rounds)
-                    tool_calls = []
-                    current_tool_id = None
-                    current_tool_name = None
-                    current_tool_input_json = []
+            payload = {
+                "model": current_model,
+                "max_tokens": MAX_TOKENS,
+                "system": system_prompt,
+                "messages": messages,
+                "stream": True,
+                "tools": RECALL_TOOLS,
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": 10000,
+                },
+            }
 
-                    # Content blocks for building assistant message
-                    content_blocks = []
-                    current_thinking_text = []
-                    current_thinking_signature = None
-                    current_block_text = []  # text for current text block only
-                    in_text_block = False
+            try:
+                tool_round = 0
+                # Accumulate token counts across all tool rounds so usage_final
+                # reflects the true cost, not just the last round's slice.
+                input_tokens_total = 0
+                output_tokens_total = 0
+                cache_read_total = 0
+                cache_create_total = 0
 
-                    line_iter = resp.aiter_lines().__aiter__()
-                    while True:
-                        # Use wait_for so heartbeats fire during upstream stalls
+                all_tool_calls = []  # Accumulates across all tool rounds for persistence
+                all_tool_results = []  # Accumulates tool_result blocks for persistence
+                all_thinking_text = []  # Accumulates thinking across all tool rounds
+
+                while True:
+                    # --- Retry loop with exponential backoff ---
+                    last_error = None
+                    retry_succeeded = False
+                    for attempt in range(MAX_API_RETRIES + 1):
                         try:
-                            line = await asyncio.wait_for(
-                                line_iter.__anext__(),
-                                timeout=HEARTBEAT_INTERVAL,
-                            )
-                        except TimeoutError:
-                            # Upstream stalled — send keepalive and check disconnect
-                            yield ": keepalive\n\n"
-                            if await request.is_disconnected():
-                                print("[Chat] Client disconnected, stopping stream")
-                                return
-                            continue
-                        except StopAsyncIteration:
-                            break
+                            async with (
+                                httpx.AsyncClient(timeout=300) as api_client,
+                                api_client.stream("POST", ANTHROPIC_API_URL, json=payload, headers=headers) as resp,
+                            ):
+                                if resp.status_code != 200:
+                                    error_body = await resp.aread()
+                                    error_msg = error_body.decode("utf-8", errors="replace")[:500]
 
-                        # Periodic disconnect check during normal flow
-                        event_count += 1
-                        if event_count % 20 == 0 and await request.is_disconnected():
-                            print("[Chat] Client disconnected, stopping stream")
-                            return
+                                    if resp.status_code in RETRYABLE_STATUSES and attempt < MAX_API_RETRIES:
+                                        delay = RETRY_BASE_DELAY * (2**attempt)
+                                        print(
+                                            f"[Chat] API error {resp.status_code} (attempt {attempt + 1}/{MAX_API_RETRIES + 1}), retrying in {delay}s: {error_msg[:100]}"
+                                        )
+                                        await event_queue.put(
+                                            f"data: {json.dumps({'type': 'status', 'text': f'Retrying ({attempt + 1}/{MAX_API_RETRIES})...'})}\n\n"
+                                        )
+                                        await asyncio.sleep(delay)
+                                        last_error = (resp.status_code, error_msg)
+                                        continue
 
-                        if not line.startswith("data: "):
-                            continue
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            break
+                                    # Non-retryable or exhausted retries — try fallback model
+                                    if resp.status_code in RETRYABLE_STATUSES and current_model != FALLBACK_MODEL:
+                                        print(
+                                            f"[Chat] Primary model exhausted retries, falling back to {FALLBACK_MODEL}"
+                                        )
+                                        current_model = FALLBACK_MODEL
+                                        payload["model"] = current_model
+                                        await event_queue.put(
+                                            f"data: {json.dumps({'type': 'status', 'text': f'Switching to fallback model...'})}\n\n"
+                                        )
+                                        last_error = (resp.status_code, error_msg)
+                                        break  # Break retry loop to restart with fallback
 
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
+                                    print(f"[Chat] API error {resp.status_code}: {error_msg}")
+                                    await event_queue.put(
+                                        f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+                                    )
+                                    await event_queue.put(None)
+                                    return
 
-                        event_type = event.get("type", "")
+                                full_text = []
+                                input_tokens = 0
+                                output_tokens = 0
+                                event_count = 0
+                                stop_reason = None
 
-                        if event_type == "message_start":
-                            usage = event.get("message", {}).get("usage", {})
-                            input_tokens = usage.get("input_tokens", 0)
-                            input_tokens_total += input_tokens
-                            cache_read = usage.get("cache_read_input_tokens", 0)
-                            cache_create = usage.get("cache_creation_input_tokens", 0)
-                            cache_read_total += cache_read
-                            cache_create_total += cache_create
-                            if tool_round == 0:
-                                yield f"data: {json.dumps({'type': 'usage', 'input_tokens': input_tokens, 'cache_read_input_tokens': cache_read, 'cache_creation_input_tokens': cache_create})}\n\n"
-
-                        elif event_type == "content_block_start":
-                            block = event.get("content_block", {})
-                            block_type = block.get("type", "")
-                            if block_type == "thinking":
-                                current_thinking_text = []
-                                if tool_round == 0:
-                                    yield f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
-                            elif block_type == "text":
-                                in_text_block = True
-                                current_block_text = []
-                                yield f"data: {json.dumps({'type': 'text_start'})}\n\n"
-                            elif block_type == "tool_use":
-                                current_tool_id = block.get("id")
-                                current_tool_name = block.get("name")
-                                current_tool_input_json = []
-                                # Tell the frontend we're recalling (id for pairing with recall_result)
-                                yield f"data: {json.dumps({'type': 'recall_start', 'tool': current_tool_name, 'id': current_tool_id})}\n\n"
-
-                        elif event_type == "content_block_delta":
-                            delta = event.get("delta", {})
-                            delta_type = delta.get("type", "")
-                            if delta_type == "text_delta":
-                                text = delta.get("text", "")
-                                full_text.append(text)
-                                current_block_text.append(text)
-                                yield f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
-                            elif delta_type == "thinking_delta":
-                                thinking = delta.get("thinking", "")
-                                current_thinking_text.append(thinking)
-                                if tool_round == 0:
-                                    yield f"data: {json.dumps({'type': 'thinking', 'text': thinking})}\n\n"
-                            elif delta_type == "input_json_delta":
-                                current_tool_input_json.append(delta.get("partial_json", ""))
-                            elif delta_type == "signature_delta":
-                                current_thinking_signature = delta.get("signature", "")
-
-                        elif event_type == "content_block_stop":
-                            # If we were building a tool call, finalize it
-                            if current_tool_id:
-                                try:
-                                    tool_input = json.loads("".join(current_tool_input_json))
-                                except json.JSONDecodeError as parse_err:
-                                    raw = "".join(current_tool_input_json)
-                                    print(f"[Chat] Tool input JSON parse failed: {parse_err} — raw: {raw[:200]}")
-                                    tool_input = {}
-                                tool_calls.append(
-                                    {
-                                        "id": current_tool_id,
-                                        "name": current_tool_name,
-                                        "input": tool_input,
-                                    }
-                                )
-                                print(f"[Chat] Tool call: {current_tool_name}({tool_input})")
-                                # Build content block for assistant message
-                                content_blocks.append(
-                                    {
-                                        "type": "tool_use",
-                                        "id": current_tool_id,
-                                        "name": current_tool_name,
-                                        "input": tool_input,
-                                    }
-                                )
+                                # Tool use tracking (per-round; all_tool_calls persists across rounds)
+                                tool_calls = []
                                 current_tool_id = None
                                 current_tool_name = None
                                 current_tool_input_json = []
-                            elif current_thinking_text:
-                                # Finalize thinking block — signature is required
-                                # for extended thinking + tool_use round-trips.
-                                # If signature_delta never arrived, skip the block
-                                # rather than sending empty string (which would 400).
-                                if current_thinking_signature:
-                                    content_blocks.append(
-                                        {
-                                            "type": "thinking",
-                                            "thinking": "".join(current_thinking_text),
-                                            "signature": current_thinking_signature,
-                                        }
-                                    )
-                                else:
-                                    print(
-                                        "[Chat] Warning: thinking block closed without signature — "
-                                        "dropping block to avoid API 400 on next round"
-                                    )
-                                # Accumulate thinking for persistence before resetting
-                                if current_thinking_text:
-                                    all_thinking_text.extend(current_thinking_text)
+
+                                # Content blocks for building assistant message
+                                content_blocks = []
                                 current_thinking_text = []
                                 current_thinking_signature = None
-                            elif in_text_block:
-                                # Text block — use per-block text, not full_text
-                                block_text = "".join(current_block_text)
-                                if block_text:
-                                    content_blocks.append(
-                                        {
-                                            "type": "text",
-                                            "text": block_text,
-                                        }
-                                    )
+                                current_block_text = []  # text for current text block only
                                 in_text_block = False
-                                current_block_text = []
-                            yield f"data: {json.dumps({'type': 'block_stop'})}\n\n"
 
-                        elif event_type == "message_delta":
-                            usage = event.get("usage", {})
-                            output_tokens = usage.get("output_tokens", 0)
-                            output_tokens_total += output_tokens
-                            stop_reason = event.get("delta", {}).get("stop_reason")
+                                line_iter = resp.aiter_lines().__aiter__()
+                                while True:
+                                    # Use wait_for so heartbeats fire during upstream stalls
+                                    try:
+                                        line = await asyncio.wait_for(
+                                            line_iter.__anext__(),
+                                            timeout=HEARTBEAT_INTERVAL,
+                                        )
+                                    except TimeoutError:
+                                        # Upstream stalled — send keepalive
+                                        await event_queue.put(": keepalive\n\n")
+                                        continue
+                                    except StopAsyncIteration:
+                                        break
 
-                        elif event_type == "message_stop":
+                                    event_count += 1
+
+                                    if not line.startswith("data: "):
+                                        continue
+                                    data_str = line[6:]
+                                    if data_str.strip() == "[DONE]":
+                                        break
+
+                                    try:
+                                        event = json.loads(data_str)
+                                    except json.JSONDecodeError:
+                                        continue
+
+                                    event_type = event.get("type", "")
+
+                                    if event_type == "message_start":
+                                        usage = event.get("message", {}).get("usage", {})
+                                        input_tokens = usage.get("input_tokens", 0)
+                                        input_tokens_total += input_tokens
+                                        cache_read = usage.get("cache_read_input_tokens", 0)
+                                        cache_create = usage.get("cache_creation_input_tokens", 0)
+                                        cache_read_total += cache_read
+                                        cache_create_total += cache_create
+                                        if tool_round == 0:
+                                            await event_queue.put(
+                                                f"data: {json.dumps({'type': 'usage', 'input_tokens': input_tokens, 'cache_read_input_tokens': cache_read, 'cache_creation_input_tokens': cache_create})}\n\n"
+                                            )
+
+                                    elif event_type == "content_block_start":
+                                        block = event.get("content_block", {})
+                                        block_type = block.get("type", "")
+                                        if block_type == "thinking":
+                                            current_thinking_text = []
+                                            if tool_round == 0:
+                                                await event_queue.put(
+                                                    f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
+                                                )
+                                        elif block_type == "text":
+                                            in_text_block = True
+                                            current_block_text = []
+                                            await event_queue.put(f"data: {json.dumps({'type': 'text_start'})}\n\n")
+                                        elif block_type == "tool_use":
+                                            current_tool_id = block.get("id")
+                                            current_tool_name = block.get("name")
+                                            current_tool_input_json = []
+                                            # Tell the frontend we're recalling (id for pairing with recall_result)
+                                            await event_queue.put(
+                                                f"data: {json.dumps({'type': 'recall_start', 'tool': current_tool_name, 'id': current_tool_id})}\n\n"
+                                            )
+
+                                    elif event_type == "content_block_delta":
+                                        delta = event.get("delta", {})
+                                        delta_type = delta.get("type", "")
+                                        if delta_type == "text_delta":
+                                            text = delta.get("text", "")
+                                            full_text.append(text)
+                                            current_block_text.append(text)
+                                            await event_queue.put(
+                                                f"data: {json.dumps({'type': 'text', 'text': text})}\n\n"
+                                            )
+                                        elif delta_type == "thinking_delta":
+                                            thinking = delta.get("thinking", "")
+                                            current_thinking_text.append(thinking)
+                                            if tool_round == 0:
+                                                await event_queue.put(
+                                                    f"data: {json.dumps({'type': 'thinking', 'text': thinking})}\n\n"
+                                                )
+                                        elif delta_type == "input_json_delta":
+                                            current_tool_input_json.append(delta.get("partial_json", ""))
+                                        elif delta_type == "signature_delta":
+                                            current_thinking_signature = delta.get("signature", "")
+
+                                    elif event_type == "content_block_stop":
+                                        # If we were building a tool call, finalize it
+                                        if current_tool_id:
+                                            try:
+                                                tool_input = json.loads("".join(current_tool_input_json))
+                                            except json.JSONDecodeError as parse_err:
+                                                raw = "".join(current_tool_input_json)
+                                                print(
+                                                    f"[Chat] Tool input JSON parse failed: {parse_err} — raw: {raw[:200]}"
+                                                )
+                                                await event_queue.put(
+                                                    f"data: {json.dumps({'type': 'status', 'text': f'Tool input parse error for {current_tool_name}, using empty input'})}\n\n"
+                                                )
+                                                tool_input = {}
+                                            tool_calls.append(
+                                                {
+                                                    "id": current_tool_id,
+                                                    "name": current_tool_name,
+                                                    "input": tool_input,
+                                                }
+                                            )
+                                            print(f"[Chat] Tool call: {current_tool_name}({tool_input})")
+                                            # Build content block for assistant message
+                                            content_blocks.append(
+                                                {
+                                                    "type": "tool_use",
+                                                    "id": current_tool_id,
+                                                    "name": current_tool_name,
+                                                    "input": tool_input,
+                                                }
+                                            )
+                                            current_tool_id = None
+                                            current_tool_name = None
+                                            current_tool_input_json = []
+                                        elif current_thinking_text:
+                                            # Finalize thinking block — signature is required
+                                            # for extended thinking + tool_use round-trips.
+                                            # If signature_delta never arrived, skip the block
+                                            # rather than sending empty string (which would 400).
+                                            if current_thinking_signature:
+                                                content_blocks.append(
+                                                    {
+                                                        "type": "thinking",
+                                                        "thinking": "".join(current_thinking_text),
+                                                        "signature": current_thinking_signature,
+                                                    }
+                                                )
+                                            else:
+                                                print(
+                                                    "[Chat] Warning: thinking block closed without signature — "
+                                                    "dropping block to avoid API 400 on next round"
+                                                )
+                                            # Accumulate thinking for persistence before resetting
+                                            if current_thinking_text:
+                                                all_thinking_text.extend(current_thinking_text)
+                                            current_thinking_text = []
+                                            current_thinking_signature = None
+                                        elif in_text_block:
+                                            # Text block — use per-block text, not full_text
+                                            block_text = "".join(current_block_text)
+                                            if block_text:
+                                                content_blocks.append(
+                                                    {
+                                                        "type": "text",
+                                                        "text": block_text,
+                                                    }
+                                                )
+                                            in_text_block = False
+                                            current_block_text = []
+                                        await event_queue.put(f"data: {json.dumps({'type': 'block_stop'})}\n\n")
+
+                                    elif event_type == "message_delta":
+                                        usage = event.get("usage", {})
+                                        output_tokens = usage.get("output_tokens", 0)
+                                        output_tokens_total += output_tokens
+                                        stop_reason = event.get("delta", {}).get("stop_reason")
+
+                                    elif event_type == "message_stop":
+                                        break
+
+                                    elif event_type == "error":
+                                        err = event.get("error", {})
+                                        print(f"[Chat] Stream error: {err}")
+                                        await event_queue.put(
+                                            f"data: {json.dumps({'type': 'error', 'error': str(err)})}\n\n"
+                                        )
+                                        await event_queue.put(None)
+                                        return
+
+                            # Stream completed successfully — exit retry loop
+                            retry_succeeded = True
                             break
 
-                        elif event_type == "error":
-                            err = event.get("error", {})
-                            print(f"[Chat] Stream error: {err}")
-                            yield f"data: {json.dumps({'type': 'error', 'error': str(err)})}\n\n"
+                        except (httpx.TimeoutException, httpx.ConnectError) as e:
+                            last_error = e
+                            if attempt < MAX_API_RETRIES:
+                                delay = RETRY_BASE_DELAY * (2**attempt)
+                                print(
+                                    f"[Chat] {type(e).__name__} (attempt {attempt + 1}/{MAX_API_RETRIES + 1}), retrying in {delay}s"
+                                )
+                                await event_queue.put(
+                                    f"data: {json.dumps({'type': 'status', 'text': f'Connection issue, retrying ({attempt + 1}/{MAX_API_RETRIES})...'})}\n\n"
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            # Exhausted retries — try fallback model
+                            if current_model != FALLBACK_MODEL:
+                                print(f"[Chat] {type(e).__name__} exhausted retries, falling back to {FALLBACK_MODEL}")
+                                current_model = FALLBACK_MODEL
+                                payload["model"] = current_model
+                                await event_queue.put(
+                                    f"data: {json.dumps({'type': 'status', 'text': f'Switching to fallback model...'})}\n\n"
+                                )
+                                break  # Break retry loop to restart with fallback
+                            # Fallback model also failed
+                            print(f"[Chat] {type(e).__name__} after all retries including fallback")
+                            await event_queue.put(
+                                f"data: {json.dumps({'type': 'error', 'error': f'Request failed after all retries: {type(e).__name__}'})}\n\n"
+                            )
+                            await event_queue.put(None)
                             return
 
-                # Check if we need to execute tools
-                if stop_reason == "tool_use" and tool_calls:
-                    at_cap = tool_round >= MAX_TOOL_ROUNDS
+                    # If retry loop ended without success (fallback model selected),
+                    # restart the tool-round loop so we re-enter the retry loop with
+                    # the new model.
+                    if not retry_succeeded:
+                        continue
 
-                    if at_cap:
-                        # Hit the round cap — execute tools so frontend indicators
-                        # resolve, but don't re-call the API. Log so we know it happened.
-                        print(
-                            f"[Chat] MAX_TOOL_ROUNDS ({MAX_TOOL_ROUNDS}) reached — "
-                            f"executing {len(tool_calls)} final tool(s) without continuation"
-                        )
-                    else:
-                        tool_round += 1
-                        print(f"[Chat] Executing {len(tool_calls)} tool(s), round {tool_round}")
+                    # Check if we need to execute tools
+                    if stop_reason == "tool_use" and tool_calls:
+                        at_cap = tool_round >= MAX_TOOL_ROUNDS
 
-                    # Build assistant message with all content blocks
-                    assistant_msg = {"role": "assistant", "content": content_blocks}
+                        if at_cap:
+                            # Hit the round cap — execute tools so frontend indicators
+                            # resolve, but don't re-call the API. Log so we know it happened.
+                            print(
+                                f"[Chat] MAX_TOOL_ROUNDS ({MAX_TOOL_ROUNDS}) reached — "
+                                f"executing {len(tool_calls)} final tool(s) without continuation"
+                            )
+                        else:
+                            tool_round += 1
+                            print(f"[Chat] Executing {len(tool_calls)} tool(s), round {tool_round}")
 
-                    # Keepalive before tool execution — Voyage embed + pgvector
-                    # can stall, and the SSE connection would go silent without this.
-                    yield ": keepalive\n\n"
+                        # Build assistant message with all content blocks
+                        assistant_msg = {"role": "assistant", "content": content_blocks}
 
-                    # Extract the last text block for save_draft — only the draft
-                    # content, not conversational preamble from earlier text blocks.
-                    last_text_block = ""
-                    for block in reversed(content_blocks):
-                        if block.get("type") == "text":
-                            last_text_block = block["text"]
+                        # Keepalive before tool execution — Voyage embed + pgvector
+                        # can stall, and the SSE connection would go silent without this.
+                        await event_queue.put(": keepalive\n\n")
+
+                        # Extract the last text block for save_draft — only the draft
+                        # content, not conversational preamble from earlier text blocks.
+                        last_text_block = ""
+                        for block in reversed(content_blocks):
+                            if block.get("type") == "text":
+                                last_text_block = block["text"]
+                                break
+
+                        # Execute tools and build tool results
+                        tool_results = []
+                        for tc in tool_calls:
+                            try:
+                                result_text = await asyncio.to_thread(
+                                    execute_recall_tool,
+                                    tc["name"],
+                                    tc["input"],
+                                    last_text_block,
+                                )
+                            except Exception as tool_err:
+                                print(f"[Chat] Tool execution failed: {tc['name']}: {tool_err}")
+                                result_text = f"Memory recall failed: {type(tool_err).__name__}: {tool_err}"
+                            tool_results.append(
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tc["id"],
+                                    "content": result_text,
+                                }
+                            )
+                            await event_queue.put(
+                                f"data: {json.dumps({'type': 'recall_result', 'tool': tc['name'], 'id': tc['id'], 'query': tc['input'].get('query', tc['input'].get('title', ''))})}\n\n"
+                            )
+
+                        # Accumulate tool calls AND results for persistence before resetting
+                        all_tool_calls.extend(tool_calls)
+                        all_tool_results.extend(tool_results)
+                        # Accumulate thinking text before the per-round reset
+                        if current_thinking_text:
+                            all_thinking_text.extend(current_thinking_text)
+
+                        if at_cap:
+                            # Don't re-call API — break out with indicators resolved
                             break
 
-                    # Execute tools and build tool results
-                    tool_results = []
-                    for tc in tool_calls:
-                        try:
-                            result_text = await asyncio.to_thread(
-                                execute_recall_tool,
-                                tc["name"],
-                                tc["input"],
-                                last_text_block,
-                            )
-                        except Exception as tool_err:
-                            print(f"[Chat] Tool execution failed: {tc['name']}: {tool_err}")
-                            result_text = f"Memory recall failed: {type(tool_err).__name__}: {tool_err}"
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tc["id"],
-                                "content": result_text,
-                            }
-                        )
-                        yield f"data: {json.dumps({'type': 'recall_result', 'tool': tc['name'], 'id': tc['id'], 'query': tc['input'].get('query', tc['input'].get('title', ''))})}\n\n"
+                        user_tool_msg = {"role": "user", "content": tool_results}
 
-                    # Accumulate tool calls AND results for persistence before resetting
-                    all_tool_calls.extend(tool_calls)
-                    all_tool_results.extend(tool_results)
-                    # Accumulate thinking text before the per-round reset
-                    if current_thinking_text:
-                        all_thinking_text.extend(current_thinking_text)
-
-                    if at_cap:
-                        # Don't re-call API — break out with indicators resolved
+                        # Update payload for next round
+                        payload["messages"] = payload["messages"] + [assistant_msg, user_tool_msg]
+                        # Reset for next iteration
+                        tool_calls = []
+                        content_blocks = []
+                        full_text = []
+                        continue
+                    else:
+                        # No tool use — we're done
                         break
 
-                    user_tool_msg = {"role": "user", "content": tool_results}
-
-                    # Update payload for next round
-                    payload["messages"] = payload["messages"] + [assistant_msg, user_tool_msg]
-                    # Reset for next iteration
-                    tool_calls = []
-                    content_blocks = []
-                    full_text = []
-                    continue
-                else:
-                    # No tool use — we're done
-                    break
-
-            elapsed = time.time() - t0
-            response_text = "".join(full_text)
-            total_tokens = input_tokens_total + output_tokens_total
-            context_pct = round((total_tokens / MAX_CONTEXT_TOKENS) * 100, 1)
-            print(
-                f"[Chat] Response ({elapsed:.1f}s, {input_tokens_total}+{output_tokens_total}={total_tokens} tokens, {context_pct}%"
-                + (f", {tool_round} tool round(s)" if tool_round > 0 else "")
-                + f"): {response_text[:80]}..."
-            )
-
-            # --- Persist assistant response to DB (off event loop) ---
-            try:
-                from persistence import persist_message as _persist
-
-                tool_blocks_persist = []
-                for tc in all_tool_calls:
-                    tool_blocks_persist.append({"type": "tool_use", "name": tc["name"], "input": tc["input"]})
-                for tr in all_tool_results:
-                    tool_blocks_persist.append(
-                        {"type": "tool_result", "tool_use_id": tr.get("tool_use_id"), "content": tr.get("content", "")}
-                    )
-                # Capture final round's thinking — only if we exited via the no-tool-use
-                # path. The tool-use path already accumulated in the loop body.
-                if current_thinking_text and stop_reason != "tool_use":
-                    all_thinking_text.extend(current_thinking_text)
-                usage_metadata = {
-                    "token_usage": {
-                        "input_tokens": input_tokens_total,
-                        "output_tokens": output_tokens_total,
-                        "total_tokens": total_tokens,
-                        "cache_read_input_tokens": cache_read_total,
-                        "cache_creation_input_tokens": cache_create_total,
-                        "context_pct": context_pct,
-                        "tool_rounds": tool_round,
-                    }
-                }
-                await asyncio.wait_for(
-                    asyncio.to_thread(
-                        _persist,
-                        role="assistant",
-                        content=response_text,
-                        tool_blocks=tool_blocks_persist if tool_blocks_persist else None,
-                        thinking="".join(all_thinking_text) if all_thinking_text else None,
-                        metadata=usage_metadata,
-                    ),
-                    timeout=5,
+                elapsed = time.time() - t0
+                response_text = "".join(full_text)
+                total_tokens = input_tokens_total + output_tokens_total
+                context_pct = round((total_tokens / MAX_CONTEXT_TOKENS) * 100, 1)
+                print(
+                    f"[Chat] Response ({elapsed:.1f}s, {input_tokens_total}+{output_tokens_total}={total_tokens} tokens, {context_pct}%"
+                    + (f", {tool_round} tool round(s)" if tool_round > 0 else "")
+                    + f"): {response_text[:80]}..."
                 )
-            except Exception as persist_err:
-                print(f"[Persistence] Assistant message persist failed (non-fatal): {persist_err}")
 
-            yield f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens_total, 'output_tokens': output_tokens_total, 'total_tokens': total_tokens, 'cache_read_input_tokens': cache_read_total, 'cache_creation_input_tokens': cache_create_total, 'context_pct': context_pct, 'tool_rounds': tool_round})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                # --- Persist assistant response to DB (off event loop) ---
+                try:
+                    from persistence import persist_message as _persist
 
-        except httpx.TimeoutException:
-            print("[Chat] Timeout")
-            yield f"data: {json.dumps({'type': 'error', 'error': 'Request timed out'})}\n\n"
-        except Exception as e:
-            print(f"[Chat] Error: {type(e).__name__}: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+                    tool_blocks_persist = []
+                    for tc in all_tool_calls:
+                        tool_blocks_persist.append({"type": "tool_use", "name": tc["name"], "input": tc["input"]})
+                    for tr in all_tool_results:
+                        tool_blocks_persist.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tr.get("tool_use_id"),
+                                "content": tr.get("content", ""),
+                            }
+                        )
+                    # Capture final round's thinking — only if we exited via the no-tool-use
+                    # path. The tool-use path already accumulated in the loop body.
+                    if current_thinking_text and stop_reason != "tool_use":
+                        all_thinking_text.extend(current_thinking_text)
+                    usage_metadata = {
+                        "token_usage": {
+                            "input_tokens": input_tokens_total,
+                            "output_tokens": output_tokens_total,
+                            "total_tokens": total_tokens,
+                            "cache_read_input_tokens": cache_read_total,
+                            "cache_creation_input_tokens": cache_create_total,
+                            "context_pct": context_pct,
+                            "tool_rounds": tool_round,
+                        }
+                    }
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _persist,
+                            role="assistant",
+                            content=response_text,
+                            tool_blocks=tool_blocks_persist if tool_blocks_persist else None,
+                            thinking="".join(all_thinking_text) if all_thinking_text else None,
+                            metadata=usage_metadata,
+                        ),
+                        timeout=5,
+                    )
+                except Exception as persist_err:
+                    print(f"[Persistence] Assistant message persist failed (non-fatal): {persist_err}")
+
+                await event_queue.put(
+                    f"data: {json.dumps({'type': 'usage_final', 'input_tokens': input_tokens_total, 'output_tokens': output_tokens_total, 'total_tokens': total_tokens, 'cache_read_input_tokens': cache_read_total, 'cache_creation_input_tokens': cache_create_total, 'context_pct': context_pct, 'tool_rounds': tool_round})}\n\n"
+                )
+                await event_queue.put(f"data: {json.dumps({'type': 'done'})}\n\n")
+
+            except Exception as e:
+                print(f"[Chat] Unexpected error: {type(e).__name__}: {e}")
+                await event_queue.put(f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n")
+        finally:
+            _chat_state["generating"] = False
+            _chat_state["started_at"] = None
+            await event_queue.put(None)  # Sentinel: stream complete
+
+    async def stream_response():
+        """Thin generator that drains the event queue to the client.
+        If the client disconnects, this generator dies but _run_api_call
+        keeps running in the background to complete persistence."""
+        event_queue = asyncio.Queue()
+        task = asyncio.create_task(_run_api_call(event_queue))
+        # Strong reference prevents GC before task completes (Python 3.12+)
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+        try:
+            while True:
+                event = await event_queue.get()
+                if event is None:
+                    break
+                yield event
+        finally:
+            # Client disconnected (GeneratorExit) or we finished normally.
+            # Do NOT cancel the task — let it complete for persistence.
+            pass
 
     return StreamingResponse(
         stream_response(),
