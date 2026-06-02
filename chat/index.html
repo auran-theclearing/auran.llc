@@ -1095,13 +1095,18 @@ document.addEventListener('visibilitychange', () => {
       try {
         const status = await fetch('/chat/status').then(r => r.json());
         if (status.generating) {
-          // Still generating — poll until done
+          // Still generating — poll until done, max 5 minutes
           console.log('[Recovery] Server still generating, waiting...');
+          const pollStart = Date.now();
+          const MAX_POLL_MS = 5 * 60 * 1000;
           _recoveryPollHandle = setInterval(async () => {
             const s = await fetch('/chat/status').then(r => r.json());
-            if (!s.generating) {
+            if (!s.generating || (Date.now() - pollStart > MAX_POLL_MS)) {
               clearInterval(_recoveryPollHandle);
               _recoveryPollHandle = null;
+              if (Date.now() - pollStart > MAX_POLL_MS) {
+                console.warn('[Recovery] Poll timed out after 5 min, loading whatever is available');
+              }
               await loadHistory();
               renderMessages();
             }
