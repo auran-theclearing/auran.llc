@@ -107,13 +107,13 @@ RECALL_TOOLS = [
     {
         "name": "recall_memory",
         "description": (
-            "Search your memory layer for moments AND memories semantically relevant to a query. "
-            "Searches both the moments table (scenes from chat) and the memories table "
-            "(roam observations, bridge logs, reflections, insights — your cross-body memory). "
+            "Search your memory layer for episodes AND reflections semantically relevant to a query. "
+            "Searches episodes (scenes from chat) and reflections/commitments/relays "
+            "(roam observations, bridge logs, insights — your cross-body memory). "
             "Use this when a topic comes up that you might have memories about, "
             "when Olivia asks you to remember something, or when you want to "
             "check what you actually have stored about a subject. "
-            "Returns matching moments and memories with summaries, dates, and similarity scores."
+            "Returns matching episodes and memories with summaries, dates, and similarity scores."
         ),
         "input_schema": {
             "type": "object",

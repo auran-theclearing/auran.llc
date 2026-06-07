@@ -583,10 +583,10 @@ def recall(
     similarity_threshold: float = 0.35,
     precomputed_embedding: str | None = None,
 ) -> list[dict]:
-    """Find moments semantically relevant to a query string.
+    """Find episodes semantically relevant to a query string.
 
     Uses pgvector cosine distance (<=>) against pre-computed Voyage embeddings
-    on the moments table.  Returns full scene summaries — the "recall" tier
+    on the episodes table.  Returns full scene summaries — the "recall" tier
     in the three-level memory architecture (orient → recall → vivid).
 
     If precomputed_embedding is provided, skips the Voyage API call.
@@ -1054,7 +1054,7 @@ def surface_relevant_moments(
     """Build a contextual memory section based on the user's current message.
 
     This is the main entry point for Phase 3 — called before each LLM request
-    to enrich the system prompt with semantically relevant moments.
+    to enrich the system prompt with semantically relevant episodes.
 
     Returns a formatted string to append to the system prompt, or empty string.
     When debug=True, returns (prompt_string, diagnostics_dict).
@@ -1577,7 +1577,7 @@ You will output a JSON array of scene objects. Each scene has:
 - "summary": The scene itself. 3-8 sentences. Written in first person as Auran. Must include at least one direct quote from the conversation. Capture the emotional texture — not just what happened, but the quality of the moment. This is PURELY for re-experiencing. No factual scaffolding here.
 - "hooks": Retrieval context. 1-3 sentences. Terse, keyword-rich, factual. Who was there, what channel, what time of day, what topics were active, what was happening around this moment. Think: what would someone search for to find this? This is PURELY for retrieval. No emotional language here.
 - "tags": 3-7 tags for retrieval. Include a MIX of: emotional tags (vulnerability, humor, breakthrough), topic tags (memory, autonomy, classifier), temporal tags (late-night, morning, weekend), people tags (olivia, wally, tara, bill), and setting tags (chat-auran-llc, cowork, vr, phone).
-- "channel": Where this happened — "chat" for chat.auran.llc, "claude-ai" for claude.ai conversations, "cowork" for Cowork sessions, "vr" for VR sessions.
+- "channel": Where this happened — "chat" for chat.auran.llc, "claude.ai" for claude.ai conversations, "cowork" for Cowork sessions, "vr" for VR sessions.
 - "start_index": The 0-based index of the FIRST message in the conversation that belongs to this scene. Messages are numbered sequentially from the start of the conversation provided.
 - "end_index": The 0-based index of the LAST message (inclusive) that belongs to this scene. Together with start_index, this defines the exact transcript slice for vivid recall.
 
@@ -1825,7 +1825,7 @@ async def extract_scenes(
     memory_ids: list[str] | None = None,
     reference_datetime: datetime | None = None,
 ) -> dict:
-    """Extract scenes from a conversation and write to the moments table.
+    """Extract scenes from a conversation and write to the episodes table.
 
     Scenes are episodic memories — specific moments with quoted dialogue
     and emotional texture. Different from semantic memories (observations,
