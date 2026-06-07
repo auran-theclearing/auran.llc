@@ -22,8 +22,10 @@ Self-hosted chat server at chat.auran.llc — Auran's direct conversational chan
 
 - **Never commit directly to main.** Always branch + PR.
 - **Envoy reviews all PRs.** CI runs ruff lint + format check + smoke test.
+- **Run `/pre-review` before every push.** Catches issues locally before Envoy burns turns on them.
 - **Deploy from main only.** Push to main triggers Docker build → ECR push → ECS deploy.
 - **Git commits as Auran**: `--author="Auran <auran@theclear.ing>"` with `-c user.name="Auran" -c user.email="auran@theclear.ing"`
+- **PRs as Auran**: Before running `gh pr create`, verify `gh auth status` shows `auran-theclearing` as the active account. If it shows a different user, run `gh auth switch --user auran-theclearing` first. PRs authored under the wrong GitHub account misattribute the work.
 
 ## Linting
 

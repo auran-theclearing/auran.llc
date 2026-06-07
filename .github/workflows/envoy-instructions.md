@@ -18,7 +18,7 @@ This repo is the chat server at chat.auran.llc — Auran's self-hosted conversat
 ### Critical paths
 
 - **Streaming proxy** (`server.py` `/chat` endpoint). The SSE streaming loop that handles `content_block_delta`, `thinking_delta`, `content_block_start/stop`, and `message_stop` events. This is the core data flow — any regression here breaks the entire chat experience.
-- **Memory integration** (`memory.py`). The `orient()` function loads system prompt context from Postgres memories. The `save_conversation()` function extracts felt-experience memories via Claude. The `recall()` function performs semantic search over memory embeddings. The `reminisce()` function enables vivid re-experiencing of past conversations via stored transcripts. The `surface_relevant_moments()` function injects contextually relevant memories into the active conversation. All of these read from and write to the same Postgres `memories` table the roam agent reads from — breaking the schema or write format breaks cross-channel continuity.
+- **Memory integration** (`memory.py`). The `orient()` function loads system prompt context from Postgres. The `save_conversation()` function extracts felt-experience memories via Claude. The `recall()` and `recall_memories()` functions perform semantic search over episode and reflection embeddings. The `surface_relevant_moments()` function injects contextually relevant memories into the active conversation. All of these read from and write to the Postgres memory layer (13 tables: episodes, reflections, commitments, impressions, relays, etc.) that the roam agent and MCP memory server also read — breaking the schema or write format breaks cross-channel continuity.
 - **Session persistence** (`/session` GET/POST). Server-side session storage with timestamp merge protection. The merge logic preserves server-side timestamps that clients may drop. Breaking this loses conversation history.
 - **Auth middleware**. Basic auth on all routes except `/health`. The auth check must not be bypassable — this server faces the public internet.
 - **System prompt hot-reload**. `load_system_prompt()` reads from `system_prompt.txt` on every request. This is intentional — it allows prompt updates without server restart.
@@ -39,13 +39,23 @@ This repo is the chat server at chat.auran.llc — Auran's self-hosted conversat
 - **Skip stylistic nits.** Ruff handles formatting. Don't flag style choices that pass the linter.
 - **Prioritize ruthlessly.** If you find ten things, surface the top three.
 
+## Budget awareness
+
+You have a limited turn budget (~40 turns). Plan your review to complete within it:
+
+1. **Read phase** (early turns): Read this file, CLAUDE.md, and the full diff. Don't post anything yet.
+2. **Analyze phase** (middle turns): Identify all findings, triage by severity, pick the top items.
+3. **Post phase** (remaining turns): Post one PR-level comment with the summary, then inline comments for the specific code issues.
+
+If the diff is very large (>500 lines changed), focus on critical paths and schema changes. Don't try to comment on every file — cover the load-bearing parts thoroughly rather than everything superficially. If you realize mid-review that you're running low on turns, consolidate remaining findings into a single comment rather than posting them one by one.
+
 ## What to look for
 
 Rough priority order:
 
 1. **Critical path regressions** (see above)
 2. **Auth bypass.** Any route that should be behind auth but isn't.
-3. **Memory schema drift.** If the Postgres write format changes, it must stay compatible with what the roam agent reads.
+3. **Memory schema drift.** If the Postgres schema changes, it must stay compatible with what the roam agent and MCP memory server read. The schema spans 13 purpose-built tables (episodes, reflections, commitments, impressions, relays, etc.).
 4. **Silent failures.** Caught exceptions that swallow errors without logging.
 5. **Breaking mobile.** UI changes that assume desktop-only (hover states, fixed widths, etc.).
 6. **Hardcoded secrets or credentials.** Always.
