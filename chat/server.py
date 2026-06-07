@@ -1002,10 +1002,11 @@ async def vitals(request: Request):
         cur.execute("SELECT COUNT(*) FROM episodes WHERE transcript_excerpt IS NOT NULL")
         episodes_with_transcripts = cur.fetchone()[0]
 
-        # Duplicate check
+        # Duplicate check — group by title + date so recurring titles
+        # on different days ("morning check-in") aren't false positives
         cur.execute("""
             SELECT title, COUNT(*) as n FROM episodes
-            GROUP BY title HAVING COUNT(*) > 1
+            GROUP BY title, occurred_at::date HAVING COUNT(*) > 1
         """)
         duplicates = [{"title": row[0], "count": row[1]} for row in cur.fetchall()]
 

@@ -1254,7 +1254,7 @@ def surface_relevant_moments(
                 date_str = created.strftime("%b %d, %I:%M %p")
             else:
                 date_str = str(created)
-            agent = mem.get("agent_id", "unknown")
+            agent = mem.get("source", "unknown")
             mtype = mem.get("memory_type", "unknown")
             sim_pct = f"{mem['similarity']:.0%}"
             content = mem.get("content", "")
