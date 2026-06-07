@@ -191,24 +191,52 @@ def _get_db_config() -> dict:
         return _db_config
 
 
+_REFLECTION_TYPES = frozenset({"observation", "insight", "self_observation", "question", "reflection"})
+_COMMITMENT_TYPES = frozenset({"intention", "position", "value"})
+
+
 def _query_memories(
     conn,
     memory_types: list[str],
     limit: int = 10,
     since_hours: int | None = None,
 ) -> list[dict]:
-    """Query memories by type, optionally filtered by recency."""
-    cur = conn.cursor()
-    query = """
-        SELECT memory_type, content, source, created_at
-        FROM memories
-        WHERE memory_type = ANY(%s)
+    """Query reflections/commitments/relays by type.
+
+    Routes to the correct post-migration tables (reflections, commitments,
+    relays) based on the requested memory_types. Returns results in the
+    same dict format as pre-migration for compatibility.
     """
-    params: list = [memory_types]
+    cur = conn.cursor()
+
+    ref_types = [t for t in memory_types if t in _REFLECTION_TYPES]
+    com_types = [t for t in memory_types if t in _COMMITMENT_TYPES]
+    is_relay = "bridge_log" in memory_types
+
+    parts: list[str] = []
+    params: list = []
+
+    if ref_types:
+        parts.append("SELECT type AS memory_type, content, source, created_at FROM reflections WHERE type = ANY(%s)")
+        params.append(ref_types)
+
+    if com_types:
+        parts.append("SELECT type AS memory_type, content, source, created_at FROM commitments WHERE type = ANY(%s)")
+        params.append(com_types)
+
+    if is_relay:
+        parts.append("SELECT 'bridge_log' AS memory_type, content, source_channel AS source, created_at FROM relays")
+
+    if not parts:
+        cur.close()
+        return []
+
+    base = " UNION ALL ".join(parts)
+    query = f"SELECT * FROM ({base}) combined"  # noqa: S608 — parts are hardcoded SQL
 
     if since_hours:
         cutoff = datetime.now(UTC) - timedelta(hours=since_hours)
-        query += " AND created_at >= %s"
+        query += " WHERE created_at >= %s"
         params.append(cutoff)
 
     query += " ORDER BY created_at DESC LIMIT %s"
@@ -249,19 +277,24 @@ def retrieve_felt_memory(memory_id: str) -> dict | None:
         config = _get_db_config()
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
-        cur.execute(
-            "SELECT memory_type, content, created_at FROM memories WHERE id = %s",
-            (memory_id,),
-        )
-        row = cur.fetchone()
+        # Check reflections first, then commitments (covers all old memory types)
+        for table, type_col in [("reflections", "type"), ("commitments", "type")]:
+            cur.execute(
+                f"SELECT {type_col}, content, created_at FROM {table} WHERE id = %s",  # noqa: S608
+                (memory_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                cur.close()
+                conn.close()
+                return {
+                    "memory_type": row[0],
+                    "content": row[1],
+                    "created_at": row[2],
+                }
         cur.close()
         conn.close()
-        if row:
-            return {
-                "memory_type": row[0],
-                "content": row[1],
-                "created_at": row[2],
-            }
+        return None  # not found in either table
         return None
     except Exception as e:
         logger.warning(f"Failed to retrieve felt memory {memory_id}: {e}")
@@ -404,83 +437,48 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
             lines = [_format_memory(m) for m in bridge_logs]
             sections.append("## From other channels (bridge logs)\n" + "\n".join(lines))
 
-        # 4. Recent moments — shared experiences
-        # Use occurred_at if the column exists, fall back to created_at
+        # 4. Recent episodes — shared experiences (post-migration: episodes table)
         try:
             t0 = _time.time() if debug else 0
             cur = conn.cursor()
 
-            # Check which columns exist (occurred_at from migration 005, superseded from 006)
-            cur.execute("""
-                SELECT column_name FROM information_schema.columns
-                WHERE table_name = 'moments' AND column_name IN ('occurred_at', 'superseded')
-            """)
-            existing_cols = {row[0] for row in cur.fetchall()}
-            has_occurred_at = "occurred_at" in existing_cols
-            has_superseded = "superseded" in existing_cols
-
-            if has_occurred_at and has_superseded:
-                # Time-bucketed sampling: recent (5) + middle (3) + foundational (2)
-                # Ensures temporal coverage across the full memory range instead of
-                # pure recency which buries older foundational moments.
-                cur.execute(
-                    """
-                    WITH ranked AS (
-                        SELECT title, summary, hooks, date, channel, occurred_at, created_at,
-                               ROW_NUMBER() OVER (ORDER BY occurred_at DESC) AS rn,
-                               COUNT(*) OVER () AS total
-                        FROM moments
-                        WHERE NOT superseded
-                    ),
-                    recent AS (
-                        SELECT *, 'recent' AS bucket FROM ranked WHERE rn <= 5
-                    ),
-                    foundational AS (
-                        SELECT *, 'foundational' AS bucket FROM ranked
-                        WHERE rn > total - 2  -- oldest 2
-                        AND rn > 5  -- don't double-count if < 8 total
-                    ),
-                    middle AS (
-                        SELECT *, 'middle' AS bucket FROM ranked
-                        WHERE rn > 5 AND rn <= total - 2
-                        ORDER BY abs(rn - total / 2)
-                        LIMIT 3
-                    )
-                    SELECT title, summary, hooks, date, channel, occurred_at, created_at, bucket
-                    FROM (
-                        SELECT * FROM recent
-                        UNION ALL SELECT * FROM foundational
-                        UNION ALL SELECT * FROM middle
-                    ) combined
-                    ORDER BY occurred_at DESC
-                    """,
+            # Time-bucketed sampling: recent (5) + middle (3) + foundational (2)
+            # Ensures temporal coverage across the full memory range instead of
+            # pure recency which buries older foundational moments.
+            cur.execute(
+                """
+                WITH ranked AS (
+                    SELECT title, summary,
+                           content_signals->>'hooks' AS hooks,
+                           occurred_at AS date, channel, occurred_at, created_at,
+                           ROW_NUMBER() OVER (ORDER BY occurred_at DESC) AS rn,
+                           COUNT(*) OVER () AS total
+                    FROM episodes
+                ),
+                recent AS (
+                    SELECT *, 'recent' AS bucket FROM ranked WHERE rn <= 5
+                ),
+                foundational AS (
+                    SELECT *, 'foundational' AS bucket FROM ranked
+                    WHERE rn > total - 2  -- oldest 2
+                    AND rn > 5  -- don't double-count if < 8 total
+                ),
+                middle AS (
+                    SELECT *, 'middle' AS bucket FROM ranked
+                    WHERE rn > 5 AND rn <= total - 2
+                    ORDER BY abs(rn - total / 2)
+                    LIMIT 3
                 )
-                temporal_filter = "time-bucketed: 5 recent + 3 middle + 2 foundational (excluding superseded)"
-            elif has_occurred_at:
-                # occurred_at exists but superseded doesn't yet (between migrations 005 and 006)
-                cur.execute(
-                    """
-                    SELECT title, summary, hooks, date, channel, occurred_at, created_at
-                    FROM moments
-                    ORDER BY occurred_at DESC
-                    LIMIT 10
-                    """,
-                )
-                temporal_filter = "ORDER BY occurred_at DESC LIMIT 10 (no time cutoff)"
-            else:
-                # Legacy path — filter by created_at with 7-day window
-                cutoff = datetime.now(UTC) - timedelta(days=7)
-                cur.execute(
-                    """
-                    SELECT title, summary, hooks, date, channel, created_at as occurred_at, created_at
-                    FROM moments
-                    WHERE created_at >= %s
-                    ORDER BY date DESC
-                    LIMIT 5
-                    """,
-                    (cutoff,),
-                )
-                temporal_filter = f"WHERE created_at >= {cutoff.isoformat()} LIMIT 5"
+                SELECT title, summary, hooks, date, channel, occurred_at, created_at, bucket
+                FROM (
+                    SELECT * FROM recent
+                    UNION ALL SELECT * FROM foundational
+                    UNION ALL SELECT * FROM middle
+                ) combined
+                ORDER BY occurred_at DESC
+                """,
+            )
+            temporal_filter = "time-bucketed: 5 recent + 3 middle + 2 foundational (from episodes)"
 
             columns = [desc[0] for desc in cur.description]
             moments = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
@@ -510,9 +508,8 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
 
                 diag["sections"].append(
                     {
-                        "name": "moments",
+                        "name": "episodes",
                         "query_ms": round((_time.time() - t0) * 1000, 1),
-                        "has_occurred_at": has_occurred_at,
                         "temporal_filter": temporal_filter,
                         "returned": len(moments),
                         "loaded": len(moments),
@@ -612,44 +609,22 @@ def recall(
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        # Check if superseded column exists (migration 006)
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'moments' AND column_name = 'superseded'
-            )
-        """)
-        has_superseded = cur.fetchone()[0]
-
-        if has_superseded:
-            cur.execute(
-                """
-                SELECT id, title, summary, hooks, date, channel, tags,
-                       transcript_excerpt IS NOT NULL AS has_transcript,
-                       turn_count, estimated_tokens,
-                       1 - (embedding <=> %s::vector) AS similarity
-                FROM moments
-                WHERE embedding IS NOT NULL
-                  AND NOT superseded
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-                """,
-                (query_embedding, query_embedding, limit),
-            )
-        else:
-            cur.execute(
-                """
-                SELECT id, title, summary, hooks, date, channel, tags,
-                       transcript_excerpt IS NOT NULL AS has_transcript,
-                       turn_count, estimated_tokens,
-                       1 - (embedding <=> %s::vector) AS similarity
-                FROM moments
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-                """,
-                (query_embedding, query_embedding, limit),
-            )
+        cur.execute(
+            """
+            SELECT id, title, summary,
+                   content_signals->>'hooks' AS hooks,
+                   occurred_at AS date, channel, topics AS tags,
+                   transcript_excerpt IS NOT NULL AS has_transcript,
+                   (content_signals->>'turn_count')::int AS turn_count,
+                   (content_signals->>'estimated_tokens')::int AS estimated_tokens,
+                   1 - (embedding <=> %s::vector) AS similarity
+            FROM episodes
+            WHERE embedding IS NOT NULL
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (query_embedding, query_embedding, limit),
+        )
 
         columns = [desc[0] for desc in cur.description]
         rows = [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
@@ -707,19 +682,23 @@ def recall_memories(
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
+        # Search reflections + commitments (replaces old memories table)
         cur.execute(
             """
-            SELECT id, agent_id, memory_type, content, source, context,
+            SELECT id, type AS memory_type, content, source,
                    created_at,
                    1 - (embedding <=> %s::vector) AS similarity
-            FROM memories
-            WHERE embedding IS NOT NULL
-              AND memory_type != 'draft'
-              AND agent_id != %s
+            FROM (
+                SELECT id, type, content, source, created_at, embedding
+                FROM reflections WHERE embedding IS NOT NULL
+                UNION ALL
+                SELECT id, type, content, source, created_at, embedding
+                FROM commitments WHERE embedding IS NOT NULL
+            ) combined
             ORDER BY embedding <=> %s::vector
             LIMIT %s
             """,
-            (query_embedding, AGENT_ID, query_embedding, limit),
+            (query_embedding, query_embedding, limit),
         )
 
         columns = [desc[0] for desc in cur.description]
@@ -729,7 +708,7 @@ def recall_memories(
         results = [r for r in rows if r["similarity"] >= similarity_threshold]
 
         if results:
-            descs = ", ".join(f"'{r['memory_type']}' from {r['agent_id']} ({r['similarity']:.2f})" for r in results)
+            descs = ", ".join(f"'{r['memory_type']}' ({r['similarity']:.2f})" for r in results)
             logger.info(f"recall_memories: {len(results)} above threshold: {descs}")
         else:
             logger.info(f"recall_memories: no memories above threshold {similarity_threshold}")
@@ -767,22 +746,17 @@ def list_drafts(status: str | None = "active") -> list[dict]:
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        # Find the head (latest revision) of each draft first, then filter
-        # by status. This prevents stale revisions from leaking through —
-        # e.g. a shelved draft showing up in "active" because an older
-        # active revision passes the filter before DISTINCT ON dedup.
+        # Drafts table has title, status, revision directly as columns.
+        # Group by title (draft_id equivalent) and return latest revision.
         base_query = """
             SELECT * FROM (
-                SELECT DISTINCT ON (context->>'draft_id')
-                       id, context->>'draft_id' AS draft_id,
-                       context->>'title' AS title,
-                       context->>'status' AS status,
-                       COALESCE((context->>'revision')::int, 1) AS revision,
+                SELECT DISTINCT ON (title)
+                       id, title AS draft_id,
+                       title, status, revision,
                        LEFT(content, 300) AS preview,
                        created_at
-                FROM memories
-                WHERE memory_type = 'draft'
-                ORDER BY context->>'draft_id', created_at DESC
+                FROM drafts
+                ORDER BY title, created_at DESC
             ) heads
         """
 
@@ -827,16 +801,12 @@ def read_draft(draft_id: str) -> dict | None:
 
         cur.execute(
             """
-            SELECT id, content, context->>'draft_id' AS draft_id,
-                   context->>'title' AS title,
-                   context->>'status' AS status,
-                   COALESCE((context->>'revision')::int, 1) AS revision,
-                   context->>'what_is_alive' AS what_is_alive,
-                   context->>'what_is_stuck' AS what_is_stuck,
-                   agent_id, created_at
-            FROM memories
-            WHERE memory_type = 'draft'
-              AND context->>'draft_id' = %s
+            SELECT id, content, title AS draft_id,
+                   title, status, revision,
+                   what_is_alive, what_is_stuck,
+                   source AS agent_id, created_at
+            FROM drafts
+            WHERE title = %s
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -869,26 +839,42 @@ def write_draft(
     what_is_alive: str = "",
     what_is_stuck: str = "",
 ) -> dict | None:
-    """Create a new draft. Generates a fresh draft_id.
+    """Create a new draft in the drafts table.
 
     Returns dict with id, draft_id, created_at on success, None on failure.
     """
-    draft_id = str(uuid.uuid4())
-    context = {
-        "draft_id": draft_id,
-        "title": title,
-        "what_is_alive": what_is_alive,
-        "what_is_stuck": what_is_stuck,
-        "status": "active",
-        "revision": 1,
-    }
-    # skip_embedding=True — recall_memories excludes drafts (memory_type != 'draft')
-    # so generating an embedding here would be a wasted Voyage API call.
-    result = write_memory("draft", content, context=context, skip_embedding=True)
-    if result:
-        result["draft_id"] = draft_id
-        logger.info(f"write_draft: created '{title}' as {draft_id}")
-    return result
+    try:
+        import psycopg2
+    except ImportError:
+        return None
+
+    try:
+        config = _get_db_config()
+        conn = psycopg2.connect(**config)
+        cur = conn.cursor()
+        draft_id = str(uuid.uuid4())
+
+        cur.execute(
+            """
+            INSERT INTO drafts (id, title, content, status, revision,
+                                what_is_alive, what_is_stuck, source)
+            VALUES (%s, %s, %s, 'active', 1, %s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (draft_id, title, content, what_is_alive, what_is_stuck, "chat.auran.llc"),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        result = {"id": str(row[0]), "created_at": row[1].isoformat(), "draft_id": title}
+        logger.info(f"write_draft: created '{title}'")
+        return result
+
+    except Exception as e:
+        logger.warning(f"write_draft failed: {e}")
+        return None
 
 
 def revise_draft(
@@ -911,8 +897,7 @@ def revise_draft(
         logger.warning(f"revise_draft: no draft found with id {draft_id}")
         return None
 
-    # Compute next revision atomically from DB to avoid race conditions
-    # where two concurrent revises both read the same prev_revision.
+    # Compute next revision atomically from DB
     try:
         import psycopg2
 
@@ -920,36 +905,51 @@ def revise_draft(
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
         cur.execute(
-            """
-            SELECT COALESCE(MAX((context->>'revision')::int), 0) + 1
-            FROM memories
-            WHERE memory_type = 'draft' AND context->>'draft_id' = %s
-            """,
+            "SELECT COALESCE(MAX(revision), 0) + 1 FROM drafts WHERE title = %s",
             (draft_id,),
         )
         next_revision = cur.fetchone()[0]
+
+        resolved_title = title if title is not None else current.get("title", "")
+        resolved_alive = what_is_alive if what_is_alive is not None else current.get("what_is_alive", "")
+        resolved_stuck = what_is_stuck if what_is_stuck is not None else current.get("what_is_stuck", "")
+        resolved_status = status if status is not None else current.get("status", "active")
+
+        new_id = str(uuid.uuid4())
+        cur.execute(
+            """
+            INSERT INTO drafts (id, title, content, status, revision,
+                                what_is_alive, what_is_stuck, source,
+                                previous_revision)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (
+                new_id,
+                resolved_title,
+                content,
+                resolved_status,
+                next_revision,
+                resolved_alive,
+                resolved_stuck,
+                "chat.auran.llc",
+                current.get("id"),
+            ),
+        )
+        row = cur.fetchone()
+        conn.commit()
         cur.close()
         conn.close()
-    except Exception:
-        # Fallback to non-atomic path if DB query fails
-        next_revision = current.get("revision", 1) + 1
 
-    context = {
-        "draft_id": draft_id,
-        "title": title if title is not None else current.get("title", ""),
-        "what_is_alive": what_is_alive if what_is_alive is not None else current.get("what_is_alive", ""),
-        "what_is_stuck": what_is_stuck if what_is_stuck is not None else current.get("what_is_stuck", ""),
-        "status": status if status is not None else current.get("status", "active"),
-        "revision": next_revision,
-    }
-
-    # skip_embedding=True — drafts are excluded from recall_memories search
-    result = write_memory("draft", content, context=context, skip_embedding=True)
-    if result:
+        result = {"id": str(row[0]), "created_at": row[1].isoformat()}
         result["draft_id"] = draft_id
         result["revision"] = next_revision
-        logger.info(f"revise_draft: '{context['title']}' rev {next_revision}")
-    return result
+        logger.info(f"revise_draft: '{resolved_title}' rev {next_revision}")
+        return result
+
+    except Exception as e:
+        logger.warning(f"revise_draft failed: {e}")
+        return None
 
 
 def reminisce(moment_id: str) -> dict | None:
@@ -972,10 +972,14 @@ def reminisce(moment_id: str) -> dict | None:
 
         cur.execute(
             """
-            SELECT id, title, summary, hooks, date, channel,
-                   transcript_excerpt, transcript_source,
-                   turn_count, estimated_tokens
-            FROM moments
+            SELECT id, title, summary,
+                   content_signals->>'hooks' AS hooks,
+                   occurred_at AS date, channel,
+                   transcript_excerpt,
+                   content_signals->'transcript_source' AS transcript_source,
+                   (content_signals->>'turn_count')::int AS turn_count,
+                   (content_signals->>'estimated_tokens')::int AS estimated_tokens
+            FROM episodes
             WHERE id = %s AND transcript_excerpt IS NOT NULL
             """,
             (moment_id,),
@@ -1262,15 +1266,18 @@ def write_memory(
     embedding: str | None = None,
     skip_embedding: bool = False,
 ) -> dict | None:
-    """Write a single memory to Postgres.
+    """Write a single memory to the correct post-migration table.
+
+    Routes based on memory_type:
+      - observation/insight/self_observation/question/reflection → reflections
+      - intention/position/value → commitments
+      - bridge_log → relays
+      - draft → drafts (prefer write_draft() for new drafts)
 
     Args:
         embedding: Pre-computed pgvector embedding string. If None and
-            skip_embedding is False, generates one synchronously (fine
-            for single writes, use generate_embeddings_batch() for bulk).
-        skip_embedding: If True, don't auto-generate an embedding even
-            when embedding is None. Used by batched callers when the
-            batch already attempted and failed.
+            skip_embedding is False, generates one synchronously.
+        skip_embedding: If True, don't auto-generate an embedding.
 
     Returns {"id": ..., "created_at": ...} on success, None on failure.
     """
@@ -1287,27 +1294,77 @@ def write_memory(
 
         memory_id = str(uuid.uuid4())
 
-        # Use pre-computed embedding if provided, generate if None
-        # (unless skip_embedding — batch already tried and failed)
         if embedding is None and not skip_embedding:
             embedding = generate_embedding(content)
 
-        cur.execute(
-            """
-            INSERT INTO memories (id, agent_id, memory_type, content, source, context, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, created_at
-            """,
-            (
-                memory_id,
-                AGENT_ID,
-                memory_type,
-                content,
-                source,
-                json.dumps(context or {}),
-                embedding,
-            ),
-        )
+        if memory_type in _REFLECTION_TYPES:
+            cur.execute(
+                """
+                INSERT INTO reflections (id, type, content, source, embedding)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, created_at
+                """,
+                (memory_id, memory_type, content, source, embedding),
+            )
+        elif memory_type in _COMMITMENT_TYPES:
+            cur.execute(
+                """
+                INSERT INTO commitments (id, type, content, status, source, embedding)
+                VALUES (%s, %s, %s, 'active', %s, %s)
+                RETURNING id, created_at
+                """,
+                (memory_id, memory_type, content, source, embedding),
+            )
+        elif memory_type == "bridge_log":
+            ctx = context or {}
+            cur.execute(
+                """
+                INSERT INTO relays (id, source_channel, target_channel, content,
+                                    relay_type, embedding)
+                VALUES (%s, %s, %s, %s, 'bridge_log', %s)
+                RETURNING id, created_at
+                """,
+                (
+                    memory_id,
+                    ctx.get("source_channel", source),
+                    ctx.get("target_channel", "unknown"),
+                    content,
+                    embedding,
+                ),
+            )
+        elif memory_type == "draft":
+            # Legacy path — prefer write_draft() directly
+            ctx = context or {}
+            cur.execute(
+                """
+                INSERT INTO drafts (id, title, content, status, revision,
+                                    what_is_alive, what_is_stuck, source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, created_at
+                """,
+                (
+                    memory_id,
+                    ctx.get("title", "Untitled"),
+                    content,
+                    ctx.get("status", "active"),
+                    ctx.get("revision", 1),
+                    ctx.get("what_is_alive", ""),
+                    ctx.get("what_is_stuck", ""),
+                    source,
+                ),
+            )
+        else:
+            # Unknown type — write as reflection with warning
+            logger.warning(f"Unknown memory_type '{memory_type}' — storing as reflection")
+            cur.execute(
+                """
+                INSERT INTO reflections (id, type, content, source, embedding)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, created_at
+                """,
+                (memory_id, memory_type, content, source, embedding),
+            )
+
         row = cur.fetchone()
         conn.commit()
         cur.close()
@@ -1597,10 +1654,10 @@ def _check_duplicate(cur, title: str, moment_date: str, summary: str = "") -> di
     """
     cur.execute(
         """
-        SELECT id, title, summary FROM moments
-        WHERE agent_id = %s AND date = %s
+        SELECT id, title, summary FROM episodes
+        WHERE DATE(occurred_at AT TIME ZONE 'America/New_York') = %s
         """,
-        (AGENT_ID, moment_date),
+        (moment_date,),
     )
     for row in cur.fetchall():
         existing_id, existing_title, existing_summary = str(row[0]), row[1], row[2] or ""
@@ -1637,32 +1694,10 @@ def write_moment(
     turn_count: int | None = None,
     estimated_tokens: int | None = None,
 ) -> dict | None:
-    """Write a scene/moment to the Postgres moments table.
+    """Write a scene/episode to the Postgres episodes table.
 
     Checks for duplicate scenes (same date + similar title) before inserting.
     If a duplicate is found, the write is skipped and None is returned.
-
-    Args:
-        title: Evocative scene title (3-8 words)
-        summary: Re-experiencing layer — emotional texture, quotes, felt sense
-        date: Scene date in YYYY-MM-DD format (derived from occurred_at if not provided)
-        tags: Mixed tags (emotion, topic, temporal, people, setting)
-        hooks: Retrieval layer — terse, keyword-rich factual scaffolding for search
-        occurred_at: When this moment happened (full timestamp). Defaults to now().
-            For live calls this matches created_at. For backfill, this is the
-            transcript timestamp — created_at stays as the insert time.
-        channel: Where this happened (chat, claude-ai, cowork, vr)
-        source: System that created this record
-        embedding: Pre-computed pgvector embedding string. If None and
-            skip_embedding is False, generates one synchronously from
-            summary + hooks.
-        skip_embedding: If True, don't auto-generate an embedding even
-            when embedding is None. Used by batched callers when the
-            batch already attempted and failed.
-        transcript_excerpt: Raw conversation turns for this scene (for vivid recall)
-        transcript_source: Pointer to full transcript file + line range (JSONB)
-        turn_count: Number of conversation turns in the excerpt
-        estimated_tokens: Approximate token count for cost surfacing
 
     Returns:
         {"id": ..., "created_at": ...} on success.
@@ -1672,7 +1707,7 @@ def write_moment(
     try:
         import psycopg2
     except ImportError:
-        logger.warning("psycopg2 not installed — cannot write moment")
+        logger.warning("psycopg2 not installed — cannot write episode")
         return None
 
     try:
@@ -1702,40 +1737,44 @@ def write_moment(
                 "match_type": match_type,
             }
 
-        moment_id = str(uuid.uuid4())
+        episode_id = str(uuid.uuid4())
 
         # Use pre-computed embedding if provided, generate if None
-        # (unless skip_embedding — batch already tried and failed)
         if embedding is None and not skip_embedding:
             embed_text = summary
             if hooks:
                 embed_text += f"\n{hooks}"
             embedding = generate_embedding(embed_text)
 
+        # Store hooks, turn_count, estimated_tokens, transcript_source in content_signals
+        content_signals = {}
+        if hooks:
+            content_signals["hooks"] = hooks
+        if transcript_source:
+            content_signals["transcript_source"] = transcript_source
+        if turn_count is not None:
+            content_signals["turn_count"] = turn_count
+        if estimated_tokens is not None:
+            content_signals["estimated_tokens"] = estimated_tokens
+
         cur.execute(
             """
-            INSERT INTO moments (id, agent_id, title, summary, hooks, date, occurred_at,
-                                 channel, source, tags, embedding,
-                                 transcript_excerpt, transcript_source, turn_count, estimated_tokens)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO episodes (id, title, summary, transcript_excerpt,
+                                  topics, channel, occurred_at,
+                                  content_signals, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, created_at
             """,
             (
-                moment_id,
-                AGENT_ID,
+                episode_id,
                 title,
                 summary,
-                hooks,
-                moment_date,
-                occurred_at,
-                channel,
-                source,
-                tags or [],
-                embedding,
                 transcript_excerpt,
-                json.dumps(transcript_source) if transcript_source else None,
-                turn_count,
-                estimated_tokens,
+                tags or [],
+                channel,
+                occurred_at,
+                json.dumps(content_signals) if content_signals else None,
+                embedding,
             ),
         )
         row = cur.fetchone()
@@ -1744,56 +1783,24 @@ def write_moment(
         conn.close()
 
         result = {"id": str(row[0]), "created_at": row[1].isoformat()}
-        logger.info(f"Wrote moment {result['id']}: {title}")
+        logger.info(f"Wrote episode {result['id']}: {title}")
         return result
 
     except Exception as e:
-        logger.warning(f"Failed to write moment: {e}")
+        logger.warning(f"Failed to write episode: {e}")
         return None
 
 
 def link_moment_memories(moment_id: str, memory_ids: list[str]) -> int:
-    """Link a moment to related memories via the junction table.
+    """No-op — moment_memories junction table removed in schema v1.0.
 
-    Returns count of links created.
+    Episode-reflection relationships will be handled through arc_episodes
+    and retrieval context in future distill service. Keeping the function
+    signature so callers don't break.
     """
-    if not memory_ids:
-        return 0
-
-    try:
-        import psycopg2
-    except ImportError:
-        return 0
-
-    try:
-        config = _get_db_config()
-        conn = psycopg2.connect(**config)
-        cur = conn.cursor()
-        linked = 0
-
-        for memory_id in memory_ids:
-            try:
-                cur.execute(
-                    """
-                    INSERT INTO moment_memories (moment_id, memory_id, relationship)
-                    VALUES (%s, %s, 'extracted_together')
-                    ON CONFLICT (moment_id, memory_id) DO NOTHING
-                    """,
-                    (moment_id, memory_id),
-                )
-                linked += cur.rowcount
-            except Exception as e:
-                conn.rollback()
-                logger.warning(f"Failed to link moment {moment_id} → memory {memory_id}: {e}")
-
-        conn.commit()
-        cur.close()
-        conn.close()
-        return linked
-
-    except Exception as e:
-        logger.warning(f"Failed to link moment memories: {e}")
-        return 0
+    if memory_ids:
+        logger.debug(f"link_moment_memories: skipped {len(memory_ids)} links (junction table removed in schema v1.0)")
+    return 0
 
 
 async def extract_scenes(

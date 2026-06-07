@@ -789,8 +789,8 @@ async def save(request: Request):
 
     Accepts: { "messages": [...] }
     Extracts semantic memories (observations, insights) and episodic scenes
-    (specific moments with quoted dialogue). Scenes are linked to memories
-    via the moment_memories junction table.
+    (specific moments with quoted dialogue). Writes to reflections, commitments,
+    and episodes tables (schema v1.0).
 
     Each extractor tracks its own watermark independently in session.json
     (memory_watermark, scene_watermark). A failure in one extractor doesn't
@@ -957,54 +957,32 @@ async def vitals(request: Request):
 
         cur = conn.cursor()
 
-        # Total memories
-        cur.execute("SELECT COUNT(*) FROM memories")
-        total_memories = cur.fetchone()[0]
+        # Schema v1.0: count reflections + commitments (replaces memories count)
+        cur.execute("SELECT COUNT(*) FROM reflections")
+        total_reflections = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM commitments")
+        total_commitments = cur.fetchone()[0]
+        total_memories = total_reflections + total_commitments
 
-        # Check if superseded column exists (migration 006)
+        # Total episodes (replaces moments count)
+        cur.execute("SELECT COUNT(*) FROM episodes")
+        total_episodes = cur.fetchone()[0]
+
+        # Memory reach — oldest/newest episode
         cur.execute("""
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'moments' AND column_name = 'superseded'
-            )
+            SELECT MIN(COALESCE(occurred_at, created_at))::date,
+                   MAX(COALESCE(occurred_at, created_at))::date
+            FROM episodes
         """)
-        has_superseded = cur.fetchone()[0]
-
-        # Total moments (active vs superseded)
-        if has_superseded:
-            cur.execute("SELECT COUNT(*) FROM moments WHERE NOT superseded")
-            active_moments = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM moments WHERE superseded = TRUE")
-            superseded_moments = cur.fetchone()[0]
-        else:
-            cur.execute("SELECT COUNT(*) FROM moments")
-            active_moments = cur.fetchone()[0]
-            superseded_moments = 0
-        total_moments = active_moments + superseded_moments
-
-        # Memory reach — oldest moment date (active only)
-        if has_superseded:
-            cur.execute("""
-                SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
-                       MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
-                FROM moments
-                WHERE NOT superseded
-            """)
-        else:
-            cur.execute("""
-                SELECT MIN(COALESCE(occurred_at, date::timestamptz, created_at))::date,
-                       MAX(COALESCE(occurred_at, date::timestamptz, created_at))::date
-                FROM moments
-            """)
         row = cur.fetchone()
-        oldest_moment = str(row[0]) if row[0] else None
-        newest_moment = str(row[1]) if row[1] else None
+        oldest_episode = str(row[0]) if row[0] else None
+        newest_episode = str(row[1]) if row[1] else None
 
         # Memory reach in days
-        if oldest_moment:
+        if oldest_episode:
             from datetime import date
 
-            reach_days = (date.today() - date.fromisoformat(oldest_moment)).days
+            reach_days = (date.today() - date.fromisoformat(oldest_episode)).days
         else:
             reach_days = 0
 
@@ -1016,18 +994,18 @@ async def vitals(request: Request):
         orient_ms = round((_time.time() - t0) * 1000, 1)
         orient_chars = len(orient_result)
 
-        # Moments with embeddings vs without
-        cur.execute("SELECT COUNT(*) FROM moments WHERE embedding IS NOT NULL")
-        moments_with_embeddings = cur.fetchone()[0]
+        # Episodes with embeddings vs without
+        cur.execute("SELECT COUNT(*) FROM episodes WHERE embedding IS NOT NULL")
+        episodes_with_embeddings = cur.fetchone()[0]
 
-        # Moments with transcripts
-        cur.execute("SELECT COUNT(*) FROM moments WHERE transcript_excerpt IS NOT NULL")
-        moments_with_transcripts = cur.fetchone()[0]
+        # Episodes with transcripts
+        cur.execute("SELECT COUNT(*) FROM episodes WHERE transcript_excerpt IS NOT NULL")
+        episodes_with_transcripts = cur.fetchone()[0]
 
         # Duplicate check
         cur.execute("""
-            SELECT title, COUNT(*) as n FROM moments
-            GROUP BY title, date HAVING COUNT(*) > 1
+            SELECT title, COUNT(*) as n FROM episodes
+            GROUP BY title HAVING COUNT(*) > 1
         """)
         duplicates = [{"title": row[0], "count": row[1]} for row in cur.fetchall()]
 
@@ -1040,14 +1018,14 @@ async def vitals(request: Request):
         return JSONResponse(
             {
                 "total_memories": total_memories,
-                "total_moments": total_moments,
-                "active_moments": active_moments,
-                "superseded_moments": superseded_moments,
-                "moments_with_embeddings": moments_with_embeddings,
-                "moments_with_transcripts": moments_with_transcripts,
+                "total_reflections": total_reflections,
+                "total_commitments": total_commitments,
+                "total_episodes": total_episodes,
+                "episodes_with_embeddings": episodes_with_embeddings,
+                "episodes_with_transcripts": episodes_with_transcripts,
                 "memory_reach": {
-                    "oldest": oldest_moment,
-                    "newest": newest_moment,
+                    "oldest": oldest_episode,
+                    "newest": newest_episode,
                     "days": reach_days,
                 },
                 "orient_latency_ms": orient_ms,
@@ -1341,13 +1319,15 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
             conn = psycopg2.connect(**config)
             cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM moments WHERE NOT superseded")
-            active = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM memories")
-            memories = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM episodes")
+            episodes = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM reflections")
+            reflections = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM commitments")
+            commitments = cur.fetchone()[0]
             cur.close()
-            lines.append(f"**Active moments:** {active}")
-            lines.append(f"**Total memories:** {memories}")
+            lines.append(f"**Episodes:** {episodes}")
+            lines.append(f"**Reflections:** {reflections} | **Commitments:** {commitments}")
         except Exception as e:
             print(f"[Chat] check_vitals stats failed: {e}")
             lines.append("*(Memory stats unavailable)*")
