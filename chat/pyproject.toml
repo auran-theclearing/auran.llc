@@ -12,6 +12,8 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "voyageai>=0.3.0",
     "neo4j>=5.0.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
 ]
 
 [dependency-groups]
