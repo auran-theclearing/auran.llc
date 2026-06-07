@@ -260,12 +260,13 @@ def _format_memory(mem: dict) -> str:
 
 
 def retrieve_felt_memory(memory_id: str) -> dict | None:
-    """Retrieve a single memory by ID for felt-experience injection.
+    """Retrieve a single felt-experience memory by ID.
+
+    Searches reflections and commitments only — these are the cognitive
+    memories suitable for felt-experience injection. Relays (bridge logs)
+    and drafts are infrastructure/creative artifacts, not felt memories.
 
     Returns a dict with 'content' and 'memory_type', or None if not found.
-    This is used by the felt memory prototype to load a specific memory
-    into conversation history (messages array) rather than the system prompt,
-    testing whether attention position affects felt quality.
     """
     try:
         import psycopg2
@@ -277,7 +278,7 @@ def retrieve_felt_memory(memory_id: str) -> dict | None:
         config = _get_db_config()
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
-        # Check reflections first, then commitments (covers all old memory types)
+        # Check reflections first, then commitments
         for table, type_col in [("reflections", "type"), ("commitments", "type")]:
             cur.execute(
                 f"SELECT {type_col}, content, created_at FROM {table} WHERE id = %s",  # noqa: S608
@@ -294,7 +295,6 @@ def retrieve_felt_memory(memory_id: str) -> dict | None:
                 }
         cur.close()
         conn.close()
-        return None  # not found in either table
         return None
     except Exception as e:
         logger.warning(f"Failed to retrieve felt memory {memory_id}: {e}")
@@ -868,7 +868,7 @@ def write_draft(
         cur.close()
         conn.close()
 
-        result = {"id": str(row[0]), "created_at": row[1].isoformat(), "draft_id": title}
+        result = {"id": str(row[0]), "created_at": row[1].isoformat(), "draft_id": draft_id}
         logger.info(f"write_draft: created '{title}'")
         return result
 
