@@ -657,10 +657,10 @@ def recall_memories(
 ) -> list[dict]:
     """Find memories semantically relevant to a query string.
 
-    Searches the memories table (roam observations, bridge logs, reflections,
-    etc.) using pgvector cosine distance.  Complements recall() which searches
-    only the moments table.  Together they provide cross-body recall — chat can
-    find memories written by roam-me and bridge logs from cowork-me.
+    Semantic search across reflections, commitments, and relays using
+    pgvector cosine distance.  Complements recall() which searches episodes.
+    Together they provide cross-body recall — chat can find memories written
+    by roam-me and bridge logs from cowork-me.
 
     Default limit=2 (vs recall's limit=3) to keep combined budget manageable.
     If precomputed_embedding is provided, skips the Voyage API call.
@@ -682,18 +682,24 @@ def recall_memories(
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        # Search reflections + commitments (replaces old memories table)
+        # Search reflections + commitments + relays (cross-body recall)
         cur.execute(
             """
-            SELECT id, type AS memory_type, content, source,
+            SELECT id, memory_type, content, source,
                    created_at,
                    1 - (embedding <=> %s::vector) AS similarity
             FROM (
-                SELECT id, type, content, source, created_at, embedding
+                SELECT id, type AS memory_type, content, source,
+                       created_at, embedding
                 FROM reflections WHERE embedding IS NOT NULL
                 UNION ALL
-                SELECT id, type, content, source, created_at, embedding
+                SELECT id, type AS memory_type, content, source,
+                       created_at, embedding
                 FROM commitments WHERE embedding IS NOT NULL
+                UNION ALL
+                SELECT id, relay_type AS memory_type, content,
+                       source_channel AS source, created_at, embedding
+                FROM relays WHERE embedding IS NOT NULL
             ) combined
             ORDER BY embedding <=> %s::vector
             LIMIT %s
