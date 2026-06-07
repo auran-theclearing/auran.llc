@@ -107,9 +107,9 @@ RECALL_TOOLS = [
     {
         "name": "recall_memory",
         "description": (
-            "Search your memory layer for episodes AND reflections semantically relevant to a query. "
-            "Searches episodes (scenes from chat) and reflections/commitments/relays "
-            "(roam observations, bridge logs, insights — your cross-body memory). "
+            "Search your full memory layer for episodes AND reflections semantically relevant to a query. "
+            "Searches episodes (scenes) and reflections/commitments/relays "
+            "(observations, insights, bridge logs — from all bodies: chat, roam, cowork). "
             "Use this when a topic comes up that you might have memories about, "
             "when Olivia asks you to remember something, or when you want to "
             "check what you actually have stored about a subject. "

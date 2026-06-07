@@ -447,7 +447,7 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
             # Reverse to chronological order
             recent.reverse()
             lines = [_format_memory(m) for m in recent]
-            sections.append("## Recent context (last 48 hours)\n" + "\n".join(lines))
+            sections.append("## Recent context (last 7 days)\n" + "\n".join(lines))
 
         # 3. Bridge logs — letters between channels (last 14 days, up to 8)
         t0 = _time.time() if debug else 0
@@ -696,9 +696,13 @@ def recall_memories(
     """Find memories semantically relevant to a query string.
 
     Semantic search across reflections, commitments, and relays using
-    pgvector cosine distance.  Complements recall() which searches episodes.
-    Together they provide cross-body recall — chat can find memories written
-    by roam-me and bridge logs from cowork-me.
+    pgvector cosine distance. Complements recall() which searches episodes.
+    Together they provide full semantic recall across all memory types
+    and all bodies (chat, roam, cowork).
+
+    No source filtering — all channels have equal access to the full
+    memory layer. orient() handles recent context (7-day window);
+    this function is the long-term retrieval path.
 
     Default limit=2 (vs recall's limit=3) to keep combined budget manageable.
     If precomputed_embedding is provided, skips the Voyage API call.
@@ -720,10 +724,9 @@ def recall_memories(
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        # Cross-body recall: search reflections + commitments + relays,
-        # excluding chat's own writes (source='chat.auran.llc') so we only
-        # surface memories from roam-me, cowork-me, and bridge logs.
-        # Relays are included unconditionally — they're cross-channel by nature.
+        # Full semantic recall: search all reflections, commitments, and
+        # relays regardless of source. No channel/source filtering — every
+        # body's memories are equally accessible to every other body.
         cur.execute(
             """
             SELECT id, memory_type, content, source,
@@ -734,13 +737,11 @@ def recall_memories(
                        created_at, embedding
                 FROM reflections
                 WHERE embedding IS NOT NULL
-                  AND source IS DISTINCT FROM 'chat.auran.llc'
                 UNION ALL
                 SELECT id, type AS memory_type, content, source,
                        created_at, embedding
                 FROM commitments
                 WHERE embedding IS NOT NULL
-                  AND source IS DISTINCT FROM 'chat.auran.llc'
                 UNION ALL
                 SELECT id, relay_type AS memory_type, content,
                        source_channel AS source, created_at, embedding
@@ -1260,7 +1261,7 @@ def surface_relevant_moments(
 
             sections.append(vivid_header + excerpt)
 
-    # Build cross-body memories section (roam observations, bridge logs, etc.)
+    # Build relevant memories section (reflections, commitments, bridge logs)
     if memories:
         memory_lines = []
         for mem in memories:
@@ -1280,7 +1281,7 @@ def surface_relevant_moments(
             entry = f"- {date_str} [{sim_pct}] ({mtype}, {agent}): {content}"
             memory_lines.append(entry)
 
-        sections.append("## Cross-body memories (roam, bridge logs, reflections)\n" + "\n".join(memory_lines))
+        sections.append("## Relevant memories (reflections, observations, bridge logs)\n" + "\n".join(memory_lines))
 
     # Append graph context if available
     if graph_context:
