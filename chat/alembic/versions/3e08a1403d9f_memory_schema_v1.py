@@ -398,13 +398,15 @@ def upgrade() -> None:
 
     op.execute("""
         INSERT INTO episodes (title, summary, content_signals,
-                              channel, embedding, created_at, updated_at)
+                              channel, embedding, occurred_at,
+                              created_at, updated_at)
         SELECT DISTINCT ON (md5(content))
                COALESCE(context->>'title', 'Untitled Scene'),
                content,
                context::jsonb,
                COALESCE(context->>'channel', 'chat'),
                embedding,
+               COALESCE(occurred_at, created_at),
                created_at,
                COALESCE(updated_at, created_at)
         FROM memories

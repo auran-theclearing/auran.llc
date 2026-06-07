@@ -1430,16 +1430,13 @@ def write_memory(
                 ),
             )
         else:
-            # Unknown type — write as reflection with warning
-            logger.warning(f"Unknown memory_type '{memory_type}' — storing as reflection")
-            cur.execute(
-                """
-                INSERT INTO reflections (id, type, content, source, embedding)
-                VALUES (%s, %s, %s, %s, %s)
-                RETURNING id, created_at
-                """,
-                (memory_id, memory_type, content, source, embedding),
-            )
+            # Fail loud on unknown types — same principle as normalize_channel.
+            # Silent coercion into reflections would leak mis-typed rows into
+            # recall_memories results and poison semantic search.
+            valid_types = sorted(_REFLECTION_TYPES | _COMMITMENT_TYPES | {"bridge_log", "draft"})
+            cur.close()
+            conn.close()
+            raise ValueError(f"Unknown memory_type {memory_type!r} — valid types: {valid_types}")
 
         row = cur.fetchone()
         conn.commit()
@@ -1726,8 +1723,11 @@ def _check_duplicate(cur, title: str, moment_date: str, summary: str = "") -> di
     1. Title Jaccard >= 0.5 — catches re-extractions with same/similar titles
     2. Summary SequenceMatcher >= 0.6 — catches re-extractions with different titles
 
-    Dedup is cross-body (no agent_id filter) — episodes are unified, so
-    a scene extracted by roam should dedup against one extracted by chat.
+    Dedup is cross-body AND cross-channel — episodes are unified, so the
+    same scene observed from different bodies (roam, chat) or channels
+    (chat, cowork) should dedup to one episode. A cowork bridge log about
+    the same conversation chat already extracted is a duplicate, not a
+    separate episode.
 
     Returns the existing moment dict if a duplicate is found, None otherwise.
     """
