@@ -28,18 +28,18 @@ Data accounting (pre-migration -> post-migration):
   Total: 1,610 + 37 + 3 + 587 = 2,237
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "3e08a1403d9f"
-down_revision: Union[str, Sequence[str], None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -56,8 +56,6 @@ COMMITMENT_TYPES = ("intention", "position", "value")
 
 
 def upgrade() -> None:
-    conn = op.get_bind()
-
     # -----------------------------------------------------------------------
     # 1. Create new tables
     # -----------------------------------------------------------------------
@@ -227,14 +225,18 @@ def upgrade() -> None:
 
     op.create_foreign_key(
         "fk_messages_author_id",
-        "messages", "people",
-        ["author_id"], ["id"],
+        "messages",
+        "people",
+        ["author_id"],
+        ["id"],
         ondelete="SET NULL",
     )
     op.create_foreign_key(
         "fk_messages_reply_to",
-        "messages", "messages",
-        ["reply_to"], ["id"],
+        "messages",
+        "messages",
+        ["reply_to"],
+        ["id"],
     )
 
     # Backfill author_id based on role
@@ -272,7 +274,7 @@ def upgrade() -> None:
                embedding, created_at, COALESCE(updated_at, created_at)
         FROM memories
         WHERE memory_type IN {ref_types}
-    """)
+    """)  # noqa: S608 — hardcoded constants, not user input
 
     # -----------------------------------------------------------------------
     # 5. Migrate memories -> commitments
@@ -294,7 +296,7 @@ def upgrade() -> None:
                embedding, created_at, COALESCE(updated_at, created_at)
         FROM memories
         WHERE memory_type IN {com_types}
-    """)
+    """)  # noqa: S608 — hardcoded constants, not user input
 
     # -----------------------------------------------------------------------
     # 6. Migrate memories -> drafts
@@ -415,10 +417,10 @@ def upgrade() -> None:
     # -----------------------------------------------------------------------
 
     for old_val, new_val in CHANNEL_MAP.items():
-        op.execute(f"UPDATE episodes SET channel = '{new_val}' WHERE channel = '{old_val}'")
-        op.execute(f"UPDATE conversations SET channel = '{new_val}' WHERE channel = '{old_val}'")
-        op.execute(f"UPDATE relays SET source_channel = '{new_val}' WHERE source_channel = '{old_val}'")
-        op.execute(f"UPDATE relays SET target_channel = '{new_val}' WHERE target_channel = '{old_val}'")
+        op.execute(f"UPDATE episodes SET channel = '{new_val}' WHERE channel = '{old_val}'")  # noqa: S608
+        op.execute(f"UPDATE conversations SET channel = '{new_val}' WHERE channel = '{old_val}'")  # noqa: S608
+        op.execute(f"UPDATE relays SET source_channel = '{new_val}' WHERE source_channel = '{old_val}'")  # noqa: S608
+        op.execute(f"UPDATE relays SET target_channel = '{new_val}' WHERE target_channel = '{old_val}'")  # noqa: S608
 
     # -----------------------------------------------------------------------
     # 12. Create indexes

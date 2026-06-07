@@ -37,7 +37,6 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.types import DateTime, UserDefinedType
 
-
 # ---------------------------------------------------------------------------
 # Custom type for pgvector
 # ---------------------------------------------------------------------------
