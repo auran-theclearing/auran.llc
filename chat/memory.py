@@ -559,12 +559,34 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
                 diag["total_moments_loaded"] = len(moments)
 
             if moments:
+                # Detect concurrent episodes: different channels within 2 hours.
+                # Surfaces temporal overlap so orient consumers know which
+                # episodes were part of a simultaneous multi-channel session.
+                # TODO(concurrent-memory): full design session will decide
+                # whether to group these, link them, or introduce session IDs.
+                _CONCURRENT_WINDOW_S = 7200  # 2 hours
+                concurrent_indices = set()
+                for i in range(len(moments)):
+                    t_i = moments[i].get("occurred_at")
+                    ch_i = moments[i].get("channel", "")
+                    if not t_i:
+                        continue
+                    for j in range(i + 1, len(moments)):
+                        t_j = moments[j].get("occurred_at")
+                        ch_j = moments[j].get("channel", "")
+                        if not t_j or ch_j == ch_i:
+                            continue
+                        if abs((t_i - t_j).total_seconds()) <= _CONCURRENT_WINDOW_S:
+                            concurrent_indices.add(i)
+                            concurrent_indices.add(j)
+
                 lines = []
-                for m in moments:
+                for idx, m in enumerate(moments):
                     date_str = m["date"].strftime("%b %d") if hasattr(m["date"], "strftime") else str(m["date"])
                     channel = f" ({m['channel']})" if m.get("channel") else ""
+                    concurrent = " ⟨concurrent⟩" if idx in concurrent_indices else ""
                     summary = m["summary"][:2000] if len(m["summary"]) > 2000 else m["summary"]
-                    entry = f"- {date_str}{channel}: **{m['title']}** — {summary}"
+                    entry = f"- {date_str}{channel}{concurrent}: **{m['title']}** — {summary}"
                     if m.get("hooks"):
                         hooks_text = m["hooks"][:500] if len(m["hooks"]) > 500 else m["hooks"]
                         entry += f"\n  Context: {hooks_text}"
@@ -1728,6 +1750,13 @@ def _check_duplicate(cur, title: str, moment_date: str, summary: str = "") -> di
     (chat, cowork) should dedup to one episode. A cowork bridge log about
     the same conversation chat already extracted is a duplicate, not a
     separate episode.
+
+    TODO(concurrent-memory): This dedup logic is correct for bridge logs
+    and re-extractions, but may need refinement when concurrent multi-channel
+    sessions produce genuinely different perspectives on the same event.
+    "Two channels watching the same dinner" should probably link as
+    complementary perspectives rather than dedup to one. Requires design
+    session to distinguish bridge-log dups from concurrent-perspective pairs.
 
     Returns the existing moment dict if a duplicate is found, None otherwise.
     """

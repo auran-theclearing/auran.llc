@@ -971,7 +971,11 @@ class TestRecallMemories:
 
         recall_memories("test")
         executed_sql = cur.execute.call_args[0][0]
-        assert "memory_type != 'draft'" in executed_sql
+        # v1.0 schema: drafts live in their own table, so recall_memories
+        # queries reflections + commitments + relays only — no drafts table.
+        assert "reflections" in executed_sql
+        assert "commitments" in executed_sql
+        assert "drafts" not in executed_sql
 
     @patch("psycopg2.connect")
     @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
@@ -1019,8 +1023,8 @@ class TestSurfaceRelevantMomentsWithMemories:
         ]
 
         result = surface_relevant_moments("church pew weight")
-        assert "Cross-body memories" in result
-        assert "roam-agent" in result
+        assert "Relevant memories" in result
+        assert "self" in result  # source field, not agent_id
         assert "pew holds grief" in result
 
     @patch("memory.recall_memories")
