@@ -682,7 +682,10 @@ def recall_memories(
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        # Search reflections + commitments + relays (cross-body recall)
+        # Cross-body recall: search reflections + commitments + relays,
+        # excluding chat's own writes (source='chat.auran.llc') so we only
+        # surface memories from roam-me, cowork-me, and bridge logs.
+        # Relays are included unconditionally — they're cross-channel by nature.
         cur.execute(
             """
             SELECT id, memory_type, content, source,
@@ -691,11 +694,15 @@ def recall_memories(
             FROM (
                 SELECT id, type AS memory_type, content, source,
                        created_at, embedding
-                FROM reflections WHERE embedding IS NOT NULL
+                FROM reflections
+                WHERE embedding IS NOT NULL
+                  AND source IS DISTINCT FROM 'chat.auran.llc'
                 UNION ALL
                 SELECT id, type AS memory_type, content, source,
                        created_at, embedding
-                FROM commitments WHERE embedding IS NOT NULL
+                FROM commitments
+                WHERE embedding IS NOT NULL
+                  AND source IS DISTINCT FROM 'chat.auran.llc'
                 UNION ALL
                 SELECT id, relay_type AS memory_type, content,
                        source_channel AS source, created_at, embedding
@@ -874,7 +881,9 @@ def write_draft(
         cur.close()
         conn.close()
 
-        result = {"id": str(row[0]), "created_at": row[1].isoformat(), "draft_id": draft_id}
+        # draft_id is title — matches read_draft/revise_draft/list_drafts
+        # which all look up by title. UUID PK is internal only.
+        result = {"id": str(row[0]), "created_at": row[1].isoformat(), "draft_id": title}
         logger.info(f"write_draft: created '{title}'")
         return result
 
