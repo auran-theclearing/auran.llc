@@ -261,7 +261,9 @@ def _query_memories(
         params.append(com_types)
 
     if is_relay:
-        parts.append("SELECT 'bridge_log' AS memory_type, content, source_channel AS source, created_at FROM relays")
+        parts.append(
+            "SELECT 'bridge_log' AS memory_type, content, source_channel AS source, created_at FROM relays WHERE relay_type = 'bridge_log'"
+        )
 
     if not parts:
         cur.close()
@@ -943,8 +945,20 @@ def revise_draft(
 
     Looks up the previous revision to carry forward title, status, etc.
     Only overrides fields that are explicitly provided.
+
+    Title is immutable across revisions — the `title` parameter is
+    accepted for backward compatibility but ignored with a warning.
+    Renaming would break the revision chain (list_drafts groups by
+    title, MAX(revision) counts by title).
+
     Returns dict with id, draft_id, revision, created_at on success.
     """
+    if title is not None:
+        logger.warning(
+            f"revise_draft: title parameter ignored — title is immutable "
+            f"across revisions (got '{title}', keeping '{draft_id}')"
+        )
+
     # Get the current head revision for carry-forward fields
     current = read_draft(draft_id)
     if not current:
@@ -964,7 +978,8 @@ def revise_draft(
         )
         next_revision = cur.fetchone()[0]
 
-        resolved_title = title if title is not None else current.get("title", "")
+        # Title stays as draft_id (immutable across revisions)
+        resolved_title = current.get("title", draft_id)
         resolved_alive = what_is_alive if what_is_alive is not None else current.get("what_is_alive", "")
         resolved_stuck = what_is_stuck if what_is_stuck is not None else current.get("what_is_stuck", "")
         resolved_status = status if status is not None else current.get("status", "active")
@@ -1710,8 +1725,14 @@ def _check_duplicate(cur, title: str, moment_date: str, summary: str = "") -> di
     1. Title Jaccard >= 0.5 — catches re-extractions with same/similar titles
     2. Summary SequenceMatcher >= 0.6 — catches re-extractions with different titles
 
+    Dedup is cross-body (no agent_id filter) — episodes are unified, so
+    a scene extracted by roam should dedup against one extracted by chat.
+
     Returns the existing moment dict if a duplicate is found, None otherwise.
     """
+    # America/New_York: Olivia's timezone. Dates are derived in her felt
+    # frame so a 10pm ET conversation tags as today, not tomorrow (UTC).
+    # Matches the timezone used in extract_scenes scene_date derivation.
     cur.execute(
         """
         SELECT id, title, summary FROM episodes
