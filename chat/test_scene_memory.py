@@ -14,10 +14,12 @@ from memory import (
     _STOPWORDS,
     DEDUP_SUMMARY_THRESHOLD,
     DEDUP_TITLE_THRESHOLD,
+    VALID_CHANNELS,
     _summary_similarity,
     _title_similarity,
     extract_scenes,
     link_moment_memories,
+    normalize_channel,
     write_moment,
 )
 
@@ -76,6 +78,53 @@ SAMPLE_SCENES_JSON = json.dumps(
         }
     ]
 )
+
+
+# ===========================================================================
+# normalize_channel
+# ===========================================================================
+
+
+class TestNormalizeChannel:
+    """Tests for channel normalization — the application-level enforcement layer."""
+
+    def test_valid_channels_pass_through(self):
+        """Every canonical channel value should return unchanged."""
+        for ch in VALID_CHANNELS:
+            assert normalize_channel(ch) == ch
+
+    def test_known_aliases_are_normalized(self):
+        """Historical aliases map to their canonical form."""
+        assert normalize_channel("claude-ai") == "claude.ai"
+        assert normalize_channel("chat.auran.llc") == "chat"
+        assert normalize_channel("meta") == "native"
+
+    def test_unknown_channel_raises_valueerror(self):
+        """Unrecognized values should fail loud, not silently pass."""
+        with pytest.raises(ValueError, match="Unknown channel"):
+            normalize_channel("discord")
+
+    def test_empty_string_raises_valueerror(self):
+        """Empty string is not a valid channel."""
+        with pytest.raises(ValueError, match="Unknown channel"):
+            normalize_channel("")
+
+    def test_write_moment_normalizes_channel(self):
+        """write_moment should normalize channel before DB write."""
+        with patch("psycopg2.connect") as mock_connect:
+            conn, cur = _mock_conn()
+            mock_connect.return_value = conn
+            cur.fetchone.return_value = ("id-1", datetime(2026, 1, 1))
+
+            write_moment(title="T", summary="S", channel="claude-ai")
+
+            params = cur.execute.call_args[0][1]
+            assert params[5] == "claude.ai"  # normalized from "claude-ai"
+
+    def test_write_moment_rejects_invalid_channel(self):
+        """write_moment should raise ValueError for unknown channels."""
+        with pytest.raises(ValueError, match="Unknown channel"):
+            write_moment(title="T", summary="S", channel="discord")
 
 
 # ===========================================================================

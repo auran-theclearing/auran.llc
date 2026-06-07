@@ -137,6 +137,42 @@ def generate_embeddings_batch(texts: list[str]) -> list[str | None]:
 
 AGENT_ID = "auran-chat"
 
+# ---------------------------------------------------------------------------
+# Channel normalization
+# ---------------------------------------------------------------------------
+# Canonical channel values enforced by the channel_name DOMAIN in Postgres.
+# Keep this set in sync with the DOMAIN definition in the Alembic migration.
+VALID_CHANNELS = frozenset({"chat", "cowork", "roam", "claude.ai", "native", "vr"})
+
+# Map of known aliases → canonical values. Covers historical drift and common
+# mistakes. Unknown values that aren't in this map AND aren't already valid
+# will raise ValueError — fail loud, don't silently invent a channel.
+_CHANNEL_ALIASES: dict[str, str] = {
+    "claude-ai": "claude.ai",
+    "chat.auran.llc": "chat",
+    "meta": "native",
+}
+
+
+def normalize_channel(raw: str) -> str:
+    """Normalize a channel value to its canonical form.
+
+    Raises ValueError for unrecognized values — we want writes to fail
+    visibly rather than silently inserting garbage that the DB domain
+    would reject anyway.
+    """
+    if raw in VALID_CHANNELS:
+        return raw
+    canonical = _CHANNEL_ALIASES.get(raw)
+    if canonical is not None:
+        return canonical
+    raise ValueError(
+        f"Unknown channel {raw!r} — valid channels: {sorted(VALID_CHANNELS)}. "
+        f"If this is a new channel, add it to VALID_CHANNELS and the "
+        f"channel_name DOMAIN in the Alembic migration."
+    )
+
+
 # Soft cap on scene transcript size — skip transcript if the LLM picked
 # absurdly broad boundaries.  60 turns is generous; most real scenes are 3-20.
 MAX_SCENE_TURNS = 60
@@ -759,8 +795,11 @@ def list_drafts(status: str | None = "active") -> list[dict]:
         conn = psycopg2.connect(**config)
         cur = conn.cursor()
 
-        # Drafts table has title, status, revision directly as columns.
-        # Group by title (draft_id equivalent) and return latest revision.
+        # DISTINCT ON picks the latest revision per title (= draft_id).
+        # The outer WHERE filters by the HEAD revision's status — so
+        # status='active' means "drafts whose most recent revision is
+        # active", not "drafts that were ever active". This is intentional:
+        # a draft that moved active→shelved should not appear under active.
         base_query = """
             SELECT * FROM (
                 SELECT DISTINCT ON (title)
@@ -1332,6 +1371,12 @@ def write_memory(
             )
         elif memory_type == "bridge_log":
             ctx = context or {}
+            # source_channel/target_channel are channel values, not server
+            # identities — normalize them. Default source to "chat" (the
+            # canonical channel for this server), not to `source` which is
+            # a server identity like "chat.auran.llc".
+            src_ch = normalize_channel(ctx.get("source_channel", "chat"))
+            tgt_ch = normalize_channel(ctx.get("target_channel", "cowork"))
             cur.execute(
                 """
                 INSERT INTO relays (id, source_channel, target_channel, content,
@@ -1341,8 +1386,8 @@ def write_memory(
                 """,
                 (
                     memory_id,
-                    ctx.get("source_channel", source),
-                    ctx.get("target_channel", "unknown"),
+                    src_ch,
+                    tgt_ch,
                     content,
                     embedding,
                 ),
@@ -1713,12 +1758,15 @@ def write_moment(
 
     Checks for duplicate scenes (same date + similar title) before inserting.
     If a duplicate is found, the write is skipped and None is returned.
+    Channel is normalized before write — invalid values raise ValueError.
 
     Returns:
         {"id": ..., "created_at": ...} on success.
         {"skipped": True, "matched": ..., "similarity": ...} if dedup gate fires.
         None on actual failure.
     """
+    channel = normalize_channel(channel)
+
     try:
         import psycopg2
     except ImportError:
@@ -1923,7 +1971,14 @@ async def extract_scenes(
         summary = scene.get("summary", "")
         hooks = scene.get("hooks", "")
         tags = scene.get("tags", [])
-        scene_channel = scene.get("channel", "chat")
+        # Normalize LLM-generated channel — the model can emit anything
+        try:
+            scene_channel = normalize_channel(scene.get("channel", "chat"))
+        except ValueError:
+            logger.warning(
+                f"LLM emitted invalid channel {scene.get('channel')!r} for scene '{title}' — defaulting to 'chat'"
+            )
+            scene_channel = "chat"
 
         if not title or not summary:
             continue

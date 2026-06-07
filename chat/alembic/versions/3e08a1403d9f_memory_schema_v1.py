@@ -326,8 +326,8 @@ def upgrade() -> None:
         INSERT INTO relays (id, source_channel, target_channel, content,
                             relay_type, embedding, created_at)
         SELECT id,
-               COALESCE(context->>'source_channel', source, 'unknown'),
-               COALESCE(context->>'target_channel', 'unknown'),
+               COALESCE(context->>'source_channel', 'chat'),
+               COALESCE(context->>'target_channel', 'cowork'),
                content,
                'bridge_log',
                embedding,
@@ -403,7 +403,7 @@ def upgrade() -> None:
                COALESCE(context->>'title', 'Untitled Scene'),
                content,
                context::jsonb,
-               COALESCE(context->>'channel', 'unknown'),
+               COALESCE(context->>'channel', 'chat'),
                embedding,
                created_at,
                COALESCE(updated_at, created_at)
