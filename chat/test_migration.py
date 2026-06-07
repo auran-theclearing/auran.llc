@@ -104,11 +104,13 @@ def _table_exists(db, table_name):
 # ===========================================================================
 # PRE-MIGRATION STATE VERIFICATION
 # ===========================================================================
-# These tests confirm our assumptions about the current data.
-# They should PASS before migration, validating the numbers we're
-# building test assertions against.
+# These tests confirmed our assumptions about the data BEFORE migration.
+# They passed during TIV Phase 1 (Test), validating the numbers we built
+# post-migration assertions against. Now that old tables are dropped,
+# they're skipped — kept as documentation of what we verified.
 
 
+@pytest.mark.skip(reason="Pre-migration: old tables (memories/moments/events) dropped by migration")
 class TestPreMigrationState:
     """Verify current DB state matches the handoff's documented values."""
 

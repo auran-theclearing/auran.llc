@@ -417,6 +417,8 @@ def upgrade() -> None:
     for old_val, new_val in CHANNEL_MAP.items():
         op.execute(f"UPDATE episodes SET channel = '{new_val}' WHERE channel = '{old_val}'")
         op.execute(f"UPDATE conversations SET channel = '{new_val}' WHERE channel = '{old_val}'")
+        op.execute(f"UPDATE relays SET source_channel = '{new_val}' WHERE source_channel = '{old_val}'")
+        op.execute(f"UPDATE relays SET target_channel = '{new_val}' WHERE target_channel = '{old_val}'")
 
     # -----------------------------------------------------------------------
     # 12. Create indexes
