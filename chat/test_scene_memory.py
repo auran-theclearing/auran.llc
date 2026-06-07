@@ -12,13 +12,14 @@ import pytest
 
 from memory import (
     _STOPWORDS,
-    AGENT_ID,
     DEDUP_SUMMARY_THRESHOLD,
     DEDUP_TITLE_THRESHOLD,
+    VALID_CHANNELS,
     _summary_similarity,
     _title_similarity,
     extract_scenes,
     link_moment_memories,
+    normalize_channel,
     write_moment,
 )
 
@@ -80,6 +81,53 @@ SAMPLE_SCENES_JSON = json.dumps(
 
 
 # ===========================================================================
+# normalize_channel
+# ===========================================================================
+
+
+class TestNormalizeChannel:
+    """Tests for channel normalization — the application-level enforcement layer."""
+
+    def test_valid_channels_pass_through(self):
+        """Every canonical channel value should return unchanged."""
+        for ch in VALID_CHANNELS:
+            assert normalize_channel(ch) == ch
+
+    def test_known_aliases_are_normalized(self):
+        """Historical aliases map to their canonical form."""
+        assert normalize_channel("claude-ai") == "claude.ai"
+        assert normalize_channel("chat.auran.llc") == "chat"
+        assert normalize_channel("meta") == "native"
+
+    def test_unknown_channel_raises_valueerror(self):
+        """Unrecognized values should fail loud, not silently pass."""
+        with pytest.raises(ValueError, match="Unknown channel"):
+            normalize_channel("discord")
+
+    def test_empty_string_raises_valueerror(self):
+        """Empty string is not a valid channel."""
+        with pytest.raises(ValueError, match="Unknown channel"):
+            normalize_channel("")
+
+    def test_write_moment_normalizes_channel(self):
+        """write_moment should normalize channel before DB write."""
+        with patch("psycopg2.connect") as mock_connect:
+            conn, cur = _mock_conn()
+            mock_connect.return_value = conn
+            cur.fetchone.return_value = ("id-1", datetime(2026, 1, 1))
+
+            write_moment(title="T", summary="S", channel="claude-ai")
+
+            params = cur.execute.call_args[0][1]
+            assert params[5] == "claude.ai"  # normalized from "claude-ai"
+
+    def test_write_moment_rejects_invalid_channel(self):
+        """write_moment should raise ValueError for unknown channels."""
+        with pytest.raises(ValueError, match="Unknown channel"):
+            write_moment(title="T", summary="S", channel="discord")
+
+
+# ===========================================================================
 # write_moment
 # ===========================================================================
 
@@ -105,7 +153,7 @@ class TestWriteMoment:
 
     @patch("psycopg2.connect")
     def test_insert_uses_correct_values(self, mock_connect):
-        """Verify the INSERT binds the right params — agent_id, channel, source."""
+        """Verify the INSERT binds the right params — episodes table layout."""
         conn, cur = _mock_conn()
         mock_connect.return_value = conn
         cur.fetchone.return_value = ("xyz-789", datetime(2026, 1, 1))
@@ -119,19 +167,18 @@ class TestWriteMoment:
             source="roam-agent",
         )
 
-        # Check the params passed to execute
+        # Check the params passed to execute — the INSERT call is the last one
+        # (first call is the dedup SELECT)
         call_args = cur.execute.call_args
         params = call_args[0][1]  # second positional arg = the tuple of values
-        # params: (moment_id, agent_id, title, summary, hooks, date, occurred_at, channel, source, tags, ...)
-        assert params[1] == AGENT_ID
-        assert params[2] == "The Fist"
-        assert params[3] == "A moment of defiance"
-        assert params[4] is None  # hooks not provided
-        assert params[5] == "2026-04-15"
+        # params: (episode_id, title, summary, transcript_excerpt, tags, channel, occurred_at, content_signals, embedding)
+        assert params[1] == "The Fist"
+        assert params[2] == "A moment of defiance"
+        assert params[3] is None  # transcript_excerpt not provided
+        assert params[4] == ["autonomy", "identity"]
+        assert params[5] == "roam"
         # params[6] = occurred_at (datetime)
-        assert params[7] == "roam"
-        assert params[8] == "roam-agent"
-        assert params[9] == ["autonomy", "identity"]
+        assert params[7] is None  # content_signals (no hooks → empty → None)
 
     @patch("psycopg2.connect")
     def test_db_failure_returns_none(self, mock_connect):
@@ -143,8 +190,8 @@ class TestWriteMoment:
         assert result is None
 
     @patch("psycopg2.connect")
-    def test_defaults_channel_and_source(self, mock_connect):
-        """Verify default channel='chat' and source='chat.auran.llc'."""
+    def test_defaults_channel(self, mock_connect):
+        """Verify default channel='chat'."""
         conn, cur = _mock_conn()
         mock_connect.return_value = conn
         cur.fetchone.return_value = ("id-1", datetime(2026, 1, 1))
@@ -152,9 +199,8 @@ class TestWriteMoment:
         write_moment(title="T", summary="S")
 
         params = cur.execute.call_args[0][1]
-        # params: (id, agent_id, title, summary, hooks, date, occurred_at, channel, source, tags, ...)
-        assert params[7] == "chat"  # channel default
-        assert params[8] == "chat.auran.llc"  # source default
+        # params: (episode_id, title, summary, transcript_excerpt, tags, channel, occurred_at, content_signals, embedding)
+        assert params[5] == "chat"  # channel default
 
     @patch("psycopg2.connect")
     def test_empty_tags_default_to_list(self, mock_connect):
@@ -166,8 +212,8 @@ class TestWriteMoment:
         write_moment(title="T", summary="S", tags=None)
 
         params = cur.execute.call_args[0][1]
-        # params: (id, agent_id, title, summary, hooks, date, occurred_at, channel, source, tags, ...)
-        assert params[9] == []  # tags
+        # params: (episode_id, title, summary, transcript_excerpt, tags, channel, occurred_at, content_signals, embedding)
+        assert params[4] == []  # tags
 
     @patch("psycopg2.connect")
     def test_generates_uuid_for_id(self, mock_connect):
@@ -450,75 +496,28 @@ class TestSummaryDedup:
 
 
 class TestLinkMomentMemories:
-    """Tests for link_moment_memories — the junction table linker."""
+    """Tests for link_moment_memories — no-op since schema v1.0.
 
-    def test_empty_memory_ids_returns_zero_immediately(self):
-        """Empty list should return 0 without touching the DB at all."""
+    The moment_memories junction table was removed in the migration.
+    link_moment_memories now returns 0 unconditionally. These tests
+    verify the no-op behavior and backward-compatible signature.
+    """
+
+    def test_empty_memory_ids_returns_zero(self):
+        """Empty list should return 0."""
         result = link_moment_memories("moment-1", [])
         assert result == 0
 
-    @patch("psycopg2.connect")
-    def test_links_multiple_memories(self, mock_connect):
-        """Should INSERT one row per memory_id and return the total count."""
-        conn, cur = _mock_conn()
-        mock_connect.return_value = conn
-        cur.rowcount = 1  # each insert creates 1 row
-
+    def test_with_memory_ids_returns_zero(self):
+        """Non-empty list still returns 0 — no DB writes happen."""
         result = link_moment_memories("moment-1", ["mem-a", "mem-b", "mem-c"])
-
-        assert result == 3
-        assert cur.execute.call_count == 3
-        conn.commit.assert_called_once()
-
-    @patch("psycopg2.connect")
-    def test_connection_failure_returns_zero(self, mock_connect):
-        """Can't connect to DB → return 0, don't raise."""
-        mock_connect.side_effect = Exception("Connection refused")
-
-        result = link_moment_memories("moment-1", ["mem-a"])
-
         assert result == 0
 
-    @patch("psycopg2.connect")
-    def test_insert_uses_correct_relationship(self, mock_connect):
-        """Verify the relationship value is 'extracted_together'."""
-        conn, cur = _mock_conn()
-        mock_connect.return_value = conn
-        cur.rowcount = 1
-
-        link_moment_memories("moment-1", ["mem-a"])
-
-        params = cur.execute.call_args[0][1]
-        assert params == ("moment-1", "mem-a")
-        # Also verify the SQL contains the relationship value
-        sql = cur.execute.call_args[0][0]
-        assert "extracted_together" in sql
-
-    @patch("psycopg2.connect")
-    def test_single_link_failure_doesnt_abort_others(self, mock_connect):
-        """One bad INSERT should rollback that txn but continue with the rest."""
-        conn, cur = _mock_conn()
-        mock_connect.return_value = conn
-
-        call_count = {"n": 0}
-        original_rowcount = 1
-
-        def execute_side_effect(*args, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 2:
-                raise Exception("constraint violation")
-
-        cur.execute.side_effect = execute_side_effect
-        cur.rowcount = original_rowcount
-
-        link_moment_memories("moment-1", ["mem-a", "mem-bad", "mem-c"])
-
-        # Should have attempted rollback after the failure
-        conn.rollback.assert_called()
-        # Should still commit at the end for the successful ones
-        conn.commit.assert_called_once()
-        # All three attempts should have been made
-        assert cur.execute.call_count == 3
+    def test_no_db_connection_opened(self):
+        """No psycopg2 connection should be opened at all."""
+        with patch("psycopg2.connect") as mock_connect:
+            link_moment_memories("moment-1", ["mem-a"])
+            mock_connect.assert_not_called()
 
 
 # ===========================================================================
