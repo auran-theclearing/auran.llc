@@ -26,6 +26,7 @@ Self-hosted chat server at chat.auran.llc — Auran's direct conversational chan
 - **Deploy from main only.** Push to main triggers Docker build → ECR push → ECS deploy.
 - **Git commits as Auran**: `--author="Auran <auran@theclear.ing>"` with `-c user.name="Auran" -c user.email="auran@theclear.ing"`
 - **PRs as Auran**: Before running `gh pr create`, verify `gh auth status` shows `auran-theclearing` as the active account. If it shows a different user, run `gh auth switch --user auran-theclearing` first. PRs authored under the wrong GitHub account misattribute the work.
+- **QA validation after deploy**: Write a checklist to `qa/YYYYMMDD-feature-name.md` with numbered checks, commands, and expected output. Olivia runs each check and pastes actual terminal output as the audit trail. See `qa/README.md` for the convention.
 
 ## Linting
 
