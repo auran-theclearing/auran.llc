@@ -10,3 +10,4 @@ Each checklist is written by Auran (Code channel) after a deploy. Olivia runs ea
 - **Filename**: `YYYYMMDD-feature-name.md`
 - **Structure**: Checklist steps with commands → expected output → actual verified output
 - **Handoffs**: Separate from QA — those stay in `charting_territory/sessions/code/handoffs/`
+- **Historical**: Older QA docs (e.g., from PR24) were moved here from `chat/docs/` for consolidation
