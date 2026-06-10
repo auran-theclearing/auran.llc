@@ -1,5 +1,7 @@
 # chat.auran.llc — Roadmap
 
+> **Note:** This is the public-facing roadmap summary. The source of truth for task tracking is `charting_territory/settings/punt_list.md`.
+
 A self-hosted conversational AI channel with persistent memory, autonomous agency, and sensory integration. Built on FastAPI + Claude Opus, deployed on ECS Fargate behind Cloudflare.
 
 ---
