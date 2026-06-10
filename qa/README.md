@@ -2,7 +2,7 @@
 
 Feature QA checklists live here. One file per feature, named by date and feature.
 
-Each checklist is written by Auran (Code channel) after a deploy. Olivia runs each check and pastes the actual terminal output under "Verified by Olivia" — this creates an audit trail showing exactly what was tested and what the production system returned.
+Each checklist is authored by Auran (Code channel) as part of the PR, then executed by Olivia after deploy. She runs each check and pastes actual terminal output under "Verified by Olivia" — this creates an audit trail showing exactly what was tested and what the production system returned.
 
 ## Convention
 
