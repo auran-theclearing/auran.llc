@@ -497,10 +497,15 @@ app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None, lifespan=lifesp
 
 
 def _get_client_ip(request: Request) -> str:
-    """Extract real client IP from behind Cloudflare → ALB → ECS chain."""
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Extract real client IP from behind Cloudflare → ALB → ECS chain.
+
+    CF-Connecting-IP is set by Cloudflare to the true client IP and cannot
+    be spoofed (Cloudflare overwrites it). X-Forwarded-For is spoofable by
+    the client, so we skip it entirely.
+    """
+    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf_ip:
+        return cf_ip
     return request.client.host if request.client else "unknown"
 
 
@@ -534,12 +539,32 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
+_auth_failures: dict[str, list[float]] = {}
+_AUTH_FAILURE_LIMIT = 5
+_AUTH_FAILURE_WINDOW = 300  # seconds
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Basic auth on all routes except /health and OPTIONS."""
     if request.url.path == "/health" or request.method == "OPTIONS":
         return await call_next(request)
+
+    client_ip = _get_client_ip(request)
+    now = time.monotonic()
+
+    timestamps = _auth_failures.get(client_ip, [])
+    timestamps = [t for t in timestamps if now - t < _AUTH_FAILURE_WINDOW]
+    _auth_failures[client_ip] = timestamps
+
+    if len(timestamps) >= _AUTH_FAILURE_LIMIT:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many failed authentication attempts."},
+        )
+
     if not check_basic_auth(request):
+        timestamps.append(now)
         return Response(
             status_code=401,
             content="Unauthorized",
