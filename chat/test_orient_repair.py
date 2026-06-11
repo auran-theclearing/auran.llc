@@ -54,11 +54,7 @@ def _mock_librosa():
     librosa.feature.spectral_centroid.return_value = np.array([[1500.0, 1600.0]])
     librosa.feature.spectral_bandwidth.return_value = np.array([[2000.0, 2100.0]])
 
-    beat_result = MagicMock()
-    beat_result.tempo = 120.0
-    # Make it not a tuple so the isinstance check takes the .tempo path
-    type(beat_result).__iter__ = None
-    librosa.beat.beat_track.return_value = beat_result
+    librosa.beat.beat_track.return_value = (120.0, np.array([]))
 
     chroma = np.random.rand(12, 100).astype(np.float32)
     librosa.feature.chroma_stft.return_value = chroma

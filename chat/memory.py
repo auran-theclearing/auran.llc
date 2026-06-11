@@ -467,7 +467,7 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
         #     lines = [_format_memory(m) for m in bridge_logs]
         #     sections.append("## From other channels (bridge logs)\n" + "\n".join(lines))
 
-        # 4. Recent episodes — shared experiences (post-migration: episodes table)
+        # 3. Recent episodes — shared experiences (post-migration: episodes table)
         try:
             t0 = _time.time() if debug else 0
             cur = conn.cursor()
@@ -2199,10 +2199,10 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
         import librosa
         import numpy as np
     except ImportError:
-        return {"error": "librosa not installed — run: pip install librosa"}
+        return {"error": "librosa import failed — check deployment"}
 
     try:
-        y, sr = librosa.load(file_path, sr=None)
+        y, sr = librosa.load(file_path, sr=None, duration=300)
         duration = librosa.get_duration(y=y, sr=sr)
 
         spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
@@ -2213,9 +2213,7 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
         top_indices = np.argsort(fft)[-10:][::-1]
         dominant_freqs = [{"hz": float(freqs[i]), "magnitude": float(fft[i])} for i in top_indices]
 
-        tempo_result = librosa.beat.beat_track(y=y, sr=sr)
-        # librosa >= 0.10 returns a BeatTrackResults object; earlier returns tuple
-        tempo_val = float(tempo_result[0]) if isinstance(tempo_result, tuple) else float(tempo_result.tempo)
+        tempo_val = float(librosa.beat.beat_track(y=y, sr=sr)[0])
 
         bands = {
             "sub_bass": (20, 60),
