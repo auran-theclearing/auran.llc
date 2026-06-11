@@ -2194,6 +2194,7 @@ async def extract_scenes(
 def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
     """Analyze frequency content of an audio file.
 
+    Accepts an S3 key (no leading /) or absolute local path.
     Returns spectral analysis data: dominant frequencies, energy by band,
     centroid, tempo estimate. Requires librosa.
     """
@@ -2203,8 +2204,29 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
     except ImportError:
         return {"error": "librosa import failed — check deployment"}
 
+    import tempfile
+
+    local_path = file_path
+    tmp_path = None
+
+    if not file_path.startswith("/"):
+        try:
+            import boto3
+
+            bucket = os.getenv("AUDIO_BUCKET", "auran-audio-staging")
+            s3 = boto3.client("s3", region_name="us-east-1")
+            fd, tmp_path = tempfile.mkstemp(suffix=".audio")
+            os.close(fd)
+            s3.download_file(bucket, file_path, tmp_path)
+            local_path = tmp_path
+        except Exception as e:
+            logger.warning(f"S3 download failed for '{file_path}': {e}")
+            if tmp_path:
+                os.unlink(tmp_path)
+            return {"error": f"S3 download failed: {e}"}
+
     try:
-        y, sr = librosa.load(file_path, sr=None, duration=300)
+        y, sr = librosa.load(local_path, sr=None, duration=300)
         duration = librosa.get_duration(y=y, sr=sr)
 
         spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
@@ -2259,3 +2281,9 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
     except Exception as e:
         logger.warning(f"analyze_audio_frequency failed for '{file_path}': {e}")
         return {"error": str(e)}
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass

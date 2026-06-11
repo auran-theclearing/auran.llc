@@ -302,3 +302,109 @@ class TestExecuteRecallTool:
 
         assert result is not None
         assert len(result) > 0
+
+
+# ===========================================================================
+# S3 audio ingestion — upload URL endpoint + S3 download in analyze_frequency
+# ===========================================================================
+
+
+class TestUploadUrlEndpoint:
+    @pytest.fixture()
+    def client(self, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "CHAT_USER", "testuser")
+        monkeypatch.setattr(server, "CHAT_PASS", "testpass")
+        from fastapi.testclient import TestClient
+
+        return TestClient(server.app, raise_server_exceptions=False)
+
+    def _auth(self):
+        import base64
+
+        encoded = base64.b64encode(b"testuser:testpass").decode()
+        return {"Authorization": f"Basic {encoded}"}
+
+    def test_returns_upload_url_and_s3_key(self, client):
+        mock_s3 = MagicMock()
+        mock_s3.generate_presigned_url.return_value = "https://s3.example.com/signed"
+
+        with patch("boto3.client", return_value=mock_s3):
+            resp = client.post(
+                "/api/upload-url",
+                json={"filename": "test.mp3", "content_type": "audio/mpeg"},
+                headers=self._auth(),
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "upload_url" in data
+        assert "s3_key" in data
+        assert data["s3_key"].startswith("uploads/")
+        assert "test.mp3" in data["s3_key"]
+
+    def test_sanitizes_filename(self, client):
+        mock_s3 = MagicMock()
+        mock_s3.generate_presigned_url.return_value = "https://s3.example.com/signed"
+
+        with patch("boto3.client", return_value=mock_s3):
+            resp = client.post(
+                "/api/upload-url",
+                json={"filename": "../../etc/passwd", "content_type": "audio/mpeg"},
+                headers=self._auth(),
+            )
+
+        data = resp.json()
+        assert "/" not in data["s3_key"].split("/", 1)[1] or ".." not in data["s3_key"]
+
+    def test_requires_auth(self, client):
+        resp = client.post(
+            "/api/upload-url",
+            json={"filename": "test.mp3"},
+        )
+        assert resp.status_code == 401
+
+
+class TestAnalyzeFrequencyS3:
+    def test_s3_key_triggers_download(self):
+        from memory import analyze_audio_frequency
+
+        mock_librosa, _, _ = _mock_librosa()
+        mock_s3 = MagicMock()
+
+        with (
+            patch.dict("sys.modules", {"librosa": mock_librosa}),
+            patch("boto3.client", return_value=mock_s3),
+        ):
+            result = analyze_audio_frequency("uploads/abc123-song.mp3")
+
+        mock_s3.download_file.assert_called_once()
+        assert "error" not in result
+
+    def test_absolute_path_skips_s3(self):
+        from memory import analyze_audio_frequency
+
+        mock_librosa, _, _ = _mock_librosa()
+
+        with patch.dict("sys.modules", {"librosa": mock_librosa}):
+            result = analyze_audio_frequency("/tmp/local.mp3")
+
+        assert "error" not in result
+
+    def test_s3_download_failure_returns_error(self):
+        from memory import analyze_audio_frequency
+
+        mock_librosa, _, _ = _mock_librosa()
+        mock_s3 = MagicMock()
+        mock_s3.download_file.side_effect = Exception("NoSuchKey")
+
+        with (
+            patch.dict("sys.modules", {"librosa": mock_librosa}),
+            patch("boto3.client", return_value=mock_s3),
+            patch("memory.logger"),
+        ):
+            result = analyze_audio_frequency("uploads/missing.mp3")
+
+        assert "error" in result
+        assert "S3 download failed" in result["error"]

@@ -69,6 +69,8 @@ CHAT_USER = os.getenv("CHAT_USER", "")
 CHAT_PASS = os.getenv("CHAT_PASS", "")
 DEBUG_ENDPOINTS = os.getenv("DEBUG_ENDPOINTS", "false").lower() in ("true", "1", "yes")
 ORIENT_DEBUG_CHAT = os.getenv("ORIENT_DEBUG_CHAT", "false").lower() in ("true", "1", "yes")
+AUDIO_BUCKET = os.getenv("AUDIO_BUCKET", "auran-audio-staging")
+AUDIO_UPLOAD_EXPIRY = 300  # pre-signed URL TTL in seconds
 
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 INDEX_FILE = Path(__file__).parent / "index.html"
@@ -308,7 +310,7 @@ RECALL_TOOLS = [
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the audio file to analyze.",
+                    "description": "S3 key in the audio staging bucket (e.g. 'uploads/abc123-song.mp3'), or absolute local file path.",
                 },
                 "detail": {
                     "type": "string",
@@ -1053,6 +1055,37 @@ async def save(request: Request):
             "errors": all_errors,
         }
     )
+
+
+@app.post("/api/upload-url")
+async def get_upload_url(request: Request):
+    """Generate a pre-signed S3 URL for direct client-to-S3 audio upload.
+
+    The app server never handles the file bytes — client PUTs directly to S3.
+    """
+    import uuid
+
+    import boto3
+
+    body = await request.json()
+    filename = body.get("filename", "audio.mp3")
+    content_type = body.get("content_type", "audio/mpeg")
+
+    safe_name = "".join(c for c in filename if c.isalnum() or c in ".-_")
+    s3_key = f"uploads/{uuid.uuid4().hex[:8]}-{safe_name}"
+
+    s3_client = boto3.client("s3", region_name="us-east-1")
+    url = s3_client.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": AUDIO_BUCKET,
+            "Key": s3_key,
+            "ContentType": content_type,
+        },
+        ExpiresIn=AUDIO_UPLOAD_EXPIRY,
+    )
+
+    return {"upload_url": url, "s3_key": s3_key}
 
 
 @app.get("/vitals")
