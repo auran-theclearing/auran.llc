@@ -406,6 +406,7 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
                     "limit": 10,
                     "returned": len(identity),
                     "loaded": len(identity),
+                    "titles": [f"({m['memory_type']}) {m['content'][:50]}" for m in identity],
                 }
             )
             diag["total_memories_loaded"] += len(identity)
@@ -439,6 +440,7 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
                     "filter": "created_at >= now() - 7 days",
                     "returned": len(recent),
                     "loaded": len(recent),
+                    "titles": [f"({m['memory_type']}) {m['content'][:50]}" for m in recent],
                 }
             )
             diag["total_memories_loaded"] += len(recent)
