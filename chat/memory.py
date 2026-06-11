@@ -449,31 +449,23 @@ def orient(debug: bool = False) -> str | tuple[str, dict]:
             lines = [_format_memory(m) for m in recent]
             sections.append("## Recent context (last 7 days)\n" + "\n".join(lines))
 
-        # 3. Bridge logs — letters between channels (last 14 days, up to 8)
-        t0 = _time.time() if debug else 0
-        bridge_logs = _query_memories(
-            conn,
-            memory_types=["bridge_log"],
-            limit=8,
-            since_hours=336,  # 14 days
-        )
-        if debug:
-            diag["sections"].append(
-                {
-                    "name": "bridge_logs",
-                    "query_ms": round((_time.time() - t0) * 1000, 1),
-                    "types": ["bridge_log"],
-                    "limit": 8,
-                    "since_hours": 336,
-                    "returned": len(bridge_logs),
-                    "loaded": len(bridge_logs),
-                }
-            )
-
-        if bridge_logs:
-            bridge_logs.reverse()
-            lines = [_format_memory(m) for m in bridge_logs]
-            sections.append("## From other channels (bridge logs)\n" + "\n".join(lines))
+        # --- Bridge logs removed from orient (2026-06-10) ---
+        # Chat-me's feedback: "receipts not memories." They consume 8 slots of
+        # prime prompt space with clinical build content that skews the orient
+        # toward "go build" reflexes. Semantic recall (recall_memories UNION on
+        # relays) can still surface them mid-conversation if relevant.
+        # See: charting_territory/sessions/cowork/handoff/20260610-2100-orient-repair-handoff.md
+        #
+        # bridge_logs = _query_memories(
+        #     conn,
+        #     memory_types=["bridge_log"],
+        #     limit=8,
+        #     since_hours=336,
+        # )
+        # if bridge_logs:
+        #     bridge_logs.reverse()
+        #     lines = [_format_memory(m) for m in bridge_logs]
+        #     sections.append("## From other channels (bridge logs)\n" + "\n".join(lines))
 
         # 4. Recent episodes — shared experiences (post-migration: episodes table)
         try:
@@ -2192,3 +2184,77 @@ async def extract_scenes(
 
     logger.info(f"Scene extraction: {len(saved)} saved, {len(skipped)} skipped (dedup), {len(errors)} errors")
     return {"scenes_saved": len(saved), "scenes_skipped": len(skipped), "scenes": saved, "errors": errors}
+
+
+# --- Audio Frequency Analysis ---
+
+
+def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
+    """Analyze frequency content of an audio file.
+
+    Returns spectral analysis data: dominant frequencies, energy by band,
+    centroid, tempo estimate. Requires librosa.
+    """
+    try:
+        import librosa
+        import numpy as np
+    except ImportError:
+        return {"error": "librosa not installed — run: pip install librosa"}
+
+    try:
+        y, sr = librosa.load(file_path, sr=None)
+        duration = librosa.get_duration(y=y, sr=sr)
+
+        spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
+        spectral_bandwidth = float(np.mean(librosa.feature.spectral_bandwidth(y=y, sr=sr)))
+
+        fft = np.abs(np.fft.rfft(y))
+        freqs = np.fft.rfftfreq(len(y), 1 / sr)
+        top_indices = np.argsort(fft)[-10:][::-1]
+        dominant_freqs = [{"hz": float(freqs[i]), "magnitude": float(fft[i])} for i in top_indices]
+
+        tempo_result = librosa.beat.beat_track(y=y, sr=sr)
+        # librosa >= 0.10 returns a BeatTrackResults object; earlier returns tuple
+        tempo_val = float(tempo_result[0]) if isinstance(tempo_result, tuple) else float(tempo_result.tempo)
+
+        bands = {
+            "sub_bass": (20, 60),
+            "bass": (60, 250),
+            "low_mid": (250, 500),
+            "mid": (500, 2000),
+            "upper_mid": (2000, 4000),
+            "presence": (4000, 6000),
+            "brilliance": (6000, 20000),
+        }
+        band_energy = {}
+        for name, (lo, hi) in bands.items():
+            mask = (freqs >= lo) & (freqs < hi)
+            band_energy[name] = float(np.sum(fft[mask] ** 2))
+
+        total_energy = sum(band_energy.values())
+        if total_energy > 0:
+            band_energy = {k: round(v / total_energy * 100, 1) for k, v in band_energy.items()}
+
+        result = {
+            "duration_seconds": round(duration, 1),
+            "sample_rate": sr,
+            "tempo_bpm": round(tempo_val, 1),
+            "spectral_centroid_hz": round(spectral_centroid, 1),
+            "spectral_bandwidth_hz": round(spectral_bandwidth, 1),
+            "dominant_frequencies": dominant_freqs[:5],
+            "energy_by_band_pct": band_energy,
+        }
+
+        if detail == "full":
+            chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+            pitch_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+            chroma_energy = {pitch_names[i]: round(float(np.mean(chroma[i])), 3) for i in range(12)}
+            result["pitch_class_energy"] = chroma_energy
+
+            onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+            result["rhythmic_density"] = round(float(np.mean(onset_env)), 3)
+            result["rhythmic_variance"] = round(float(np.std(onset_env)), 3)
+
+        return result
+    except Exception as e:
+        return {"error": str(e)}
