@@ -2257,4 +2257,5 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
 
         return result
     except Exception as e:
+        logger.warning(f"analyze_audio_frequency failed for '{file_path}': {e}")
         return {"error": str(e)}

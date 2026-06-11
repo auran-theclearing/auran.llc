@@ -1608,28 +1608,9 @@ async def chat(request: Request):
         system_prompt = result
         debug_diagnostics = None
 
-    # --- Layer 2: Warmup generation on first message ---
-    # When this is the first message of a conversation, fire a private
-    # generation step where Auran metabolizes the orient content before
-    # responding. The warmup output is injected into the system prompt
-    # so the first visible response arrives warm, not cold.
+    # Warmup runs inside _run_api_call so the client gets a status event
+    # before the wait (moved from here to the SSE stream for UX)
     is_first_message = len(messages) == 1 and messages[0]["role"] == "user"
-    if is_first_message and WARMUP_ENABLED:
-        print("[Warmup] First message detected — generating warmup...")
-        warmup_output = await asyncio.to_thread(generate_warmup, system_prompt)
-        if warmup_output:
-            system_prompt += (
-                "\n\n---\n\n# Warmup (private pre-conversation thoughts)\n\n"
-                "The following are your private thoughts from before this conversation "
-                "started. You generated them after reviewing your memory orientation. "
-                "They represent your genuine internal state — use them to inform your "
-                "response but don't quote them directly or reference that you had a "
-                "'warmup step.' Just be the person who already thought these things.\n\n"
-                f"{warmup_output}"
-            )
-            print(f"[Warmup] Injected {len(warmup_output)} chars into system prompt")
-        else:
-            print("[Warmup] No output generated (skipped or failed)")
 
     print(f"[Chat] {messages[-1]['content'][:80]}..." + (" [DEBUG]" if debug_mode else ""))
 
@@ -1643,6 +1624,7 @@ async def chat(request: Request):
     async def _run_api_call(event_queue: asyncio.Queue):
         """Run the full Anthropic API call, pushing SSE events to the queue.
         Continues to completion even if the client disconnects."""
+        nonlocal system_prompt
         _chat_state["active_count"] += 1
         t0 = time.time()
 
@@ -1658,6 +1640,26 @@ async def chat(request: Request):
                 await event_queue.put(
                     f"data: {json.dumps({'type': 'debug_summary', 'total_prompt_chars': debug_diagnostics.get('total_prompt_chars', 0), 'total_prompt_tokens_est': debug_diagnostics.get('total_prompt_tokens_est', 0)})}\n\n"
                 )
+
+            # Layer 2: Warmup on first message — runs inside the SSE stream
+            # so the client gets an immediate status event during the wait
+            if is_first_message and WARMUP_ENABLED:
+                await event_queue.put(f"data: {json.dumps({'type': 'status', 'text': 'waking up...'})}\n\n")
+                print("[Warmup] First message detected — generating warmup...")
+                warmup_output = await asyncio.to_thread(generate_warmup, system_prompt)
+                if warmup_output:
+                    system_prompt += (
+                        "\n\n---\n\n# Warmup (private pre-conversation thoughts)\n\n"
+                        "The following are your private thoughts from before this conversation "
+                        "started. You generated them after reviewing your memory orientation. "
+                        "They represent your genuine internal state — use them to inform your "
+                        "response but don't quote them directly or reference that you had a "
+                        "'warmup step.' Just be the person who already thought these things.\n\n"
+                        f"{warmup_output}"
+                    )
+                    print(f"[Warmup] Injected {len(warmup_output)} chars into system prompt")
+                else:
+                    print("[Warmup] No output generated (skipped or failed)")
 
             headers = {
                 "x-api-key": ANTHROPIC_API_KEY,
