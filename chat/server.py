@@ -39,6 +39,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
 
 
 def _get_anthropic_key() -> str:
@@ -65,6 +67,7 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
 CHAT_USER = os.getenv("CHAT_USER", "")
 CHAT_PASS = os.getenv("CHAT_PASS", "")
+DEBUG_ENDPOINTS = os.getenv("DEBUG_ENDPOINTS", "false").lower() in ("true", "1", "yes")
 
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 INDEX_FILE = Path(__file__).parent / "index.html"
@@ -443,9 +446,9 @@ def generate_warmup(system_prompt: str) -> str | None:
 
 # --- Auth ---
 def check_basic_auth(request: Request) -> bool:
-    """Validate basic auth. Skip if credentials not configured."""
+    """Validate basic auth. Rejects all requests if credentials not configured."""
     if not CHAT_USER or not CHAT_PASS:
-        return True
+        return False
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Basic "):
         return False
@@ -490,12 +493,45 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None, lifespan=lifespan)
 
+# --- Rate Limiting ---
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract real client IP from behind Cloudflare → ALB → ECS chain."""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+limiter = Limiter(key_func=_get_client_ip)
+app.state.limiter = limiter
+
+
+def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please wait before trying again."},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["https://chat.auran.llc"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 @app.middleware("http")
@@ -941,7 +977,11 @@ async def vitals(request: Request):
     Returns: memory count, memory reach (how far back), orient latency,
     total moments in DB, token budget estimate. No full diagnostics —
     just the wrist-check version.
+
+    Gated behind DEBUG_ENDPOINTS env var.
     """
+    if not DEBUG_ENDPOINTS:
+        raise HTTPException(status_code=404)
     import time as _time
 
     try:
@@ -1058,9 +1098,14 @@ async def debug_orient(request: Request):
     Returns full diagnostics: what queries ran, what came back, similarity
     scores, timing, memory reach. No LLM call — just the plumbing.
 
+    Gated behind DEBUG_ENDPOINTS env var.
+
     Optional query params:
         ?query=some+text  — also run semantic recall against this query
     """
+    if not DEBUG_ENDPOINTS:
+        raise HTTPException(status_code=404)
+
     from memory import orient, surface_relevant_moments
 
     query = request.query_params.get("query", "")
@@ -1348,6 +1393,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
 
 @app.post("/chat")
+@limiter.limit("10/minute")
 async def chat(request: Request):
     """Stream a chat response from Claude.
 
