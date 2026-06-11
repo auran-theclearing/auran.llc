@@ -556,7 +556,8 @@ async def auth_middleware(request: Request, call_next):
         _auth_failures.pop(client_ip, None)
 
     if len(_auth_failures) > _AUTH_FAILURES_MAX_IPS:
-        _auth_failures.clear()
+        oldest_ip = min(_auth_failures, key=lambda ip: _auth_failures[ip][0])
+        _auth_failures.pop(oldest_ip, None)
 
     if len(timestamps) >= _AUTH_FAILURE_LIMIT:
         return JSONResponse(
@@ -571,6 +572,8 @@ async def auth_middleware(request: Request, call_next):
             content="Unauthorized",
             headers={"WWW-Authenticate": 'Basic realm="Auran Chat"'},
         )
+
+    _auth_failures.pop(client_ip, None)
     return await call_next(request)
 
 

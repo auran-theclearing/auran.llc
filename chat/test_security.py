@@ -214,6 +214,18 @@ class TestAuthBruteForce:
         resp = client.get("/", headers=_basic_auth_header("wrong", "wrong"))
         assert resp.status_code == 401
 
+    def test_successful_auth_resets_counter(self, client):
+        """Correct login clears failure history — prevents self-lockout."""
+        for _ in range(4):
+            client.get("/", headers=_basic_auth_header("wrong", "wrong"))
+        # Successful auth on an authenticated route resets the counter
+        client.get("/", headers=_basic_auth_header("testuser", "testpass"))
+        # 4 more failures should stay under the threshold (counter was reset)
+        for _ in range(4):
+            client.get("/", headers=_basic_auth_header("wrong", "wrong"))
+        resp = client.get("/", headers=_basic_auth_header("wrong", "wrong"))
+        assert resp.status_code == 401
+
 
 # ===========================================================================
 # Debug endpoint gating
