@@ -256,6 +256,13 @@ class TestSecurityHeaders:
         assert "max-age=31536000" in hsts
         assert "includeSubDomains" in hsts
 
+    def test_headers_on_401_responses(self, client):
+        """Security headers must appear on auth failures, not just 200s."""
+        resp = client.get("/", headers=_basic_auth_header("wrong", "wrong"))
+        assert resp.status_code == 401
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+
 
 # ===========================================================================
 # CORS

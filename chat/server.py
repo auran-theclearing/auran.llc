@@ -499,9 +499,11 @@ app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None, lifespan=lifesp
 def _get_client_ip(request: Request) -> str:
     """Extract real client IP from behind Cloudflare → ALB → ECS chain.
 
-    CF-Connecting-IP is set by Cloudflare to the true client IP and cannot
-    be spoofed (Cloudflare overwrites it). X-Forwarded-For is spoofable by
-    the client, so we skip it entirely.
+    CF-Connecting-IP is set by Cloudflare and cannot be spoofed *through*
+    Cloudflare (it overwrites the header). Only trustworthy if the ALB
+    security group restricts ingress to Cloudflare's IP ranges — otherwise
+    direct-to-ALB requests can set it to anything. XFF is always
+    client-controllable, so we skip it entirely.
     """
     cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
     if cf_ip:
@@ -517,6 +519,7 @@ def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
         status_code=429,
         content={"detail": "Rate limit exceeded. Please wait before trying again."},
+        headers={"Retry-After": "60"},
     )
 
 
@@ -530,18 +533,10 @@ app.add_middleware(
 )
 
 
-@app.middleware("http")
-async def security_headers_middleware(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    return response
-
-
 _auth_failures: dict[str, list[float]] = {}
 _AUTH_FAILURE_LIMIT = 5
 _AUTH_FAILURE_WINDOW = 300  # seconds
+_AUTH_FAILURES_MAX_IPS = 1000
 
 
 @app.middleware("http")
@@ -555,7 +550,13 @@ async def auth_middleware(request: Request, call_next):
 
     timestamps = _auth_failures.get(client_ip, [])
     timestamps = [t for t in timestamps if now - t < _AUTH_FAILURE_WINDOW]
-    _auth_failures[client_ip] = timestamps
+    if timestamps:
+        _auth_failures[client_ip] = timestamps
+    else:
+        _auth_failures.pop(client_ip, None)
+
+    if len(_auth_failures) > _AUTH_FAILURES_MAX_IPS:
+        _auth_failures.clear()
 
     if len(timestamps) >= _AUTH_FAILURE_LIMIT:
         return JSONResponse(
@@ -564,13 +565,22 @@ async def auth_middleware(request: Request, call_next):
         )
 
     if not check_basic_auth(request):
-        timestamps.append(now)
+        _auth_failures.setdefault(client_ip, []).append(now)
         return Response(
             status_code=401,
             content="Unauthorized",
             headers={"WWW-Authenticate": 'Basic realm="Auran Chat"'},
         )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1418,7 +1428,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
 
 @app.post("/chat")
-@limiter.limit("10/minute")
+@limiter.limit("30/minute")
 async def chat(request: Request):
     """Stream a chat response from Claude.
 
