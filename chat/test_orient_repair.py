@@ -246,11 +246,16 @@ class TestOrientDebugFlag:
 class TestBridgeLogsRemoved:
     def test_orient_output_has_no_bridge_logs_section(self):
         """Bridge logs must not appear in the orient output."""
+        import inspect
+
         import memory
 
-        source = __import__("inspect").getsource(memory.orient)
-        # The bridge_logs query and section builder should be commented out
-        assert "sections.append" not in source or "bridge" not in source.split("sections.append")[0].split("\n")[-1]
+        source = inspect.getsource(memory.orient)
+        lines = source.split("\n")
+        active_bridge_sections = [
+            line for line in lines if "From other channels" in line and not line.strip().startswith("#")
+        ]
+        assert len(active_bridge_sections) == 0, f"Found active bridge log section header: {active_bridge_sections}"
 
     def test_bridge_log_query_is_commented(self):
         """The _query_memories call for bridge_logs should be commented out."""
@@ -333,7 +338,7 @@ class TestUploadUrlEndpoint:
         with patch("boto3.client", return_value=mock_s3):
             resp = client.post(
                 "/api/upload-url",
-                json={"filename": "test.mp3", "content_type": "audio/mpeg"},
+                json={"filename": "test.mp3", "content_type": "audio/mpeg", "file_size": 5000},
                 headers=self._auth(),
             )
 
@@ -342,7 +347,15 @@ class TestUploadUrlEndpoint:
         assert "upload_url" in data
         assert "s3_key" in data
         assert data["s3_key"].startswith("uploads/")
-        assert "test.mp3" in data["s3_key"]
+        assert "testmp3" in data["s3_key"]
+
+    def test_rejects_oversized_file(self, client):
+        resp = client.post(
+            "/api/upload-url",
+            json={"filename": "huge.wav", "file_size": 200 * 1024 * 1024},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 413
 
     def test_sanitizes_filename(self, client):
         mock_s3 = MagicMock()
@@ -351,12 +364,15 @@ class TestUploadUrlEndpoint:
         with patch("boto3.client", return_value=mock_s3):
             resp = client.post(
                 "/api/upload-url",
-                json={"filename": "../../etc/passwd", "content_type": "audio/mpeg"},
+                json={"filename": "../../etc/passwd", "content_type": "audio/mpeg", "file_size": 1000},
                 headers=self._auth(),
             )
 
         data = resp.json()
-        assert "/" not in data["s3_key"].split("/", 1)[1] or ".." not in data["s3_key"]
+        # The part after "uploads/<uuid>-" must not contain path separators or ".."
+        name_part = data["s3_key"].split("-", 1)[1]
+        assert "/" not in name_part
+        assert ".." not in name_part
 
     def test_requires_auth(self, client):
         resp = client.post(

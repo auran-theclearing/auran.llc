@@ -1071,7 +1071,17 @@ async def get_upload_url(request: Request):
     filename = body.get("filename", "audio.mp3")
     content_type = body.get("content_type", "audio/mpeg")
 
-    safe_name = "".join(c for c in filename if c.isalnum() or c in ".-_")
+    file_size = body.get("file_size", 0)
+    max_bytes = 100 * 1024 * 1024  # 100 MB
+    if not file_size or file_size > max_bytes:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": f"File too large or missing size (max {max_bytes // 1024 // 1024}MB)"},
+        )
+
+    safe_name = "".join(c for c in filename if c.isalnum() or c in "-_")
+    if not safe_name:
+        safe_name = "audio"
     s3_key = f"uploads/{uuid.uuid4().hex[:8]}-{safe_name}"
 
     s3_client = boto3.client("s3", region_name="us-east-1")
@@ -1081,6 +1091,7 @@ async def get_upload_url(request: Request):
             "Bucket": AUDIO_BUCKET,
             "Key": s3_key,
             "ContentType": content_type,
+            "ContentLength": file_size,
         },
         ExpiresIn=AUDIO_UPLOAD_EXPIRY,
     )

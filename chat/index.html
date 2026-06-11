@@ -740,7 +740,7 @@ async function uploadAttachment(file) {
   const resp = await fetch('/api/upload-url', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename: file.name, content_type: file.type || 'audio/mpeg' }),
+    body: JSON.stringify({ filename: file.name, content_type: file.type || 'audio/mpeg', file_size: file.size }),
   });
   if (!resp.ok) throw new Error('Failed to get upload URL');
   const { upload_url, s3_key } = await resp.json();
