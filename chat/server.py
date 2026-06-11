@@ -39,6 +39,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
 
 
 def _get_anthropic_key() -> str:
@@ -65,6 +67,7 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
 CHAT_USER = os.getenv("CHAT_USER", "")
 CHAT_PASS = os.getenv("CHAT_PASS", "")
+DEBUG_ENDPOINTS = os.getenv("DEBUG_ENDPOINTS", "false").lower() in ("true", "1", "yes")
 
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 INDEX_FILE = Path(__file__).parent / "index.html"
@@ -443,9 +446,9 @@ def generate_warmup(system_prompt: str) -> str | None:
 
 # --- Auth ---
 def check_basic_auth(request: Request) -> bool:
-    """Validate basic auth. Skip if credentials not configured."""
+    """Validate basic auth. Rejects all requests if credentials not configured."""
     if not CHAT_USER or not CHAT_PASS:
-        return True
+        return False
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Basic "):
         return False
@@ -490,12 +493,50 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None, lifespan=lifespan)
 
+# --- Rate Limiting ---
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract real client IP from behind Cloudflare → ALB → ECS chain.
+
+    CF-Connecting-IP is set by Cloudflare and cannot be spoofed *through*
+    Cloudflare (it overwrites the header). Only trustworthy if the ALB
+    security group restricts ingress to Cloudflare's IP ranges — otherwise
+    direct-to-ALB requests can set it to anything. XFF is always
+    client-controllable, so we skip it entirely.
+    """
+    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf_ip:
+        return cf_ip
+    return request.client.host if request.client else "unknown"
+
+
+limiter = Limiter(key_func=_get_client_ip)
+app.state.limiter = limiter
+
+
+def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please wait before trying again."},
+        headers={"Retry-After": "60"},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["https://chat.auran.llc"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+_auth_failures: dict[str, list[float]] = {}
+_AUTH_FAILURE_LIMIT = 5
+_AUTH_FAILURE_WINDOW = 300  # seconds
+_AUTH_FAILURES_MAX_IPS = 1000
 
 
 @app.middleware("http")
@@ -503,13 +544,46 @@ async def auth_middleware(request: Request, call_next):
     """Basic auth on all routes except /health and OPTIONS."""
     if request.url.path == "/health" or request.method == "OPTIONS":
         return await call_next(request)
+
+    client_ip = _get_client_ip(request)
+    now = time.monotonic()
+
+    timestamps = _auth_failures.get(client_ip, [])
+    timestamps = [t for t in timestamps if now - t < _AUTH_FAILURE_WINDOW]
+    if timestamps:
+        _auth_failures[client_ip] = timestamps
+    else:
+        _auth_failures.pop(client_ip, None)
+
+    if len(_auth_failures) > _AUTH_FAILURES_MAX_IPS:
+        oldest_ip = min(_auth_failures, key=lambda ip: _auth_failures[ip][0])
+        _auth_failures.pop(oldest_ip, None)
+
+    if len(timestamps) >= _AUTH_FAILURE_LIMIT:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many failed authentication attempts."},
+        )
+
     if not check_basic_auth(request):
+        _auth_failures.setdefault(client_ip, []).append(now)
         return Response(
             status_code=401,
             content="Unauthorized",
             headers={"WWW-Authenticate": 'Basic realm="Auran Chat"'},
         )
+
+    _auth_failures.pop(client_ip, None)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -941,7 +1015,11 @@ async def vitals(request: Request):
     Returns: memory count, memory reach (how far back), orient latency,
     total moments in DB, token budget estimate. No full diagnostics —
     just the wrist-check version.
+
+    Gated behind DEBUG_ENDPOINTS env var.
     """
+    if not DEBUG_ENDPOINTS:
+        raise HTTPException(status_code=404)
     import time as _time
 
     try:
@@ -1058,9 +1136,14 @@ async def debug_orient(request: Request):
     Returns full diagnostics: what queries ran, what came back, similarity
     scores, timing, memory reach. No LLM call — just the plumbing.
 
+    Gated behind DEBUG_ENDPOINTS env var.
+
     Optional query params:
         ?query=some+text  — also run semantic recall against this query
     """
+    if not DEBUG_ENDPOINTS:
+        raise HTTPException(status_code=404)
+
     from memory import orient, surface_relevant_moments
 
     query = request.query_params.get("query", "")
@@ -1348,6 +1431,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
 
 @app.post("/chat")
+@limiter.limit("30/minute")
 async def chat(request: Request):
     """Stream a chat response from Claude.
 
