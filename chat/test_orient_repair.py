@@ -82,7 +82,9 @@ class TestAnalyzeFrequency:
             result = analyze_audio_frequency("/tmp/test.mp3", detail="quick")
 
         assert "error" not in result
-        assert "duration_seconds" in result
+        assert "file_duration_seconds" in result
+        assert "analyzed_duration_seconds" in result
+        assert "truncated" in result
         assert "sample_rate" in result
         assert "tempo_bpm" in result
         assert "spectral_centroid_hz" in result
@@ -281,7 +283,9 @@ class TestExecuteRecallTool:
         import server
 
         mock_result = {
-            "duration_seconds": 180.0,
+            "file_duration_seconds": 180.0,
+            "analyzed_duration_seconds": 30.0,
+            "truncated": True,
             "tempo_bpm": 120.0,
             "spectral_centroid_hz": 1500.0,
         }
