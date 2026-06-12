@@ -2061,16 +2061,31 @@ async def chat(request: Request):
                                 last_text_block = block["text"]
                                 break
 
-                        # Execute tools and build tool results
+                        # Execute tools with periodic keepalives so the SSE
+                        # connection survives long-running tools (e.g. frequency
+                        # analysis on 0.5 vCPU).
                         tool_results = []
                         for tc in tool_calls:
-                            try:
-                                result_text = await asyncio.to_thread(
+                            tool_task = asyncio.create_task(
+                                asyncio.to_thread(
                                     execute_recall_tool,
                                     tc["name"],
                                     tc["input"],
                                     last_text_block,
                                 )
+                            )
+                            try:
+                                while not tool_task.done():
+                                    try:
+                                        result_text = await asyncio.wait_for(
+                                            asyncio.shield(tool_task),
+                                            timeout=HEARTBEAT_INTERVAL,
+                                        )
+                                        break
+                                    except TimeoutError:
+                                        await event_queue.put(": keepalive\n\n")
+                                else:
+                                    result_text = tool_task.result()
                             except Exception as tool_err:
                                 print(f"[Chat] Tool execution failed: {tc['name']}: {tool_err}")
                                 result_text = f"Memory recall failed: {type(tool_err).__name__}: {tool_err}"
