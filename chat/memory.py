@@ -2197,6 +2197,10 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
     Accepts an S3 key (no leading /) or absolute local path.
     Returns spectral analysis data: dominant frequencies, energy by band,
     centroid, tempo estimate. Requires librosa.
+
+    Band-limited: resamples to 22050 Hz (Nyquist ~11 kHz), so frequencies
+    above ~11 kHz are not represented. Duration capped at 30s (quick) or
+    120s (full) — only the head of longer tracks is analyzed.
     """
     try:
         import librosa
@@ -2226,8 +2230,11 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
             return {"error": f"S3 download failed: {e}"}
 
     try:
-        y, sr = librosa.load(local_path, sr=None, duration=300)
-        duration = librosa.get_duration(y=y, sr=sr)
+        max_dur = 30 if detail == "quick" else 120
+        file_duration = librosa.get_duration(path=local_path)
+        y, sr = librosa.load(local_path, sr=22050, duration=max_dur)
+        analyzed_duration = librosa.get_duration(y=y, sr=sr)
+        truncated = file_duration > analyzed_duration + 0.5
 
         spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
         spectral_bandwidth = float(np.mean(librosa.feature.spectral_bandwidth(y=y, sr=sr)))
@@ -2239,6 +2246,7 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
 
         tempo_val = float(librosa.beat.beat_track(y=y, sr=sr)[0])
 
+        nyquist = sr // 2
         bands = {
             "sub_bass": (20, 60),
             "bass": (60, 250),
@@ -2246,7 +2254,7 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
             "mid": (500, 2000),
             "upper_mid": (2000, 4000),
             "presence": (4000, 6000),
-            "brilliance": (6000, 20000),
+            "brilliance": (6000, min(20000, nyquist)),
         }
         band_energy = {}
         for name, (lo, hi) in bands.items():
@@ -2258,7 +2266,9 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
             band_energy = {k: round(v / total_energy * 100, 1) for k, v in band_energy.items()}
 
         result = {
-            "duration_seconds": round(duration, 1),
+            "file_duration_seconds": round(file_duration, 1),
+            "analyzed_duration_seconds": round(analyzed_duration, 1),
+            "truncated": truncated,
             "sample_rate": sr,
             "tempo_bpm": round(tempo_val, 1),
             "spectral_centroid_hz": round(spectral_centroid, 1),
