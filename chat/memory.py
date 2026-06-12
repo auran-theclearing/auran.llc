@@ -2200,7 +2200,7 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
 
     Band-limited: resamples to 22050 Hz (Nyquist ~11 kHz), so frequencies
     above ~11 kHz are not represented. Duration capped at 60s (quick) or
-    600s (full).
+    300s (full).
     """
     try:
         import librosa
@@ -2230,7 +2230,7 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
             return {"error": f"S3 download failed: {e}"}
 
     try:
-        max_dur = 60 if detail == "quick" else 600
+        max_dur = 60 if detail == "quick" else 300
         file_duration = librosa.get_duration(path=local_path)
         y, sr = librosa.load(local_path, sr=22050, duration=max_dur)
         analyzed_duration = librosa.get_duration(y=y, sr=sr)

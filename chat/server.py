@@ -2075,17 +2075,16 @@ async def chat(request: Request):
                                 )
                             )
                             try:
-                                while not tool_task.done():
+                                while True:
                                     try:
                                         result_text = await asyncio.wait_for(
                                             asyncio.shield(tool_task),
                                             timeout=HEARTBEAT_INTERVAL,
                                         )
-                                        break
                                     except TimeoutError:
                                         await event_queue.put(": keepalive\n\n")
-                                else:
-                                    result_text = tool_task.result()
+                                        continue
+                                    break
                             except Exception as tool_err:
                                 print(f"[Chat] Tool execution failed: {tc['name']}: {tool_err}")
                                 result_text = f"Memory recall failed: {type(tool_err).__name__}: {tool_err}"
