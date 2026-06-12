@@ -771,8 +771,9 @@ async function sendMessage() {
       const attachNote = `[Attached audio: ${pendingAttachment.name} → ${s3Key}]`;
       messageText = text ? `${text}\n\n${attachNote}` : attachNote;
     } catch (e) {
-      statusEl.textContent = `upload failed: ${e.message}`;
-      setTimeout(() => { if (statusEl.textContent.startsWith('upload failed')) statusEl.textContent = ''; }, 5000);
+      const errText = `upload failed: ${e.message}`;
+      statusEl.textContent = errText;
+      setTimeout(() => { if (statusEl.textContent === errText) statusEl.textContent = ''; }, 5000);
       isStreaming = false;
       sendBtn.disabled = false;
       return;
@@ -1064,15 +1065,20 @@ async function exportTranscript() {
   // Download as file — filename matches convention: YYYYMMDD-HHMM-chat-transcript.md
   const fname = `${startDate.getFullYear()}${pad(startDate.getMonth()+1)}${pad(startDate.getDate())}-${pad(startDate.getHours())}${pad(startDate.getMinutes())}-chat-transcript.md`;
 
-  const blob = new Blob([transcript], { type: 'text/markdown' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fname;
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+  try {
+    const blob = new Blob([transcript], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+  } catch (e) {
+    statusEl.textContent = `export failed: ${e.message}`;
+    return;
+  }
 
   // Also try clipboard
   try { await navigator.clipboard.writeText(transcript); } catch(e) {}

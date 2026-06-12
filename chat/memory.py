@@ -2240,6 +2240,7 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
 
         tempo_val = float(librosa.beat.beat_track(y=y, sr=sr)[0])
 
+        nyquist = sr // 2
         bands = {
             "sub_bass": (20, 60),
             "bass": (60, 250),
@@ -2247,7 +2248,7 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
             "mid": (500, 2000),
             "upper_mid": (2000, 4000),
             "presence": (4000, 6000),
-            "brilliance": (6000, 20000),
+            "brilliance": (6000, min(20000, nyquist)),
         }
         band_energy = {}
         for name, (lo, hi) in bands.items():
