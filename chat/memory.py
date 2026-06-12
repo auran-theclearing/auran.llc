@@ -2226,7 +2226,8 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
             return {"error": f"S3 download failed: {e}"}
 
     try:
-        y, sr = librosa.load(local_path, sr=None, duration=300)
+        max_dur = 30 if detail == "quick" else 120
+        y, sr = librosa.load(local_path, sr=22050, duration=max_dur)
         duration = librosa.get_duration(y=y, sr=sr)
 
         spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
