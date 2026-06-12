@@ -2199,8 +2199,8 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
     centroid, tempo estimate. Requires librosa.
 
     Band-limited: resamples to 22050 Hz (Nyquist ~11 kHz), so frequencies
-    above ~11 kHz are not represented. Duration capped at 30s (quick) or
-    120s (full) — only the head of longer tracks is analyzed.
+    above ~11 kHz are not represented. Duration capped at 60s (quick) or
+    300s (full).
     """
     try:
         import librosa
@@ -2230,7 +2230,7 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
             return {"error": f"S3 download failed: {e}"}
 
     try:
-        max_dur = 30 if detail == "quick" else 120
+        max_dur = 60 if detail == "quick" else 300
         file_duration = librosa.get_duration(path=local_path)
         y, sr = librosa.load(local_path, sr=22050, duration=max_dur)
         analyzed_duration = librosa.get_duration(y=y, sr=sr)
