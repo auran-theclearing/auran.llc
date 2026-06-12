@@ -857,7 +857,6 @@ async def new_conversation(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-
 def _read_watermarks() -> dict[str, int]:
     """Read memory and scene watermarks from session.json.
 
