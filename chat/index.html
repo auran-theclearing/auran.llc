@@ -247,6 +247,37 @@
   #send-btn:hover { background: var(--accent-dim); }
   #send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
+  #attach-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    width: 44px;
+    height: 44px;
+    border-radius: 8px;
+    font-size: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: color 0.2s;
+  }
+  #attach-btn:hover { color: var(--accent); }
+
+  #attach-preview {
+    display: none;
+    padding: 6px 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+  }
+  #attach-preview .filename { color: var(--accent); }
+  #attach-preview .remove {
+    cursor: pointer;
+    margin-left: 8px;
+    color: var(--error);
+  }
+
   /* Thinking indicator */
   .thinking {
     display: flex;
@@ -397,7 +428,10 @@
   <div id="messages"></div>
 
   <div id="input-area">
+    <div id="attach-preview"><span class="filename"></span><span class="remove" onclick="clearAttachment()">✕</span></div>
     <div id="input-row">
+      <button id="attach-btn" onclick="document.getElementById('file-input').click()" title="Attach audio">&#x1F4CE;</button>
+      <input type="file" id="file-input" accept="audio/*" style="display:none" onchange="handleFileSelect(this)">
       <textarea id="input" rows="1" placeholder="say something..."
         onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       <button id="send-btn" onclick="sendMessage()">↑</button>
@@ -415,6 +449,7 @@ const contextLabel = document.getElementById('context-label');
 
 let history = [];
 let isStreaming = false;
+let pendingAttachment = null;
 
 const STORAGE_KEY = 'auran-chat-history';
 const MAX_CONTEXT_TOKENS = 200000;
@@ -686,18 +721,68 @@ function removeThinking() {
   if (el) el.remove();
 }
 
+function handleFileSelect(input) {
+  const file = input.files[0];
+  if (!file) return;
+  pendingAttachment = file;
+  const preview = document.getElementById('attach-preview');
+  preview.querySelector('.filename').textContent = file.name;
+  preview.style.display = 'block';
+}
+
+function clearAttachment() {
+  pendingAttachment = null;
+  document.getElementById('file-input').value = '';
+  document.getElementById('attach-preview').style.display = 'none';
+}
+
+async function uploadAttachment(file) {
+  const resp = await fetch('/api/upload-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename: file.name, content_type: file.type || 'audio/mpeg', file_size: file.size }),
+  });
+  if (!resp.ok) throw new Error('Failed to get upload URL');
+  const { upload_url, s3_key } = await resp.json();
+
+  const putResp = await fetch(upload_url, {
+    method: 'PUT',
+    headers: { 'Content-Type': file.type || 'audio/mpeg' },
+    body: file,
+  });
+  if (!putResp.ok) throw new Error('Upload to S3 failed');
+  return s3_key;
+}
+
 async function sendMessage() {
   const text = inputEl.value.trim();
-  if (!text || isStreaming) return;
+  if ((!text && !pendingAttachment) || isStreaming) return;
 
   isStreaming = true;
   sendBtn.disabled = true;
   inputEl.value = '';
   inputEl.style.height = 'auto';
 
+  let messageText = text;
+  if (pendingAttachment) {
+    try {
+      statusEl.textContent = 'uploading...';
+      const s3Key = await uploadAttachment(pendingAttachment);
+      const attachNote = `[Attached audio: ${pendingAttachment.name} → ${s3Key}]`;
+      messageText = text ? `${text}\n\n${attachNote}` : attachNote;
+    } catch (e) {
+      statusEl.textContent = 'upload failed';
+      isStreaming = false;
+      sendBtn.disabled = false;
+      return;
+    } finally {
+      clearAttachment();
+    }
+  }
+
   const userTs = new Date().toISOString();
-  addMessage('user', text, null, false, userTs);
-  history.push({ role: 'user', content: text, timestamp: userTs });
+  addMessage('user', messageText, null, false, userTs);
+  history.push({ role: 'user', content: messageText, timestamp: userTs });
   saveHistory();
   updateContextBar();
 

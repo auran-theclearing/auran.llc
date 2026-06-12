@@ -15,6 +15,7 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "alembic>=1.13.0",
     "slowapi>=0.1.9",
+    "librosa>=0.10.0",
 ]
 
 [dependency-groups]
