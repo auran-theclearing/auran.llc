@@ -857,31 +857,6 @@ async def new_conversation(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@app.post("/transcript")
-async def transcript(request: Request):
-    """Generate and download a transcript as a markdown file.
-
-    Accepts form data: content (transcript text), filename (download name)
-    Returns: Downloadable .md file with proper Content-Disposition.
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON") from None
-    content = body.get("content", "")
-    filename = body.get("filename", "chat-transcript.md")
-
-    if not content:
-        raise HTTPException(status_code=400, detail="No content provided")
-
-    return Response(
-        content=content.encode("utf-8"),
-        media_type="text/markdown; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-        },
-    )
-
 
 def _read_watermarks() -> dict[str, int]:
     """Read memory and scene watermarks from session.json.
