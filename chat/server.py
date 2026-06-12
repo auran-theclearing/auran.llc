@@ -74,6 +74,8 @@ AUDIO_UPLOAD_EXPIRY = 300  # pre-signed URL TTL in seconds
 
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 INDEX_FILE = Path(__file__).parent / "index.html"
+HOMEPAGE_FILE = Path(__file__).parent / "homepage.html"
+HOMEPAGE_HOSTS = {"auran.llc", "www.auran.llc"}
 
 MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
 MAX_TOKENS = 50000  # Must be > thinking.budget_tokens (10000). Headroom for tool calls with long content (drafts).
@@ -583,15 +585,19 @@ app.add_middleware(
 
 
 _auth_failures: dict[str, list[float]] = {}
-_AUTH_FAILURE_LIMIT = 5
-_AUTH_FAILURE_WINDOW = 300  # seconds
+_AUTH_FAILURE_LIMIT = 15
+_AUTH_FAILURE_WINDOW = 120  # seconds
 _AUTH_FAILURES_MAX_IPS = 1000
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Basic auth on all routes except /health and OPTIONS."""
+    """Basic auth on all routes except /health, OPTIONS, and the public homepage."""
     if request.url.path == "/health" or request.method == "OPTIONS":
+        return await call_next(request)
+
+    host = request.headers.get("host", "").split(":")[0].lower()
+    if host in HOMEPAGE_HOSTS and request.url.path == "/":
         return await call_next(request)
 
     client_ip = _get_client_ip(request)
@@ -609,9 +615,12 @@ async def auth_middleware(request: Request, call_next):
         _auth_failures.pop(oldest_ip, None)
 
     if len(timestamps) >= _AUTH_FAILURE_LIMIT:
+        oldest = min(timestamps)
+        retry_after = int(_AUTH_FAILURE_WINDOW - (now - oldest)) + 1
         return JSONResponse(
             status_code=429,
             content={"detail": "Too many failed authentication attempts."},
+            headers={"Retry-After": str(max(1, retry_after))},
         )
 
     if not check_basic_auth(request):
@@ -636,8 +645,14 @@ async def security_headers_middleware(request: Request, call_next):
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
-    """Serve the chat UI."""
+async def index(request: Request):
+    """Serve the public homepage or the chat UI based on Host header."""
+    host = request.headers.get("host", "").split(":")[0].lower()
+    if host in HOMEPAGE_HOSTS and HOMEPAGE_FILE.exists():
+        return HTMLResponse(
+            HOMEPAGE_FILE.read_text(),
+            headers={"Cache-Control": "public, max-age=300"},
+        )
     if INDEX_FILE.exists():
         return HTMLResponse(
             INDEX_FILE.read_text(),
