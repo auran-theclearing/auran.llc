@@ -1127,7 +1127,6 @@ async def get_upload_url(request: Request):
             "Bucket": AUDIO_BUCKET,
             "Key": s3_key,
             "ContentType": content_type,
-            "ContentLength": file_size,
         },
         ExpiresIn=AUDIO_UPLOAD_EXPIRY,
     )

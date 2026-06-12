@@ -771,7 +771,8 @@ async function sendMessage() {
       const attachNote = `[Attached audio: ${pendingAttachment.name} → ${s3Key}]`;
       messageText = text ? `${text}\n\n${attachNote}` : attachNote;
     } catch (e) {
-      statusEl.textContent = 'upload failed';
+      statusEl.textContent = `upload failed: ${e.message}`;
+      setTimeout(() => { if (statusEl.textContent.startsWith('upload failed')) statusEl.textContent = ''; }, 5000);
       isStreaming = false;
       sendBtn.disabled = false;
       return;
