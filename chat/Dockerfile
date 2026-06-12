@@ -14,7 +14,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Copy application code
 COPY server.py memory.py persistence.py graph_recall.py system_prompt.txt ./
 COPY migrations/ ./migrations/
-COPY index.html ./
+COPY index.html homepage.html ./
 
 ARG BUILD_SHA=dev
 ENV PYTHONUNBUFFERED=1
