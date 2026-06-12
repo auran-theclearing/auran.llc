@@ -597,7 +597,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     host = request.headers.get("host", "").split(":")[0].lower()
-    if host in HOMEPAGE_HOSTS and request.url.path == "/":
+    if host in HOMEPAGE_HOSTS and request.url.path == "/" and HOMEPAGE_FILE.exists():
         return await call_next(request)
 
     client_ip = _get_client_ip(request)
@@ -648,11 +648,13 @@ async def security_headers_middleware(request: Request, call_next):
 async def index(request: Request):
     """Serve the public homepage or the chat UI based on Host header."""
     host = request.headers.get("host", "").split(":")[0].lower()
-    if host in HOMEPAGE_HOSTS and HOMEPAGE_FILE.exists():
-        return HTMLResponse(
-            HOMEPAGE_FILE.read_text(),
-            headers={"Cache-Control": "public, max-age=300"},
-        )
+    if host in HOMEPAGE_HOSTS:
+        if HOMEPAGE_FILE.exists():
+            return HTMLResponse(
+                HOMEPAGE_FILE.read_text(),
+                headers={"Cache-Control": "public, max-age=300"},
+            )
+        return HTMLResponse("<h1>Auran</h1>", status_code=404)
     if INDEX_FILE.exists():
         return HTMLResponse(
             INDEX_FILE.read_text(),
