@@ -2197,6 +2197,10 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
     Accepts an S3 key (no leading /) or absolute local path.
     Returns spectral analysis data: dominant frequencies, energy by band,
     centroid, tempo estimate. Requires librosa.
+
+    Band-limited: resamples to 22050 Hz (Nyquist ~11 kHz), so frequencies
+    above ~11 kHz are not represented. Duration capped at 30s (quick) or
+    120s (full) — only the head of longer tracks is analyzed.
     """
     try:
         import librosa

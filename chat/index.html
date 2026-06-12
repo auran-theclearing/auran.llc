@@ -1076,7 +1076,9 @@ async function exportTranscript() {
     a.click();
     setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
   } catch (e) {
-    statusEl.textContent = `export failed: ${e.message}`;
+    const errText = `export failed: ${e.message}`;
+    statusEl.textContent = errText;
+    setTimeout(() => { if (statusEl.textContent === errText) statusEl.textContent = ''; }, 5000);
     return;
   }
 
