@@ -2244,7 +2244,8 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
         top_indices = np.argsort(fft)[-10:][::-1]
         dominant_freqs = [{"hz": float(freqs[i]), "magnitude": float(fft[i])} for i in top_indices]
 
-        tempo_val = float(librosa.beat.beat_track(y=y, sr=sr)[0])
+        tempo_raw = librosa.beat.beat_track(y=y, sr=sr)[0]
+        tempo_val = float(np.squeeze(tempo_raw))
 
         nyquist = sr // 2
         bands = {

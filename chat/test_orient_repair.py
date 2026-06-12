@@ -54,7 +54,7 @@ def _mock_librosa():
     librosa.feature.spectral_centroid.return_value = np.array([[1500.0, 1600.0]])
     librosa.feature.spectral_bandwidth.return_value = np.array([[2000.0, 2100.0]])
 
-    librosa.beat.beat_track.return_value = (120.0, np.array([]))
+    librosa.beat.beat_track.return_value = (np.array([120.0]), np.array([]))
 
     chroma = np.random.rand(12, 100).astype(np.float32)
     librosa.feature.chroma_stft.return_value = chroma
