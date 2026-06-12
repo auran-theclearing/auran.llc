@@ -1071,6 +1071,19 @@ async def get_upload_url(request: Request):
     filename = body.get("filename", "audio.mp3")
     content_type = body.get("content_type", "audio/mpeg")
 
+    allowed_types = {
+        "audio/mpeg",
+        "audio/wav",
+        "audio/mp4",
+        "audio/x-m4a",
+        "audio/ogg",
+        "audio/flac",
+        "audio/webm",
+        "audio/aac",
+    }
+    if content_type not in allowed_types:
+        return JSONResponse(status_code=415, content={"detail": f"Unsupported content type: {content_type}"})
+
     file_size = body.get("file_size", 0)
     max_bytes = 100 * 1024 * 1024  # 100 MB
     if not file_size or file_size > max_bytes:
@@ -1079,9 +1092,15 @@ async def get_upload_url(request: Request):
             content={"detail": f"File too large or missing size (max {max_bytes // 1024 // 1024}MB)"},
         )
 
-    safe_name = "".join(c for c in filename if c.isalnum() or c in "-_")
-    if not safe_name:
-        safe_name = "audio"
+    # Preserve extension but strip traversal characters
+    stem = "".join(c for c in filename.rsplit(".", 1)[0] if c.isalnum() or c in "-_")
+    ext = ""
+    if "." in filename:
+        raw_ext = filename.rsplit(".", 1)[1]
+        ext = "." + "".join(c for c in raw_ext if c.isalnum())
+    safe_name = stem + ext
+    if not stem:
+        safe_name = "audio" + ext
     s3_key = f"uploads/{uuid.uuid4().hex[:8]}-{safe_name}"
 
     s3_client = boto3.client("s3", region_name="us-east-1")

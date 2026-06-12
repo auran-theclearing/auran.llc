@@ -347,12 +347,12 @@ class TestUploadUrlEndpoint:
         assert "upload_url" in data
         assert "s3_key" in data
         assert data["s3_key"].startswith("uploads/")
-        assert "testmp3" in data["s3_key"]
+        assert "test.mp3" in data["s3_key"]
 
     def test_rejects_oversized_file(self, client):
         resp = client.post(
             "/api/upload-url",
-            json={"filename": "huge.wav", "file_size": 200 * 1024 * 1024},
+            json={"filename": "huge.wav", "content_type": "audio/wav", "file_size": 200 * 1024 * 1024},
             headers=self._auth(),
         )
         assert resp.status_code == 413
@@ -369,10 +369,31 @@ class TestUploadUrlEndpoint:
             )
 
         data = resp.json()
-        # The part after "uploads/<uuid>-" must not contain path separators or ".."
         name_part = data["s3_key"].split("-", 1)[1]
         assert "/" not in name_part
         assert ".." not in name_part
+
+    def test_preserves_extension(self, client):
+        mock_s3 = MagicMock()
+        mock_s3.generate_presigned_url.return_value = "https://s3.example.com/signed"
+
+        with patch("boto3.client", return_value=mock_s3):
+            resp = client.post(
+                "/api/upload-url",
+                json={"filename": "my-song.mp3", "content_type": "audio/mpeg", "file_size": 5000},
+                headers=self._auth(),
+            )
+
+        data = resp.json()
+        assert data["s3_key"].endswith(".mp3")
+
+    def test_rejects_non_audio_content_type(self, client):
+        resp = client.post(
+            "/api/upload-url",
+            json={"filename": "sketch.png", "content_type": "image/png", "file_size": 1000},
+            headers=self._auth(),
+        )
+        assert resp.status_code == 415
 
     def test_requires_auth(self, client):
         resp = client.post(
