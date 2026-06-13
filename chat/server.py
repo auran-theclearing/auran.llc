@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import base64
 import json
+import logging
 import os
 import time
 from datetime import UTC, datetime
@@ -41,6 +42,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
+
+# ---------------------------------------------------------------------------
+# Structured logging — JSON lines for CloudWatch parsing
+# ---------------------------------------------------------------------------
+
+_json_formatter = logging.Formatter(
+    '{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":%(message)s}'
+)
+_handler = logging.StreamHandler()
+_handler.setFormatter(_json_formatter)
+
+audit_log = logging.getLogger("auran.audit")
+audit_log.addHandler(_handler)
+audit_log.setLevel(logging.INFO)
+audit_log.propagate = False
 
 
 def _get_anthropic_key() -> str:
@@ -602,6 +618,8 @@ async def auth_middleware(request: Request, call_next):
 
     client_ip = _get_client_ip(request)
     now = time.monotonic()
+    path = request.url.path
+    user_agent = request.headers.get("user-agent", "unknown")
 
     timestamps = _auth_failures.get(client_ip, [])
     timestamps = [t for t in timestamps if now - t < _AUTH_FAILURE_WINDOW]
@@ -617,6 +635,19 @@ async def auth_middleware(request: Request, call_next):
     if len(timestamps) >= _AUTH_FAILURE_LIMIT:
         oldest = min(timestamps)
         retry_after = int(_AUTH_FAILURE_WINDOW - (now - oldest)) + 1
+        audit_log.warning(
+            json.dumps(
+                {
+                    "event": "auth_lockout",
+                    "ip": client_ip,
+                    "path": path,
+                    "user_agent": user_agent[:200],
+                    "failure_count": len(timestamps),
+                    "retry_after": max(1, retry_after),
+                    "method": request.method,
+                }
+            )
+        )
         return JSONResponse(
             status_code=429,
             content={"detail": "Too many failed authentication attempts."},
@@ -624,13 +655,40 @@ async def auth_middleware(request: Request, call_next):
         )
 
     if not check_basic_auth(request):
+        failure_count = len(_auth_failures.get(client_ip, [])) + 1
         _auth_failures.setdefault(client_ip, []).append(now)
+        has_auth_header = "Authorization" in request.headers
+        audit_log.info(
+            json.dumps(
+                {
+                    "event": "auth_failure",
+                    "ip": client_ip,
+                    "path": path,
+                    "method": request.method,
+                    "user_agent": user_agent[:200],
+                    "has_auth_header": has_auth_header,
+                    "failure_count": failure_count,
+                    "window_remaining": int(_AUTH_FAILURE_LIMIT - failure_count),
+                }
+            )
+        )
         return Response(
             status_code=401,
             content="Unauthorized",
             headers={"WWW-Authenticate": 'Basic realm="Auran Chat"'},
         )
 
+    if client_ip in _auth_failures:
+        cleared = len(_auth_failures[client_ip])
+        audit_log.info(
+            json.dumps(
+                {
+                    "event": "auth_failure_reset",
+                    "ip": client_ip,
+                    "cleared_failures": cleared,
+                }
+            )
+        )
     _auth_failures.pop(client_ip, None)
     return await call_next(request)
 
@@ -1784,6 +1842,17 @@ async def chat(request: Request):
                                         print(
                                             f"[Chat] Primary model exhausted retries, falling back to {FALLBACK_MODEL}"
                                         )
+                                        audit_log.warning(
+                                            json.dumps(
+                                                {
+                                                    "event": "model_fallback",
+                                                    "from_model": current_model,
+                                                    "to_model": FALLBACK_MODEL,
+                                                    "trigger_status": resp.status_code,
+                                                    "attempts_exhausted": MAX_API_RETRIES + 1,
+                                                }
+                                            )
+                                        )
                                         current_model = FALLBACK_MODEL
                                         payload["model"] = current_model
                                         await event_queue.put(
@@ -2011,6 +2080,17 @@ async def chat(request: Request):
                             # Exhausted retries — try fallback model
                             if current_model != FALLBACK_MODEL:
                                 print(f"[Chat] {type(e).__name__} exhausted retries, falling back to {FALLBACK_MODEL}")
+                                audit_log.warning(
+                                    json.dumps(
+                                        {
+                                            "event": "model_fallback",
+                                            "from_model": current_model,
+                                            "to_model": FALLBACK_MODEL,
+                                            "trigger": type(e).__name__,
+                                            "attempts_exhausted": MAX_API_RETRIES + 1,
+                                        }
+                                    )
+                                )
                                 current_model = FALLBACK_MODEL
                                 payload["model"] = current_model
                                 await event_queue.put(
@@ -2132,6 +2212,25 @@ async def chat(request: Request):
                     + (f", {tool_round} tool round(s)" if tool_round > 0 else "")
                     + f"): {response_text[:80]}..."
                 )
+                audit_log.info(
+                    json.dumps(
+                        {
+                            "event": "api_request_complete",
+                            "model_requested": model,
+                            "model_used": current_model,
+                            "fallback_triggered": current_model != model,
+                            "input_tokens": input_tokens_total,
+                            "output_tokens": output_tokens_total,
+                            "cache_read_tokens": cache_read_total,
+                            "cache_create_tokens": cache_create_total,
+                            "total_tokens": total_tokens,
+                            "context_pct": context_pct,
+                            "tool_rounds": tool_round,
+                            "elapsed_s": round(elapsed, 2),
+                            "message_count": len(messages),
+                        }
+                    )
+                )
 
                 # --- Persist assistant response to DB (off event loop) ---
                 try:
@@ -2153,6 +2252,8 @@ async def chat(request: Request):
                     if current_thinking_text and stop_reason != "tool_use":
                         all_thinking_text.extend(current_thinking_text)
                     usage_metadata = {
+                        "model_requested": model,
+                        "model_used": current_model,
                         "token_usage": {
                             "input_tokens": input_tokens_total,
                             "output_tokens": output_tokens_total,
@@ -2161,7 +2262,7 @@ async def chat(request: Request):
                             "cache_creation_input_tokens": cache_create_total,
                             "context_pct": context_pct,
                             "tool_rounds": tool_round,
-                        }
+                        },
                     }
                     await asyncio.wait_for(
                         asyncio.to_thread(
