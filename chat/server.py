@@ -47,11 +47,26 @@ from slowapi.errors import RateLimitExceeded
 # Structured logging — JSON lines for CloudWatch parsing
 # ---------------------------------------------------------------------------
 
-_json_formatter = logging.Formatter(
-    '{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":%(message)s}'
-)
+
+class _AuditFormatter(logging.Formatter):
+    def format(self, record):
+        msg = record.getMessage()
+        try:
+            payload = json.loads(msg)
+        except (json.JSONDecodeError, TypeError):
+            payload = msg
+        return json.dumps(
+            {
+                "time": self.formatTime(record),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": payload,
+            }
+        )
+
+
 _handler = logging.StreamHandler()
-_handler.setFormatter(_json_formatter)
+_handler.setFormatter(_AuditFormatter())
 
 audit_log = logging.getLogger("auran.audit")
 audit_log.addHandler(_handler)
@@ -642,7 +657,7 @@ async def auth_middleware(request: Request, call_next):
                     "ip": client_ip,
                     "path": path,
                     "user_agent": user_agent[:200],
-                    "failure_count": len(timestamps),
+                    "prior_failures": len(timestamps),
                     "retry_after": max(1, retry_after),
                     "method": request.method,
                 }
@@ -668,7 +683,7 @@ async def auth_middleware(request: Request, call_next):
                     "user_agent": user_agent[:200],
                     "has_auth_header": has_auth_header,
                     "failure_count": failure_count,
-                    "window_remaining": int(_AUTH_FAILURE_LIMIT - failure_count),
+                    "failures_remaining": int(_AUTH_FAILURE_LIMIT - failure_count),
                 }
             )
         )
