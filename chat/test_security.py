@@ -183,15 +183,21 @@ class TestCheckBasicAuth:
 
 
 class TestAuthBruteForce:
-    def test_first_five_failures_return_401(self, client):
-        """5 failed attempts all get 401 (auth rejected, not rate limited)."""
-        for i in range(5):
+    """Tests use the actual _AUTH_FAILURE_LIMIT (15) from server config."""
+
+    def test_failures_below_limit_return_401(self, client):
+        """Failures below the limit all get 401 (auth rejected, not rate limited)."""
+        import server
+
+        for i in range(server._AUTH_FAILURE_LIMIT - 1):
             resp = client.get("/", headers=_basic_auth_header("wrong", "wrong"))
             assert resp.status_code == 401, f"Request {i + 1} should be 401"
 
-    def test_sixth_failure_returns_429(self, client):
-        """After 5 failures, the 6th request gets 429."""
-        for _ in range(5):
+    def test_limit_reached_returns_429(self, client):
+        """After reaching the failure limit, the next request gets 429."""
+        import server
+
+        for _ in range(server._AUTH_FAILURE_LIMIT):
             client.get("/", headers=_basic_auth_header("wrong", "wrong"))
         resp = client.get("/", headers=_basic_auth_header("wrong", "wrong"))
         assert resp.status_code == 429
@@ -208,7 +214,7 @@ class TestAuthBruteForce:
         import server
 
         monkeypatch.setattr(server, "_AUTH_FAILURE_WINDOW", 0.01)
-        for _ in range(5):
+        for _ in range(server._AUTH_FAILURE_LIMIT):
             client.get("/", headers=_basic_auth_header("wrong", "wrong"))
         time.sleep(0.02)
         resp = client.get("/", headers=_basic_auth_header("wrong", "wrong"))
@@ -216,12 +222,13 @@ class TestAuthBruteForce:
 
     def test_successful_auth_resets_counter(self, client):
         """Correct login clears failure history — prevents self-lockout."""
-        for _ in range(4):
+        import server
+
+        for _ in range(server._AUTH_FAILURE_LIMIT - 2):
             client.get("/", headers=_basic_auth_header("wrong", "wrong"))
-        # Successful auth on an authenticated route resets the counter
         client.get("/", headers=_basic_auth_header("testuser", "testpass"))
-        # 4 more failures should stay under the threshold (counter was reset)
-        for _ in range(4):
+        # Same number of failures should stay under threshold (counter was reset)
+        for _ in range(server._AUTH_FAILURE_LIMIT - 2):
             client.get("/", headers=_basic_auth_header("wrong", "wrong"))
         resp = client.get("/", headers=_basic_auth_header("wrong", "wrong"))
         assert resp.status_code == 401
