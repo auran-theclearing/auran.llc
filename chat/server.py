@@ -616,6 +616,7 @@ app.add_middleware(
 
 
 _auth_failures: dict[str, list[float]] = {}
+_lockout_active: set[str] = set()
 _AUTH_FAILURE_LIMIT = 15
 _AUTH_FAILURE_WINDOW = 120  # seconds
 _AUTH_FAILURES_MAX_IPS = 1000
@@ -642,6 +643,7 @@ async def auth_middleware(request: Request, call_next):
         _auth_failures[client_ip] = timestamps
     else:
         _auth_failures.pop(client_ip, None)
+        _lockout_active.discard(client_ip)
 
     if len(_auth_failures) > _AUTH_FAILURES_MAX_IPS:
         oldest_ip = min(_auth_failures, key=lambda ip: _auth_failures[ip][0])
@@ -650,19 +652,23 @@ async def auth_middleware(request: Request, call_next):
     if len(timestamps) >= _AUTH_FAILURE_LIMIT:
         oldest = min(timestamps)
         retry_after = int(_AUTH_FAILURE_WINDOW - (now - oldest)) + 1
-        audit_log.warning(
-            json.dumps(
-                {
-                    "event": "auth_lockout",
-                    "ip": client_ip,
-                    "path": path,
-                    "user_agent": user_agent[:200],
-                    "prior_failures": len(timestamps),
-                    "retry_after": max(1, retry_after),
-                    "method": request.method,
-                }
+        new_lockout = client_ip not in _lockout_active
+        _lockout_active.add(client_ip)
+        if new_lockout:
+            audit_log.warning(
+                json.dumps(
+                    {
+                        "event": "auth_lockout",
+                        "ip": client_ip,
+                        "path": path,
+                        "user_agent": user_agent[:200],
+                        "has_auth_header": "Authorization" in request.headers,
+                        "prior_failures": len(timestamps),
+                        "retry_after": max(1, retry_after),
+                        "method": request.method,
+                    }
+                )
             )
-        )
         return JSONResponse(
             status_code=429,
             content={"detail": "Too many failed authentication attempts."},
