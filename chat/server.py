@@ -2252,6 +2252,8 @@ async def chat(request: Request):
                     if current_thinking_text and stop_reason != "tool_use":
                         all_thinking_text.extend(current_thinking_text)
                     usage_metadata = {
+                        "model_requested": model,
+                        "model_used": current_model,
                         "token_usage": {
                             "input_tokens": input_tokens_total,
                             "output_tokens": output_tokens_total,
@@ -2260,7 +2262,7 @@ async def chat(request: Request):
                             "cache_creation_input_tokens": cache_create_total,
                             "context_pct": context_pct,
                             "tool_rounds": tool_round,
-                        }
+                        },
                     }
                     await asyncio.wait_for(
                         asyncio.to_thread(
