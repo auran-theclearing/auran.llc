@@ -2082,6 +2082,7 @@ async def chat(request: Request):
                                             timeout=HEARTBEAT_INTERVAL,
                                         )
                                     except TimeoutError:
+                                        print(f"[Chat] Tool keepalive — {tc['name']} still running")
                                         await event_queue.put(": keepalive\n\n")
                                         continue
                                     break
@@ -2218,9 +2219,10 @@ async def chat(request: Request):
         stream_response(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "Content-Encoding": "identity",
         },
     )
 
