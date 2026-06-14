@@ -130,10 +130,7 @@ CREATE TABLE IF NOT EXISTS episode_references (
 def run_migration(connection) -> None:
     logger.info("Running distillation schema migration...")
     cursor = connection.cursor()
-    for statement in MIGRATION_SQL.split(";"):
-        statement = statement.strip()
-        if statement and not statement.startswith("--"):
-            cursor.execute(statement)
+    cursor.execute(MIGRATION_SQL)
     connection.commit()
     logger.info("Migration complete.")
 

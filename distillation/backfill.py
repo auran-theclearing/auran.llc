@@ -17,9 +17,9 @@ def phase_1_migrate_old_rows(connection) -> int:
         SELECT
             id, title, summary, channel, occurred_at,
             'manual', created_at
-        FROM memories
-        WHERE memory_type = 'scene'
-        AND id NOT IN (SELECT id FROM episodes)
+        FROM memories m
+        WHERE m.memory_type = 'scene'
+        AND NOT EXISTS (SELECT 1 FROM episodes e WHERE e.id = m.id)
         ON CONFLICT DO NOTHING
     """)
     scenes_migrated = cursor.rowcount
@@ -32,8 +32,8 @@ def phase_1_migrate_old_rows(connection) -> int:
         SELECT
             id, title, content, channel, occurred_at,
             'manual', created_at
-        FROM moments
-        WHERE id NOT IN (SELECT id FROM episodes)
+        FROM moments m
+        WHERE NOT EXISTS (SELECT 1 FROM episodes e WHERE e.id = m.id)
         ON CONFLICT DO NOTHING
     """)
     moments_migrated = cursor.rowcount
