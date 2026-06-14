@@ -21,6 +21,7 @@ def main():
         print("  migrate   Run schema migration")
         print("  clean     Run clean pass on a transcript")
         print("  refine    Clean + chunk + distill → local JSON (requires API key)")
+        print("  push      Push episodes JSON to database")
         print("  batch     Process all queued jobs (requires DB + API key)")
         print("  review    Review pending episodes (requires DB)")
         print("  coverage  Show coverage report (requires DB)")
@@ -59,6 +60,12 @@ def main():
                     print("Error: --after requires a line number (integer)", file=sys.stderr)
                     sys.exit(1)
         _run_refine(sys.argv[2], model=model, after_line=after_line)
+
+    elif command == "push":
+        if len(sys.argv) < 3:
+            print("Usage: distill push <episodes_json_path>")
+            sys.exit(1)
+        _run_push(sys.argv[2])
 
     elif command == "review":
         _run_review()
@@ -350,6 +357,120 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
     if failed_chunks:
         sys.exit(1)
 
+
+def _run_push(path: str):
+    import json
+    from pathlib import Path
+
+    import psycopg2
+    import psycopg2.extras
+
+    from distillation.config import load_config
+
+    config = load_config()
+
+    episodes_path = Path(path)
+    if not episodes_path.exists():
+        print(f"File not found: {path}")
+        sys.exit(1)
+
+    data = json.loads(episodes_path.read_text())
+    episodes_list = data.get("episodes", [])
+    if not episodes_list:
+        print("No episodes found in file.")
+        sys.exit(1)
+
+    source_transcript = data.get("source_transcript", episodes_path.stem)
+    distiller_model = data.get("model", "unknown")
+    status = data.get("status", "complete")
+
+    print(f"Pushing {len(episodes_list)} episodes from {source_transcript}")
+    print(f"Model: {distiller_model}, Status: {status}")
+    print()
+
+    db_url = config.database_url.get_secret_value()
+    conn = psycopg2.connect(db_url)
+    psycopg2.extras.register_uuid()
+
+    try:
+        cur = conn.cursor()
+        inserted = 0
+        skipped = 0
+
+        for i, ep in enumerate(episodes_list):
+            ep_content_hash = ep.get("_content_hash")
+            transcript_lines = ep.get("transcript_lines")
+            if isinstance(transcript_lines, list):
+                transcript_lines = ",".join(str(x) for x in transcript_lines)
+
+            row = {
+                "title": ep.get("title", f"Episode {i + 1}"),
+                "summary": ep.get("summary"),
+                "transcript_excerpt": ep.get("transcript_excerpt"),
+                "emotional_tone": ep.get("emotional_tone"),
+                "content_signals": json.dumps(ep.get("content_signals"))
+                if ep.get("content_signals")
+                else None,
+                "relational_events": json.dumps(ep.get("relational_events"))
+                if ep.get("relational_events")
+                else None,
+                "topics": ep.get("topics"),
+                "channel": "chat",
+                "significance": "high" if ep.get("landmark") else "moderate",
+                "occurred_at": ep.get("occurred_at"),
+                "transcript_file": source_transcript,
+                "content_hash": ep_content_hash,
+                "episode_number": i + 1,
+                "transcript_lines": transcript_lines,
+                "boundary_signal": ep.get("boundary_signal"),
+                "episode_type": ep.get("episode_type"),
+                "landmark": ep.get("landmark", False),
+                "source_model": "claude-opus-4-6",
+                "distiller_model": distiller_model,
+                "distillation_status": "distilled" if status == "complete" else "partial",
+            }
+
+            cur.execute(
+                """
+                INSERT INTO episodes (
+                    title, summary, transcript_excerpt, emotional_tone,
+                    content_signals, relational_events, topics, channel,
+                    significance, occurred_at, transcript_file, content_hash,
+                    episode_number, transcript_lines, boundary_signal,
+                    episode_type, landmark, source_model, distiller_model,
+                    distillation_status
+                ) VALUES (
+                    %(title)s, %(summary)s, %(transcript_excerpt)s, %(emotional_tone)s,
+                    %(content_signals)s, %(relational_events)s, %(topics)s, %(channel)s,
+                    %(significance)s, %(occurred_at)s, %(transcript_file)s, %(content_hash)s,
+                    %(episode_number)s, %(transcript_lines)s, %(boundary_signal)s,
+                    %(episode_type)s, %(landmark)s, %(source_model)s, %(distiller_model)s,
+                    %(distillation_status)s
+                )
+                ON CONFLICT (transcript_file, content_hash)
+                    WHERE content_hash IS NOT NULL
+                DO NOTHING
+                RETURNING id
+                """,
+                row,
+            )
+            result = cur.fetchone()
+            if result:
+                inserted += 1
+            else:
+                skipped += 1
+
+        conn.commit()
+        print(f"Done. {inserted} inserted, {skipped} skipped (duplicates).")
+        print()
+        print("Embeddings not generated — run `distill backfill embeddings` later.")
+
+    except Exception as e:
+        conn.rollback()
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        conn.close()
 
 def _run_review():
     print("Not yet wired: requires database connection.", file=sys.stderr)

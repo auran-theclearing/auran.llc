@@ -187,6 +187,22 @@ episodes = Table(
     Column("embedding", Vector(1024)),
     Column("created_at", DateTime(timezone=True), server_default=text("now()")),
     Column("updated_at", DateTime(timezone=True), server_default=text("now()")),
+    # Distillation columns
+    Column("transcript_file", Text),
+    Column("job_id", UUID, ForeignKey("distillation_jobs.id"), nullable=True),
+    Column("content_hash", Text),
+    Column("episode_number", Integer),
+    Column("transcript_lines", Text),
+    Column("boundary_signal", Text),
+    Column("episode_type", Text),
+    Column("landmark", Boolean, server_default=text("false")),
+    Column("source_model", Text),
+    Column("distiller_model", Text),
+    Column("distillation_status", Text, server_default=text("'manual'")),
+    Column("revision_count", Integer, server_default=text("0")),
+    Column("reviewer_notes", Text),
+    Column("verified_at", DateTime(timezone=True)),
+    Column("verified_by", Text),
 )
 
 episode_messages = Table(
@@ -223,6 +239,91 @@ episode_participants = Table(
         ForeignKey("people.id", ondelete="CASCADE"),
         nullable=False,
     ),
+)
+
+# ---------------------------------------------------------------------------
+# Distillation Infrastructure
+# ---------------------------------------------------------------------------
+
+distillation_jobs = Table(
+    "distillation_jobs",
+    metadata,
+    Column("id", UUID, primary_key=True, server_default=text("gen_random_uuid()")),
+    Column("transcript_file", Text, nullable=False, unique=True),
+    Column("channel", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default=text("'queued'")),
+    Column("total_chunks", Integer),
+    Column("chunks_done", Integer, server_default=text("0")),
+    Column("episode_count", Integer),
+    Column("episodes_verified", Integer, server_default=text("0")),
+    Column("episodes_approved", Integer, server_default=text("0")),
+    Column("api_cost_usd", Float),
+    Column("source_model", Text),
+    Column("distiller_model", Text),
+    Column("error_message", Text),
+    Column("submitted_at", DateTime(timezone=True), server_default=text("now()")),
+    Column("started_at", DateTime(timezone=True)),
+    Column("completed_at", DateTime(timezone=True)),
+    Column("verified_at", DateTime(timezone=True)),
+    Column("verified_by", Text),
+)
+
+distillation_threads = Table(
+    "distillation_threads",
+    metadata,
+    Column("id", UUID, primary_key=True, server_default=text("gen_random_uuid()")),
+    Column(
+        "job_id",
+        UUID,
+        ForeignKey("distillation_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("thread_type", Text, nullable=False),
+    Column("title", Text),
+    Column("content", Text, nullable=False),
+    Column("line_ref", Text),
+    Column("created_at", DateTime(timezone=True), server_default=text("now()")),
+)
+
+distillation_dead_letters = Table(
+    "distillation_dead_letters",
+    metadata,
+    Column("id", UUID, primary_key=True, server_default=text("gen_random_uuid()")),
+    Column(
+        "job_id",
+        UUID,
+        ForeignKey("distillation_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("chunk_index", Integer),
+    Column("error_type", Text),
+    Column("error_msg", Text),
+    Column("raw_response", Text),
+    Column("created_at", DateTime(timezone=True), server_default=text("now()")),
+    Column("resolved_at", DateTime(timezone=True)),
+    Column("resolution", Text),
+)
+
+episode_references = Table(
+    "episode_references",
+    metadata,
+    Column("id", UUID, primary_key=True, server_default=text("gen_random_uuid()")),
+    Column(
+        "source_episode_id",
+        UUID,
+        ForeignKey("episodes.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "target_episode_id",
+        UUID,
+        ForeignKey("episodes.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("reference_type", Text, nullable=False),
+    Column("context", Text),
+    Column("flagged", Boolean, server_default=text("false")),
+    Column("created_at", DateTime(timezone=True), server_default=text("now()")),
 )
 
 # ---------------------------------------------------------------------------
