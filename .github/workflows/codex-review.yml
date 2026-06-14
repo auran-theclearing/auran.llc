@@ -45,6 +45,7 @@ jobs:
         run: |
           (cd chat && uv sync)
           if [ -d distillation ]; then (cd distillation && uv pip install -e ".[dev]" --system); fi
+          pip install ruff pytest
 
       - name: Run Codex review
         id: run_codex
@@ -93,10 +94,11 @@ jobs:
                - Does CLAUDE.md reference anything that was removed or renamed?
                - Do inline comments describe what the code currently does, not what it used to do?
 
-            TOOLS AVAILABLE: Python 3.12, uv, pytest, and ruff are pre-installed.
-            You can run tests to verify claims:
-              - cd chat && uv run pytest test_scene_memory.py -v
-              - cd distillation && pytest tests/ -v
+            TOOLS AVAILABLE: Python 3.12, pytest, and ruff are pre-installed.
+            The sandbox is read-only — you cannot install packages, but you can run
+            pre-installed tools. To verify claims, run:
+              - cd chat && .venv/bin/pytest test_scene_memory.py -v
+              - if distillation/ exists: cd distillation && pytest tests/ -v
               - ruff check .
 
             Format your findings as a markdown list with file paths and line numbers.
