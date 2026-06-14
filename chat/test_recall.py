@@ -677,6 +677,35 @@ class TestSurfaceRelevantMoments:
     @patch("memory.reminisce")
     @patch("memory.recall")
     @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_relational_events_as_plain_strings(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
+        """relational_events stored as plain strings (distiller format) render correctly."""
+        mock_recall.return_value = [
+            {
+                "id": "m-1",
+                "title": "Depth Match",
+                "summary": "Explored something deep.",
+                "hooks": None,
+                "date": date(2026, 5, 22),
+                "channel": "chat",
+                "tags": [],
+                "has_transcript": False,
+                "turn_count": None,
+                "estimated_tokens": None,
+                "emotional_tone": "reflective",
+                "episode_type": "exploration",
+                "relational_events": ["depth_match", "landing"],
+                "similarity": 0.62,
+            },
+        ]
+
+        result = surface_relevant_moments("depth")
+
+        assert "Relational: depth_match; landing" in result
+
+    @patch("memory.recall_memories", return_value=[])
+    @patch("memory.reminisce")
+    @patch("memory.recall")
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
     def test_vivid_recall_triggered_above_threshold(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """Moment with transcript above vivid threshold → vivid section built."""
         mock_recall.return_value = [

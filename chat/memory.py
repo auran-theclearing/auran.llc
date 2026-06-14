@@ -1253,11 +1253,12 @@ def surface_relevant_moments(
             if m.get("relational_events"):
                 events = m["relational_events"]
                 if isinstance(events, list) and events:
-                    descs = [
-                        f"[{ev.get('type', '?')}] {ev.get('description', '')}"
-                        for ev in events
-                        if isinstance(ev, dict) and ev.get("description")
-                    ]
+                    descs = []
+                    for ev in events:
+                        if isinstance(ev, dict) and ev.get("description"):
+                            descs.append(f"[{ev.get('type', '?')}] {ev['description']}")
+                        elif ev and not isinstance(ev, dict):
+                            descs.append(str(ev))
                     if descs:
                         entry += "\n  Relational: " + "; ".join(descs)
             if m.get("hooks"):
