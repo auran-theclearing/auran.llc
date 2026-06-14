@@ -116,6 +116,7 @@ HEARTBEAT_INTERVAL = 15  # seconds — keepalive interval during upstream stalls
 MAX_API_RETRIES = 3  # Retry transient API failures before giving up
 RETRY_BASE_DELAY = 1.0  # Base delay for exponential backoff (seconds)
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "claude-sonnet-4-6")
+ALLOWED_MODELS = {ANTHROPIC_MODEL, WARMUP_MODEL, FALLBACK_MODEL}
 
 # Module-level generation state for /chat/status endpoint.
 # active_count handles overlapping requests (double-send, retry race, two devices)
@@ -1304,7 +1305,8 @@ async def vitals(request: Request):
         )
 
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        print(f"[Vitals] Error: {type(e).__name__}: {e}")
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
 # Need _get_db_config available at module level for vitals endpoint
@@ -1728,7 +1730,8 @@ async def chat(request: Request):
     except Exception as e:
         print(f"[Persistence] User message persist failed (non-fatal): {e}")
 
-    model = body.get("model", ANTHROPIC_MODEL)
+    requested_model = body.get("model")
+    model = requested_model if requested_model in ALLOWED_MODELS else ANTHROPIC_MODEL
     debug_mode = body.get("debug", False)
 
     # Pass the user's latest message for semantic recall (Phase 3)
@@ -1885,7 +1888,7 @@ async def chat(request: Request):
 
                                     print(f"[Chat] API error {resp.status_code}: {error_msg}")
                                     await event_queue.put(
-                                        f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+                                        f"data: {json.dumps({'type': 'error', 'error': f'API error ({resp.status_code})'})}\n\n"
                                     )
                                     await event_queue.put(None)
                                     return
@@ -2080,7 +2083,7 @@ async def chat(request: Request):
                                         err = event.get("error", {})
                                         print(f"[Chat] Stream error: {err}")
                                         await event_queue.put(
-                                            f"data: {json.dumps({'type': 'error', 'error': str(err)})}\n\n"
+                                            f"data: {json.dumps({'type': 'error', 'error': 'A streaming error occurred'})}\n\n"
                                         )
                                         await event_queue.put(None)
                                         return
@@ -2308,7 +2311,9 @@ async def chat(request: Request):
 
             except Exception as e:
                 print(f"[Chat] Unexpected error: {type(e).__name__}: {e}")
-                await event_queue.put(f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n")
+                await event_queue.put(
+                    f"data: {json.dumps({'type': 'error', 'error': 'An unexpected error occurred'})}\n\n"
+                )
         finally:
             _chat_state["active_count"] = max(0, _chat_state["active_count"] - 1)
             await event_queue.put(None)  # Sentinel: stream complete

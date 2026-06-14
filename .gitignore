@@ -23,7 +23,8 @@ Thumbs.db
 
 # Environment
 .env
-.env.local
+.env.*
+!.env.example
 
 # pytest
 .pytest_cache/
