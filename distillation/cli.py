@@ -20,7 +20,7 @@ def main():
         print("Commands:")
         print("  migrate   Run schema migration")
         print("  clean     Run clean pass on a transcript")
-        print("  extract   Clean + chunk + distill → local JSON (requires API key)")
+        print("  refine    Clean + chunk + distill → local JSON (requires API key)")
         print("  batch     Process all queued jobs (requires DB + API key)")
         print("  review    Review pending episodes (requires DB)")
         print("  coverage  Show coverage report (requires DB)")
@@ -40,16 +40,16 @@ def main():
             sys.exit(1)
         _run_clean(sys.argv[2])
 
-    elif command == "extract":
+    elif command == "refine":
         if len(sys.argv) < 3:
-            print("Usage: distill extract <transcript_path> [--model MODEL]")
+            print("Usage: distill refine <transcript_path> [--model MODEL]")
             sys.exit(1)
         model = None
         if "--model" in sys.argv:
             idx = sys.argv.index("--model")
             if idx + 1 < len(sys.argv):
                 model = sys.argv[idx + 1]
-        _run_extract(sys.argv[2], model=model)
+        _run_refine(sys.argv[2], model=model)
 
     elif command == "review":
         _run_review()
@@ -105,7 +105,7 @@ def _run_clean(path: str):
         print(f"WARNING: High reduction (>{threshold_pct:.0f}%) — flagged for manual review")
 
 
-def _run_extract(path: str, model: str | None = None):
+def _run_refine(path: str, model: str | None = None):
     import json
     from pathlib import Path
 
@@ -134,9 +134,11 @@ def _run_extract(path: str, model: str | None = None):
     stem = transcript_path.stem
     output_dir = transcript_path.parent / "distill" / "episodes"
     output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{stem}-episodes.json"
 
     print(f"Transcript: {transcript_path.name} ({len(raw_text):,} chars)")
     print(f"Model: {model}")
+    print(f"Output: {output_path}")
     print()
 
     # Step 1: Clean
@@ -151,8 +153,11 @@ def _run_extract(path: str, model: str | None = None):
     chunks = chunk_transcript(cleaned, config)
     print(f"  {len(chunks)} chunks ({config.target_chunk_tokens} token target)")
 
-    # Step 3: Extract episodes per chunk
-    print(f"Step 3/3: Extracting episodes ({len(chunks)} API calls)...")
+    # Step 3: Refine episodes per chunk (incremental writes)
+    print(f"Step 3/3: Refining episodes ({len(chunks)} API calls)...")
+    print(f"  Writing incrementally to: {output_path}")
+    print()
+
     client = create_anthropic_client(config)
     circuit_breaker = create_circuit_breaker(config)
     retry_config = create_retry_config(config)
@@ -166,6 +171,36 @@ def _run_extract(path: str, model: str | None = None):
     all_episodes = []
     all_threads = []
     total_cost = 0.0
+    failed_chunks = []
+
+    def _write_output():
+        seen_hashes = set()
+        deduped = []
+        for ep in all_episodes:
+            h = ep.get("_content_hash", "")
+            if h and h in seen_hashes:
+                continue
+            seen_hashes.add(h)
+            deduped.append(ep)
+
+        output = {
+            "source_transcript": transcript_path.name,
+            "model": model,
+            "total_cost_usd": round(total_cost, 4),
+            "status": "complete" if not failed_chunks else "partial",
+            "stats": {
+                "chunks_total": len(chunks),
+                "chunks_succeeded": len(chunks) - len(failed_chunks),
+                "chunks_failed": failed_chunks,
+                "raw_episodes": len(all_episodes),
+                "deduped_episodes": len(deduped),
+                "duplicates_removed": len(all_episodes) - len(deduped),
+                "threads": len(all_threads),
+            },
+            "episodes": deduped,
+            "threads": all_threads,
+        }
+        output_path.write_text(json.dumps(output, indent=2, default=str))
 
     for i, chunk in enumerate(chunks):
         print(f"  Chunk {i + 1}/{len(chunks)}...", end=" ", flush=True)
@@ -185,7 +220,6 @@ def _run_extract(path: str, model: str | None = None):
             chunk_episodes = result.get("episodes", [])
             chunk_threads = result.get("threads", [])
 
-            # Tag each episode with chunk source and content hash
             for ep in chunk_episodes:
                 ep["_chunk_index"] = i
                 ep["_content_hash"] = content_hash(ep.get("summary", ep.get("title", "")))
@@ -195,43 +229,28 @@ def _run_extract(path: str, model: str | None = None):
             total_cost = cost_guardrail.batch_spent_usd
             print(f"{len(chunk_episodes)} episodes (${total_cost:.4f} total)")
 
+            _write_output()
+
         except Exception as e:
             print(f"FAILED: {e}")
+            failed_chunks.append(i)
+            _write_output()
             continue
 
-    # Dedup by content hash
-    seen_hashes = set()
-    deduped = []
+    # Final summary
+    seen = set()
+    deduped_final = []
     for ep in all_episodes:
         h = ep.get("_content_hash", "")
-        if h and h in seen_hashes:
-            continue
-        seen_hashes.add(h)
-        deduped.append(ep)
-
-    dupes_removed = len(all_episodes) - len(deduped)
-
-    # Write output
-    output = {
-        "source_transcript": transcript_path.name,
-        "model": model,
-        "total_cost_usd": round(total_cost, 4),
-        "stats": {
-            "chunks": len(chunks),
-            "raw_episodes": len(all_episodes),
-            "deduped_episodes": len(deduped),
-            "duplicates_removed": dupes_removed,
-            "threads": len(all_threads),
-        },
-        "episodes": deduped,
-        "threads": all_threads,
-    }
-
-    output_path = output_dir / f"{stem}-episodes.json"
-    output_path.write_text(json.dumps(output, indent=2, default=str))
+        if h and h not in seen:
+            seen.add(h)
+            deduped_final.append(ep)
+    dupes = len(all_episodes) - len(deduped_final)
 
     print()
-    print(f"Done. {len(deduped)} episodes extracted ({dupes_removed} dupes removed)")
+    print(f"Done. {len(deduped_final)} episodes refined ({dupes} dupes removed)")
+    if failed_chunks:
+        print(f"  {len(failed_chunks)} chunks failed: {failed_chunks}")
     print(f"Cost: ${total_cost:.4f}")
     print(f"Output: {output_path}")
     print()
