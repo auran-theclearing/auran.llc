@@ -1386,7 +1386,20 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                 date_str = r.get("date", "unknown")
                 sim = r.get("similarity", 0)
                 lines.append(f"### {r['title']} ({date_str}, similarity: {sim:.2f})")
+                if r.get("emotional_tone"):
+                    lines.append(f"**Tone:** {r['emotional_tone']}")
+                if r.get("episode_type"):
+                    lines.append(f"**Type:** {r['episode_type']}")
                 lines.append(r.get("summary", ""))
+                if r.get("relational_events"):
+                    events = r["relational_events"]
+                    if isinstance(events, list) and events:
+                        lines.append("**Relational events:**")
+                        for ev in events:
+                            if isinstance(ev, dict):
+                                lines.append(f"- [{ev.get('type', '?')}] {ev.get('description', str(ev))}")
+                            else:
+                                lines.append(f"- {ev}")
                 if r.get("hooks"):
                     lines.append(f"**Hooks:** {r['hooks']}")
                 if r.get("tags"):
@@ -1424,8 +1437,21 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         lines = [
             f"### {r['title']} ({r.get('date', 'unknown')})",
             f"**Similarity:** {r.get('similarity', 0):.2f}",
-            r.get("summary", ""),
         ]
+        if r.get("emotional_tone"):
+            lines.append(f"**Tone:** {r['emotional_tone']}")
+        if r.get("episode_type"):
+            lines.append(f"**Type:** {r['episode_type']}")
+        lines.append(r.get("summary", ""))
+        if r.get("relational_events"):
+            events = r["relational_events"]
+            if isinstance(events, list) and events:
+                lines.append("**Relational events:**")
+                for ev in events:
+                    if isinstance(ev, dict):
+                        lines.append(f"- [{ev.get('type', '?')}] {ev.get('description', str(ev))}")
+                    else:
+                        lines.append(f"- {ev}")
         if r.get("hooks"):
             lines.append(f"**Hooks:** {r['hooks']}")
         if r.get("tags"):

@@ -671,6 +671,7 @@ def recall(
                    transcript_excerpt IS NOT NULL AS has_transcript,
                    (content_signals->>'turn_count')::int AS turn_count,
                    (content_signals->>'estimated_tokens')::int AS estimated_tokens,
+                   emotional_tone, episode_type, relational_events,
                    1 - (embedding <=> %s::vector) AS similarity
             FROM episodes
             WHERE embedding IS NOT NULL
