@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   codex-review:
     runs-on: ubuntu-latest
@@ -29,15 +33,43 @@ jobs:
           prompt: |
             Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
-            Read AGENTS.md for review guidelines specific to this repository.
+            Read AGENTS.md and .github/workflows/envoy-instructions.md for repo context.
 
-            Focus on:
-            - Logic bugs, edge cases, race conditions
-            - Security issues (auth bypass, credential exposure)
-            - Silent failures (swallowed exceptions, missing error handling)
-            - Schema compatibility (Postgres writes must stay compatible with roam agent reads)
+            You are the SECOND reviewer. Another reviewer (Envoy/Claude) already checks for
+            logic bugs, security issues, SQL injection, race conditions, and schema correctness.
+            Do NOT duplicate that work — Envoy is better at it than you. Your value is a
+            different perspective.
 
-            Post your findings as inline PR review comments on the relevant lines.
-            Only flag P0 (will break production) and P1 (likely bug or security issue) findings.
+            Focus on these five areas that the first reviewer consistently misses:
+
+            1. COMPLETENESS — Did the PR finish the job?
+               - Grep for old names/values that were partially renamed in the diff
+               - Check if envoy-instructions.md is updated to match code changes
+               - Are there TODO comments or placeholder values that suggest unfinished work?
+               - If a table or column was renamed, run: grep -r 'old_name' --include='*.py' --include='*.md'
+
+            2. TEST QUALITY — Do the tests prove the feature works?
+               - Would the test still pass if the feature code was deleted?
+               - Does the test assert the correct output, or just that no exception was raised?
+               - Are mock boundaries correct — is the test mocking at the right level?
+               - Did a field get renamed in source but not in test assertions?
+
+            3. NAMING & CONSISTENCY — Does the new code match existing patterns?
+               - Do new function/variable/table names follow the repo's conventions?
+               - Do error messages and log messages follow the same format as existing ones?
+               - Are new event names, metric names, or log fields consistent with existing ones?
+
+            4. RESPONSE SHAPE & CONTRACT CHANGES — Are API contracts preserved?
+               - Did a function's return dict shape change (keys added, removed, renamed)?
+               - If yes, are all callers updated to handle the new shape?
+               - Did default parameter values change silently?
+               - If an env var was added, is it in task-definition.json and .env.example?
+
+            5. DOCUMENTATION DRIFT — Do the docs still match the code?
+               - Are docstrings accurate after the change?
+               - Does CLAUDE.md reference anything that was removed or renamed?
+               - Do inline comments describe what the code currently does, not what it used to do?
+
+            Post findings as inline PR review comments on the relevant lines.
             Skip style nits — ruff handles formatting.
             Comment only — do not approve or request changes.
