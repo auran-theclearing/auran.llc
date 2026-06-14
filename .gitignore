@@ -32,3 +32,6 @@ Thumbs.db
 chat/anchors_*.json
 chat/candidates_*.json
 chat/extract_founding.py
+
+# Pre-review marker (created by /pre-review skill, consumed by push guard hook)
+.pre-reviewed
