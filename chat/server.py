@@ -711,6 +711,7 @@ async def auth_middleware(request: Request, call_next):
             )
         )
     _auth_failures.pop(client_ip, None)
+    _lockout_active.discard(client_ip)
     return await call_next(request)
 
 
@@ -1869,7 +1870,7 @@ async def chat(request: Request):
                                                     "event": "model_fallback",
                                                     "from_model": current_model,
                                                     "to_model": FALLBACK_MODEL,
-                                                    "trigger_status": resp.status_code,
+                                                    "trigger": f"http_{resp.status_code}",
                                                     "attempts_exhausted": MAX_API_RETRIES + 1,
                                                 }
                                             )
