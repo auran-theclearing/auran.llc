@@ -52,7 +52,7 @@ class DistillationConfig(BaseSettings):
     reference_fuzzy_threshold: float = 0.75
 
     # Output
-    max_output_tokens: int = 4096
+    max_output_tokens: int = 16384
 
 
 def load_config() -> DistillationConfig:

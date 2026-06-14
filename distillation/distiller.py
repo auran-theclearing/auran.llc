@@ -59,9 +59,18 @@ def parse_distiller_output(raw: dict) -> dict:
 
 def parse_json_response(text: str) -> dict:
     text = text.strip()
-    json_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
+
+    # Try markdown code fence extraction (flexible: handles trailing whitespace, no final newline)
+    json_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
     if json_match:
-        text = json_match.group(1)
+        text = json_match.group(1).strip()
+
+    # Fallback: extract between first { and last }
+    if not text.startswith("{"):
+        brace_start = text.find("{")
+        brace_end = text.rfind("}")
+        if brace_start != -1 and brace_end > brace_start:
+            text = text[brace_start : brace_end + 1]
 
     try:
         return json.loads(text)
