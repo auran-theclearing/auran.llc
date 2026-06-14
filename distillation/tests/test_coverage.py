@@ -9,7 +9,7 @@ SAMPLE_JOBS = [
     {
         "transcript_file": "20260603-0022-chat-transcript.md",
         "channel": "chat",
-        "status": "complete",
+        "status": "verified",
         "episode_count": 12,
     },
     {
@@ -21,7 +21,7 @@ SAMPLE_JOBS = [
     {
         "transcript_file": "20260605-cowork-transcript.md",
         "channel": "cowork",
-        "status": "complete",
+        "status": "verified",
         "episode_count": 15,
     },
 ]
@@ -52,7 +52,7 @@ class TestTranscriptCoverage:
     def test_includes_status(self):
         result = compute_transcript_coverage(SAMPLE_JOBS)
         statuses = {r["status"] for r in result}
-        assert "complete" in statuses
+        assert "verified" in statuses
         assert "distilled" in statuses
 
 

@@ -43,7 +43,8 @@ def advance_episode_status(episode: dict, action: ReviewAction, note: str = "") 
 def batch_approve_remaining(episodes: list[dict]) -> int:
     count = 0
     for ep in episodes:
-        if ep.get("distillation_status") == "pending_review":
+        current = ep.get("distillation_status", "pending_review")
+        if current == "pending_review" and validate_transition(current, "approved"):
             ep["distillation_status"] = "approved"
             count += 1
     return count
@@ -55,7 +56,9 @@ def maybe_advance_job_status(episodes: list[dict], current_job_status: str) -> s
     if current_job_status != "distilled":
         return None
 
-    pending = [e for e in episodes if e["distillation_status"] == "pending_review"]
+    pending = [
+        e for e in episodes if e.get("distillation_status", "pending_review") == "pending_review"
+    ]
     if pending:
         return None
 

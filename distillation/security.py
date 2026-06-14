@@ -68,10 +68,14 @@ MODEL_PRICING = {
 }
 
 
+logger = logging.getLogger(__name__)
+
+
 def _get_pricing(model: str) -> tuple[float, float]:
     for prefix, pricing in MODEL_PRICING.items():
         if model.startswith(prefix):
             return pricing
+    logger.warning("Unknown model %r — falling back to Opus pricing ($5/$25)", model)
     return (5.0, 25.0)
 
 
