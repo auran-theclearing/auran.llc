@@ -54,7 +54,9 @@ def inject_line_markers(raw_text: str) -> str:
     return "\n".join(marked_lines)
 
 
-def clean_transcript(marked_text: str) -> tuple[str, dict]:
+def clean_transcript(
+    marked_text: str, high_reduction_threshold: float = 0.60
+) -> tuple[str, dict]:
     stats = {
         "original_chars": len(marked_text),
         "patterns_matched": {},
@@ -74,7 +76,7 @@ def clean_transcript(marked_text: str) -> tuple[str, dict]:
         round(100 * (1 - len(cleaned) / len(marked_text)), 1) if len(marked_text) > 0 else 0.0
     )
 
-    if stats["reduction_pct"] > 60.0:
+    if stats["reduction_pct"] > high_reduction_threshold * 100:
         stats["flagged_for_review"] = True
 
     return cleaned, stats
@@ -86,15 +88,16 @@ def normalize_roles(text: str) -> str:
 
 def tag_pasted_content(text: str) -> str:
     tagged = PASTE_BLOCKQUOTE.sub(r"[POSSIBLE PASTE — structural match]\n\1", text)
-
     tagged = PASTE_CHANNEL_HEADER.sub(r"[POSSIBLE PASTE — structural match]\n\g<0>", tagged)
-
+    tagged = PASTE_CROSS_DATE.sub(r"[POSSIBLE PASTE — cross-date header]\n\g<0>", tagged)
     return tagged
 
 
-def run_clean_pass(raw_text: str) -> tuple[str, dict]:
+def run_clean_pass(
+    raw_text: str, high_reduction_threshold: float = 0.60
+) -> tuple[str, dict]:
     marked = inject_line_markers(raw_text)
-    cleaned, stats = clean_transcript(marked)
+    cleaned, stats = clean_transcript(marked, high_reduction_threshold=high_reduction_threshold)
     cleaned = normalize_roles(cleaned)
     cleaned = tag_pasted_content(cleaned)
     return cleaned, stats

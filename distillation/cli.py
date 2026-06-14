@@ -19,10 +19,10 @@ def main():
         print("Commands:")
         print("  migrate   Run schema migration")
         print("  clean     Run clean pass on a transcript")
-        print("  batch     Process all queued jobs")
-        print("  review    Review pending episodes")
-        print("  coverage  Show coverage report")
-        print("  backfill  Run backfill phases")
+        print("  batch     Process all queued jobs (requires DB + API key)")
+        print("  review    Review pending episodes (requires DB)")
+        print("  coverage  Show coverage report (requires DB)")
+        print("  backfill  Run backfill phases (requires DB)")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -60,6 +60,9 @@ def _run_clean(path: str):
     from pathlib import Path
 
     from distillation.clean_pass import run_clean_pass
+    from distillation.config import load_config
+
+    config = load_config()
 
     transcript_path = Path(path)
     if not transcript_path.exists():
@@ -67,7 +70,9 @@ def _run_clean(path: str):
         sys.exit(1)
 
     raw_text = transcript_path.read_text()
-    cleaned, stats = run_clean_pass(raw_text)
+    cleaned, stats = run_clean_pass(
+        raw_text, high_reduction_threshold=config.high_reduction_threshold
+    )
 
     output_dir = transcript_path.parent / "distill" / "cleaned"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -79,11 +84,12 @@ def _run_clean(path: str):
     cleaned_path.write_text(cleaned)
     stats_path.write_text(json.dumps(stats, indent=2))
 
+    threshold_pct = config.high_reduction_threshold * 100
     print(f"Cleaned: {cleaned_path}")
     print(f"Stats:   {stats_path}")
     print(f"Reduction: {stats['reduction_pct']}%")
     if stats.get("flagged_for_review"):
-        print("WARNING: High reduction (>60%) — flagged for manual review")
+        print(f"WARNING: High reduction (>{threshold_pct:.0f}%) — flagged for manual review")
 
 
 def _run_review():

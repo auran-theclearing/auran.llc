@@ -137,7 +137,8 @@ def call_distiller_api(
                 time.sleep(delay)
                 continue
 
-            circuit_breaker.record_failure()
+            if is_retryable:
+                circuit_breaker.record_failure()
             raise
 
     raise RuntimeError("Exhausted all retry attempts")
