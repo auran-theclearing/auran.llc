@@ -67,6 +67,17 @@ Rough priority order:
 - **Architectural decisions already documented.** If CLAUDE.md says "we chose X because Y," review the implementation, not the decision.
 - **UI aesthetics.** Olivia and Auran design the UI together. Color choices, spacing, animation — not your call.
 
+## Settled decisions — do not re-raise
+
+These have been reviewed, discussed across multiple rounds, and decided. Flagging them again wastes your turn budget and creates noise.
+
+- **Opus pricing is $5/$25 per million tokens.** Current Anthropic 4.x pricing (Opus 4.6/4.7/4.8). Verified against the API pricing table. Not stale.
+- **Distillation CLI stubs are staged.** `batch`, `review`, `coverage`, `backfill` require DB wiring that ships in the next PR. Help text says so.
+- **Pre-flight cost gate uses `len/3.5`, not `count_tokens()`.** Deliberate — no API round-trip per chunk. Real tokens come from `response.usage` in `finish_job()`.
+- **`start_job()` counts per API call, not per transcript.** 10 chunks = 10 API calls = 10 jobs. Batch budget is the per-transcript ceiling.
+- **Circuit breaker only trips on retryable errors.** Non-retryable (400, validation) = bad chunk, not infra failure.
+- **Model param comes from caller.** The batch runner reads transcript metadata and passes `model` in. The service module stays agnostic.
+
 ## When in doubt
 
 Lean toward saying less. A quiet review is better than a noisy one.
