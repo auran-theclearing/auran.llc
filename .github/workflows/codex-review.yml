@@ -13,21 +13,29 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
+    outputs:
+      review_comment: ${{ steps.run_codex.outputs.final-message }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          persist-credentials: false
           fetch-depth: 0
 
-      - name: Fetch base branch
-        run: git fetch origin ${{ github.event.pull_request.base.ref }}
+      - name: Fetch base and head refs
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin \
+            "$PR_BASE_REF" \
+            "+refs/pull/$PR_NUMBER/head"
 
       - name: Run Codex review
+        id: run_codex
         uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1  # v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           safety-strategy: drop-sudo
@@ -72,6 +80,28 @@ jobs:
                - Does CLAUDE.md reference anything that was removed or renamed?
                - Do inline comments describe what the code currently does, not what it used to do?
 
-            Post findings as inline PR review comments on the relevant lines.
+            Format your findings as a markdown list with file paths and line numbers.
             Skip style nits — ruff handles formatting.
-            Comment only — do not approve or request changes.
+
+  post-review:
+    runs-on: ubuntu-latest
+    needs: codex-review
+    if: needs.codex-review.outputs.review_comment != ''
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Post Codex review comment
+        uses: actions/github-script@v7
+        env:
+          CODEX_REVIEW: ${{ needs.codex-review.outputs.review_comment }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const body = `**Codex Review** — complementary second perspective\n\n${process.env.CODEX_REVIEW}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: body,
+            });
