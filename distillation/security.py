@@ -136,6 +136,7 @@ class CostGuardrail:
     def finish_job(self, input_tokens: int, output_tokens: int, model: str) -> float:
         cost = self.record_usage(input_tokens, output_tokens, model)
         self.check_batch_budget()
+        self.check_cost_rate()
         return cost
 
     def reset(self) -> None:

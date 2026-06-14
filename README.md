@@ -39,6 +39,9 @@ Scene memory works by extracting emotionally and narratively significant moments
 ```bash
 cd chat
 uv run pytest test_scene_memory.py -v
+
+cd distillation
+pytest tests/ -v
 ```
 
 ## License

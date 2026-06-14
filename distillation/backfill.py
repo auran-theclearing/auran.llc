@@ -67,8 +67,12 @@ def phase_2_import_local_json(connection, json_dir: str) -> int:
     cursor = connection.cursor()
 
     for json_file in sorted(json_path.glob("*.json")):
-        with open(json_file) as f:
-            data = json.load(f)
+        try:
+            with open(json_file) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Skipping %s: %s", json_file.name, e)
+            continue
 
         episodes = data if isinstance(data, list) else data.get("episodes", [])
 

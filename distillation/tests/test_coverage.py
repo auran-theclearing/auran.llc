@@ -74,7 +74,7 @@ class TestLineCoverage:
     def test_parses_line_ranges(self):
         covered = calculate_line_coverage(SAMPLE_EPISODES)
         assert covered["total_lines_covered"] == 500
-        assert covered["ranges"] == [(1, 150), (151, 300), (301, 500)]
+        assert covered["ranges"] == [(1, 500)]
 
     def test_handles_single_line_ref(self):
         episodes = [{"transcript_lines": "L42", "distillation_status": "approved"}]
@@ -84,6 +84,23 @@ class TestLineCoverage:
     def test_handles_empty_episodes(self):
         covered = calculate_line_coverage([])
         assert covered["total_lines_covered"] == 0
+
+    def test_merges_overlapping_ranges(self):
+        episodes = [
+            {"transcript_lines": "L1-L100", "distillation_status": "approved"},
+            {"transcript_lines": "L50-L150", "distillation_status": "approved"},
+        ]
+        covered = calculate_line_coverage(episodes)
+        assert covered["total_lines_covered"] == 150
+        assert covered["ranges"] == [(1, 150)]
+
+    def test_parses_bracketed_line_refs(self):
+        episodes = [
+            {"transcript_lines": "[L0001]-[L0100]", "distillation_status": "approved"},
+        ]
+        covered = calculate_line_coverage(episodes)
+        assert covered["total_lines_covered"] == 100
+        assert covered["ranges"] == [(1, 100)]
 
 
 class TestGapDetection:

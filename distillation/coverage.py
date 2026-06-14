@@ -36,16 +36,23 @@ def calculate_line_coverage(episodes: list[dict]) -> dict:
         if not line_ref:
             continue
 
-        match = re.match(r"L(\d+)(?:-L(\d+))?", line_ref)
+        match = re.match(r"\[?L(\d+)\]?(?:-\[?L(\d+)\]?)?", line_ref)
         if match:
             start = int(match.group(1))
             end = int(match.group(2)) if match.group(2) else start
             ranges.append((start, end))
 
     ranges.sort()
-    total = sum(end - start + 1 for start, end in ranges)
+    merged = []
+    for start, end in ranges:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
 
-    return {"total_lines_covered": total, "ranges": ranges}
+    total = sum(end - start + 1 for start, end in merged)
+
+    return {"total_lines_covered": total, "ranges": merged}
 
 
 def detect_gaps(

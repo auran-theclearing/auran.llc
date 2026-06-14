@@ -30,7 +30,7 @@ def fuzzy_title_match(
                 occurred = datetime.fromisoformat(occurred)
             days_apart = abs((occurred - reference_date).days)
             if days_apart <= date_range_days:
-                score *= 1.1
+                score = min(score * 1.1, 1.0)
 
         if score > best_score:
             best_score = score
