@@ -1244,6 +1244,20 @@ def surface_relevant_moments(
             sim_pct = f"{m['similarity']:.0%}"
 
             entry = f"- {date_str}{channel} [{sim_pct}]: **{m['title']}** — {m['summary']}"
+            if m.get("emotional_tone"):
+                entry += f"\n  Tone: {m['emotional_tone']}"
+            if m.get("episode_type"):
+                entry += f" | Type: {m['episode_type']}"
+            if m.get("relational_events"):
+                events = m["relational_events"]
+                if isinstance(events, list) and events:
+                    descs = [
+                        f"[{ev.get('type', '?')}] {ev.get('description', '')}"
+                        for ev in events
+                        if isinstance(ev, dict) and ev.get("description")
+                    ]
+                    if descs:
+                        entry += "\n  Relational: " + "; ".join(descs)
             if m.get("hooks"):
                 entry += f"\n  Context: {m['hooks']}"
 
