@@ -1731,6 +1731,8 @@ async def chat(request: Request):
         print(f"[Persistence] User message persist failed (non-fatal): {e}")
 
     requested_model = body.get("model")
+    if requested_model and requested_model not in ALLOWED_MODELS:
+        print(f"[Chat] Rejected model override: {requested_model!r}")
     model = requested_model if requested_model in ALLOWED_MODELS else ANTHROPIC_MODEL
     debug_mode = body.get("debug", False)
 
