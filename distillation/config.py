@@ -36,7 +36,7 @@ class DistillationConfig(BaseSettings):
 
     # Timeouts (seconds)
     api_connect_timeout: float = 5.0
-    api_read_timeout: float = 120.0
+    api_read_timeout: float = 300.0
     api_write_timeout: float = 10.0
     api_pool_timeout: float = 5.0
 
