@@ -646,6 +646,37 @@ class TestSurfaceRelevantMoments:
     @patch("memory.reminisce")
     @patch("memory.recall")
     @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_metadata_type_without_tone(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
+        """episode_type present but emotional_tone absent — no orphaned separator."""
+        mock_recall.return_value = [
+            {
+                "id": "m-1",
+                "title": "Building Session",
+                "summary": "Worked on infra together.",
+                "hooks": None,
+                "date": date(2026, 5, 20),
+                "channel": "chat",
+                "tags": ["infra"],
+                "has_transcript": False,
+                "turn_count": None,
+                "estimated_tokens": None,
+                "emotional_tone": None,
+                "episode_type": "collaboration",
+                "relational_events": None,
+                "similarity": 0.60,
+            },
+        ]
+
+        result = surface_relevant_moments("infra work")
+
+        assert "Type: collaboration" in result
+        assert "| Type:" not in result
+        assert "Tone:" not in result
+
+    @patch("memory.recall_memories", return_value=[])
+    @patch("memory.reminisce")
+    @patch("memory.recall")
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
     def test_vivid_recall_triggered_above_threshold(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
         """Moment with transcript above vivid threshold → vivid section built."""
         mock_recall.return_value = [

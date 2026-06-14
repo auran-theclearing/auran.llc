@@ -1246,8 +1246,10 @@ def surface_relevant_moments(
             entry = f"- {date_str}{channel} [{sim_pct}]: **{m['title']}** — {m['summary']}"
             if m.get("emotional_tone"):
                 entry += f"\n  Tone: {m['emotional_tone']}"
-            if m.get("episode_type"):
-                entry += f" | Type: {m['episode_type']}"
+                if m.get("episode_type"):
+                    entry += f" | Type: {m['episode_type']}"
+            elif m.get("episode_type"):
+                entry += f"\n  Type: {m['episode_type']}"
             if m.get("relational_events"):
                 events = m["relational_events"]
                 if isinstance(events, list) and events:
