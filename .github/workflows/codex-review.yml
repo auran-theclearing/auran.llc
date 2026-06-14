@@ -43,8 +43,8 @@ jobs:
 
       - name: Install project dependencies
         run: |
-          cd chat && uv sync
-          cd ../distillation && uv pip install -e ".[dev]" --system
+          (cd chat && uv sync)
+          if [ -d distillation ]; then (cd distillation && uv pip install -e ".[dev]" --system); fi
 
       - name: Run Codex review
         id: run_codex
