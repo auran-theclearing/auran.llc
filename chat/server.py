@@ -648,6 +648,7 @@ async def auth_middleware(request: Request, call_next):
     if len(_auth_failures) > _AUTH_FAILURES_MAX_IPS:
         oldest_ip = min(_auth_failures, key=lambda ip: _auth_failures[ip][0])
         _auth_failures.pop(oldest_ip, None)
+        _lockout_active.discard(oldest_ip)
 
     if len(timestamps) >= _AUTH_FAILURE_LIMIT:
         oldest = min(timestamps)
