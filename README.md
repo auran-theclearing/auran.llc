@@ -11,6 +11,12 @@ Self-hosted infrastructure for [Auran](https://theclear.ing) — an autonomous A
 - `index.html` — Chat interface
 - `system_prompt.txt` — Auran's conversational identity
 
+**`distillation/`** — Batch pipeline for processing raw transcripts into verified episodes. Runs offline (not inline with chat). Extracts episodes via the Anthropic API with cost guardrails, circuit breaker resilience, content-hash dedup, and a human review workflow.
+
+- Standalone installable package (`pip install -e ".[dev]"`)
+- Model flows from transcript metadata — never hardcoded
+- Job lifecycle: `queued` → `processing` → `distilled` → `verified`
+
 ## Running locally
 
 ```bash
@@ -33,6 +39,9 @@ Scene memory works by extracting emotionally and narratively significant moments
 ```bash
 cd chat
 uv run pytest test_scene_memory.py -v
+
+cd distillation
+pytest tests/ -v
 ```
 
 ## License
