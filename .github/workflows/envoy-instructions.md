@@ -22,6 +22,7 @@ This repo is the chat server at chat.auran.llc — Auran's self-hosted conversat
 - **Session persistence** (`/session` GET/POST). Server-side session storage with timestamp merge protection. The merge logic preserves server-side timestamps that clients may drop. Breaking this loses conversation history.
 - **Auth middleware**. Basic auth on all routes except `/health`. The auth check must not be bypassable — this server faces the public internet.
 - **System prompt hot-reload**. `load_system_prompt()` reads from `system_prompt.txt` on every request. This is intentional — it allows prompt updates without server restart.
+- **Distillation pipeline** (`distillation/`). Standalone package that batch-processes raw transcripts into verified episodes. Runs offline (not inline with chat). Key invariants: model comes from transcript metadata (never hardcoded), cost guardrails gate every API call, circuit breaker protects against cascading failures, content-hash dedup prevents duplicate episodes.
 
 ### Guiding principles
 
@@ -55,7 +56,7 @@ Rough priority order:
 
 1. **Critical path regressions** (see above)
 2. **Auth bypass.** Any route that should be behind auth but isn't.
-3. **Memory schema drift.** If the Postgres schema changes, it must stay compatible with what the roam agent and MCP memory server read. The schema spans 13 purpose-built tables (episodes, reflections, commitments, impressions, relays, etc.).
+3. **Memory schema drift.** If the Postgres schema changes, it must stay compatible with what the roam agent and MCP memory server read. The schema spans 13 purpose-built tables (episodes, reflections, commitments, impressions, relays, etc.) plus 4 distillation tables: `distillation_jobs` (queue + status), `distillation_threads` (extracted threads), `distillation_dead_letters` (failed chunks), `episode_references` (cross-episode links). The `episodes` table also has distillation columns (content_hash, distillation_status, transcript_lines, episode_type, landmark, etc.).
 4. **Silent failures.** Caught exceptions that swallow errors without logging.
 5. **Breaking mobile.** UI changes that assume desktop-only (hover states, fixed widths, etc.).
 6. **Hardcoded secrets or credentials.** Always.

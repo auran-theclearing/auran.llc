@@ -86,6 +86,34 @@ class TestSecretRedactingFilter:
         filt.filter(record)
         assert record.msg == "Processing job for transcript 20260603"
 
+    def test_survives_stray_percent_in_message(self):
+        filt = SecretRedactingFilter()
+        record = logging.LogRecord(
+            "test",
+            logging.INFO,
+            "",
+            0,
+            "SQL: WHERE progress > 50% AND status = %s",
+            ("active",),
+            None,
+        )
+        filt.filter(record)
+        assert "50%" in record.msg or "active" in record.msg
+
+    def test_survives_format_arity_mismatch(self):
+        filt = SecretRedactingFilter()
+        record = logging.LogRecord(
+            "test",
+            logging.INFO,
+            "",
+            0,
+            "got %s %s %s",
+            ("only_one",),
+            None,
+        )
+        filt.filter(record)
+        assert "got %s" in record.msg
+
 
 class TestSanitizeError:
     def test_strips_api_key_from_exception(self):

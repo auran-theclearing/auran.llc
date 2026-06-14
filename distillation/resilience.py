@@ -89,6 +89,16 @@ class RetryConfig:
     def is_retryable(self, status_code: int) -> bool:
         return status_code in self.retryable_codes
 
+    def is_connection_error(self, exc: Exception) -> bool:
+        type_name = type(exc).__name__
+        return type_name in (
+            "APIConnectionError",
+            "ConnectTimeout",
+            "ReadTimeout",
+            "ConnectError",
+            "RemoteProtocolError",
+        )
+
     def delay_for_attempt(self, attempt: int) -> float:
         delay = self.base_delay * (2**attempt)
         delay = min(delay, self.max_delay)

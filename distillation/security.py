@@ -15,7 +15,10 @@ SECRET_PATTERNS = [
 class SecretRedactingFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if record.args:
-            record.msg = record.msg % record.args
+            try:
+                record.msg = record.msg % record.args
+            except (TypeError, ValueError):
+                record.msg = str(record.msg)
             record.args = None
         msg = str(record.msg)
         for pattern in SECRET_PATTERNS:

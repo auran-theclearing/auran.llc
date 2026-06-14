@@ -7,6 +7,7 @@ from distillation.config import DistillationConfig
 from distillation.distiller import parse_distiller_output, parse_json_response
 from distillation.resilience import (
     CircuitBreaker,
+    CircuitState,
     RetryConfig,
 )
 from distillation.security import (
@@ -29,7 +30,8 @@ def create_anthropic_client(config: DistillationConfig):
         write=config.api_write_timeout,
         pool=config.api_pool_timeout,
     )
-    return anthropic.Anthropic(timeout=timeout, max_retries=0)
+    api_key = config.anthropic_api_key.get_secret_value() if config.anthropic_api_key else None
+    return anthropic.Anthropic(api_key=api_key, timeout=timeout, max_retries=0)
 
 
 def count_tokens(client, text: str, model: str) -> int:
@@ -61,6 +63,11 @@ def call_distiller_api(
     if not circuit_breaker.can_proceed():
         raise RuntimeError("Circuit breaker is open")
 
+    cost_guardrail.start_job()
+
+    if circuit_breaker.state == CircuitState.HALF_OPEN:
+        circuit_breaker.record_half_open_attempt()
+
     existing_context = ""
     if existing_episodes:
         ep_lines = []
@@ -91,9 +98,6 @@ def call_distiller_api(
 
     for attempt in range(retry_config.max_attempts):
         try:
-            if circuit_breaker.state.value == "half_open":
-                circuit_breaker.record_half_open_attempt()
-
             cost_guardrail.check_job_cost(
                 int(len(chunk) / 3.5),
                 config.max_output_tokens,
@@ -118,7 +122,10 @@ def call_distiller_api(
 
         except Exception as e:
             status_code = getattr(e, "status_code", 0)
-            if retry_config.is_retryable(status_code) and attempt < retry_config.max_attempts - 1:
+            is_retryable = retry_config.is_retryable(
+                status_code
+            ) or retry_config.is_connection_error(e)
+            if is_retryable and attempt < retry_config.max_attempts - 1:
                 delay = retry_config.delay_for_attempt(attempt)
                 logger.warning(
                     "Retryable error (attempt %d/%d), waiting %.1fs: %s",

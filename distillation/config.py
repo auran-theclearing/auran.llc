@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 
 class DistillationConfig(BaseSettings):
-    model_config = {"env_prefix": "DISTILL_", "env_file": ".env", "extra": "ignore"}
+    model_config = {"env_file": ".env", "extra": "ignore"}
 
     # API keys — never logged, never printed
     anthropic_api_key: SecretStr | None = None

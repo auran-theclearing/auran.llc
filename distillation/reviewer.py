@@ -40,6 +40,15 @@ def advance_episode_status(episode: dict, action: ReviewAction, note: str = "") 
     return episode
 
 
+def batch_approve_remaining(episodes: list[dict]) -> int:
+    count = 0
+    for ep in episodes:
+        if ep.get("distillation_status") == "pending_review":
+            ep["distillation_status"] = "approved"
+            count += 1
+    return count
+
+
 def maybe_advance_job_status(episodes: list[dict], current_job_status: str) -> str | None:
     if not episodes:
         return None

@@ -1,4 +1,5 @@
 from distillation.reviewer import (
+    batch_approve_remaining,
     format_episode_for_review,
     maybe_advance_job_status,
     validate_transition,
@@ -122,7 +123,15 @@ class TestBatchApprove:
             {"distillation_status": "pending_review"},
             {"distillation_status": "pending_review"},
         ]
-        remaining = [e for e in episodes if e["distillation_status"] == "pending_review"]
-        for e in remaining:
-            e["distillation_status"] = "approved"
+        count = batch_approve_remaining(episodes)
+        assert count == 2
         assert all(e["distillation_status"] == "approved" for e in episodes)
+
+    def test_batch_approve_skips_non_pending(self):
+        episodes = [
+            {"distillation_status": "approved"},
+            {"distillation_status": "flagged"},
+        ]
+        count = batch_approve_remaining(episodes)
+        assert count == 0
+        assert episodes[1]["distillation_status"] == "flagged"

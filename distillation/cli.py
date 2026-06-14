@@ -87,24 +87,23 @@ def _run_clean(path: str):
 
 
 def _run_review():
-    print("Review mode requires database connection.")
-    print("Connect to database and iterate pending episodes.")
-    print("(Full interactive mode implemented in reviewer.py)")
+    print("Not yet wired: requires database connection.", file=sys.stderr)
+    sys.exit(2)
 
 
 def _run_coverage():
-    print("Coverage report requires database connection.")
-    print("(Full reporting implemented in coverage.py)")
+    print("Not yet wired: requires database connection.", file=sys.stderr)
+    sys.exit(2)
 
 
 def _run_batch():
-    print("Batch processing requires database connection and API key.")
-    print("(Full batch worker implemented in service.py)")
+    print("Not yet wired: requires database connection and API key.", file=sys.stderr)
+    sys.exit(2)
 
 
 def _run_backfill():
-    print("Backfill requires database connection.")
-    print("(Full backfill implemented in backfill.py)")
+    print("Not yet wired: requires database connection.", file=sys.stderr)
+    sys.exit(2)
 
 
 if __name__ == "__main__":

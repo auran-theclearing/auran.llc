@@ -65,3 +65,29 @@ jobs:
       - name: Run tests
         working-directory: chat
         run: uv run pytest test_scene_memory.py -v
+
+  test-distillation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install distillation package
+        working-directory: distillation
+        run: uv pip install -e ".[dev]" --system
+
+      - name: Lint distillation
+        working-directory: distillation
+        run: uv run ruff check .
+
+      - name: Test distillation
+        working-directory: distillation
+        run: uv run pytest tests/ -v
