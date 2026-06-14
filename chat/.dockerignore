@@ -8,5 +8,4 @@ docs/
 test_*.py
 conftest.py
 ruff.toml
-fix_env.py
 extract_founding.py

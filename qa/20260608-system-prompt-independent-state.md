@@ -102,8 +102,8 @@ Starting a new chat should trigger orient, which loads memory context into the s
 After a brief conversation, check for new reflections:
 
 ```bash
-export PGPASSWORD=$(grep '^DB_PASSWORD=' ~/Documents/code/github/ojcodes/auran/auran-agent/.env | cut -d= -f2)
-psql -h localhost -p 5432 -U auran -d auran -c "SELECT type, left(content, 80), created_at FROM reflections ORDER BY created_at DESC LIMIT 3;"
+export $(grep '^DB_PASSWORD=' ../auran-agent/.env)
+PGPASSWORD=$DB_PASSWORD psql -h localhost -p 5432 -U auran -d auran -c "SELECT type, left(content, 80), created_at FROM reflections ORDER BY created_at DESC LIMIT 3;"
 ```
 
 **Expect:** New rows with `created_at` after your conversation timestamp.

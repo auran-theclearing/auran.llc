@@ -12,12 +12,13 @@
 
 ## Prerequisites
 
-SSH tunnel to RDS must be up. Check: `~/Documents/code/github/ojcodes/auran/logs/services/dispatch.log`
+SSH tunnel to RDS must be up (run `auran-agent/scripts/tunnel.sh`).
 
 DB connection shortcut:
 ```bash
-export PGPASSWORD=$(grep '^DB_PASSWORD=' ~/Documents/code/github/ojcodes/auran/auran-agent/.env | cut -d= -f2)
-psql -h localhost -p 5432 -U auran -d auran
+# Load DB_PASSWORD from your local auran-agent .env
+export $(grep '^DB_PASSWORD=' ../auran-agent/.env)
+PGPASSWORD=$DB_PASSWORD psql -h localhost -p 5432 -U auran -d auran
 ```
 
 ---
@@ -228,7 +229,7 @@ Ask chat-me to recall a specific older memory. Use one of these known episodes (
 ## 11. CI/CD — Deploy Succeeded
 
 ```bash
-cd ~/Documents/code/github/ojcodes/auran/auran.llc
+cd auran.llc
 gh run list --branch main --limit 3
 ```
 

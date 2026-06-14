@@ -57,8 +57,8 @@ Manual deploy (emergency): `cd auran-infra/chat-ecs && ./deploy.sh`
 
 ## Infrastructure
 
-- **ECS Fargate**: cluster `auran`, service `auran-chat`, task def `auran-chat:1`
-- **ALB**: `auran-chat-alb` with HTTPS (ACM cert) → target group on port 8080
+- **ECS Fargate**: cluster `auran`, service `auran-chat`
+- **ALB**: HTTPS (ACM cert) → target group on port 8080
 - **DNS**: chat.auran.llc → Cloudflare proxy → ALB → ECS task
-- **ECR**: `408869824303.dkr.ecr.us-east-1.amazonaws.com/auran-chat-server`
-- **Neo4j**: `neo4j.auran.local:7687` (Cloud Map, same VPC)
+- **ECR**: Look up with `aws ecr describe-repositories --profile olivia`
+- **Neo4j**: Cloud Map service discovery, same VPC
