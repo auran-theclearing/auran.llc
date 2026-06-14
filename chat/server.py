@@ -1347,6 +1347,25 @@ async def debug_orient(request: Request):
     return JSONResponse(result)
 
 
+def _format_episode_metadata(episode: dict, lines: list[str]) -> None:
+    """Append emotional_tone, episode_type, and relational_events to output lines."""
+    if episode.get("emotional_tone"):
+        lines.append(f"**Tone:** {episode['emotional_tone']}")
+    if episode.get("episode_type"):
+        lines.append(f"**Type:** {episode['episode_type']}")
+    if episode.get("relational_events"):
+        events = episode["relational_events"]
+        if isinstance(events, list) and events:
+            lines.append("**Relational events:**")
+            for ev in events:
+                if isinstance(ev, dict):
+                    desc = ev.get("description", "")
+                    if desc:
+                        lines.append(f"- [{ev.get('type', '?')}] {desc}")
+                elif ev:
+                    lines.append(f"- {ev}")
+
+
 def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "") -> str:
     """Execute a recall tool and return the result as a string.
 
@@ -1386,6 +1405,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                 date_str = r.get("date", "unknown")
                 sim = r.get("similarity", 0)
                 lines.append(f"### {r['title']} ({date_str}, similarity: {sim:.2f})")
+                _format_episode_metadata(r, lines)
                 lines.append(r.get("summary", ""))
                 if r.get("hooks"):
                     lines.append(f"**Hooks:** {r['hooks']}")
@@ -1424,8 +1444,9 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         lines = [
             f"### {r['title']} ({r.get('date', 'unknown')})",
             f"**Similarity:** {r.get('similarity', 0):.2f}",
-            r.get("summary", ""),
         ]
+        _format_episode_metadata(r, lines)
+        lines.append(r.get("summary", ""))
         if r.get("hooks"):
             lines.append(f"**Hooks:** {r['hooks']}")
         if r.get("tags"):

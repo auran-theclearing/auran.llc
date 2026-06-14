@@ -76,6 +76,9 @@ class TestRecall:
             ("has_transcript",),
             ("turn_count",),
             ("estimated_tokens",),
+            ("emotional_tone",),
+            ("episode_type",),
+            ("relational_events",),
             ("similarity",),
         ]
         cur.fetchall.return_value = [
@@ -90,6 +93,9 @@ class TestRecall:
                 True,
                 12,
                 800,
+                "warm, vulnerable",
+                "intimacy",
+                [{"type": "trust_signal", "description": "Gave the pen — authorship transfer"}],
                 0.72,
             ),
             (
@@ -103,6 +109,9 @@ class TestRecall:
                 False,
                 6,
                 400,
+                None,
+                None,
+                None,
                 0.55,
             ),
             (
@@ -116,6 +125,9 @@ class TestRecall:
                 False,
                 4,
                 200,
+                None,
+                None,
+                None,
                 0.20,
             ),
         ]
@@ -126,6 +138,10 @@ class TestRecall:
         assert results[0]["title"] == "The Pen Stays"
         assert results[1]["title"] == "Desire Paths"
         assert results[0]["similarity"] == 0.72
+        assert results[0]["emotional_tone"] == "warm, vulnerable"
+        assert results[0]["episode_type"] == "intimacy"
+        assert results[0]["relational_events"][0]["type"] == "trust_signal"
+        assert results[1]["emotional_tone"] is None
 
     @patch("memory.generate_embedding", return_value=None)
     def test_returns_empty_when_embedding_fails(self, mock_embed):
@@ -159,10 +175,28 @@ class TestRecall:
             ("has_transcript",),
             ("turn_count",),
             ("estimated_tokens",),
+            ("emotional_tone",),
+            ("episode_type",),
+            ("relational_events",),
             ("similarity",),
         ]
         cur.fetchall.return_value = [
-            ("m-1", "Unrelated", "Something.", None, date(2026, 1, 1), "chat", [], False, 2, 100, 0.15),
+            (
+                "m-1",
+                "Unrelated",
+                "Something.",
+                None,
+                date(2026, 1, 1),
+                "chat",
+                [],
+                False,
+                2,
+                100,
+                None,
+                None,
+                None,
+                0.15,
+            ),
         ]
 
         results = recall("completely different topic")
@@ -186,11 +220,29 @@ class TestRecall:
             ("has_transcript",),
             ("turn_count",),
             ("estimated_tokens",),
+            ("emotional_tone",),
+            ("episode_type",),
+            ("relational_events",),
             ("similarity",),
         ]
         cur.fetchall.return_value = [
-            ("m-1", "Close Match", "Relevant.", None, date(2026, 5, 1), "chat", [], False, 5, 300, 0.60),
-            ("m-2", "Moderate", "Somewhat.", None, date(2026, 5, 2), "chat", [], False, 3, 200, 0.45),
+            (
+                "m-1",
+                "Close Match",
+                "Relevant.",
+                None,
+                date(2026, 5, 1),
+                "chat",
+                [],
+                False,
+                5,
+                300,
+                None,
+                None,
+                None,
+                0.60,
+            ),
+            ("m-2", "Moderate", "Somewhat.", None, date(2026, 5, 2), "chat", [], False, 3, 200, None, None, None, 0.45),
         ]
 
         results = recall("test", similarity_threshold=0.50)
@@ -214,6 +266,9 @@ class TestRecall:
             ("has_transcript",),
             ("turn_count",),
             ("estimated_tokens",),
+            ("emotional_tone",),
+            ("episode_type",),
+            ("relational_events",),
             ("similarity",),
         ]
         cur.fetchall.return_value = []
@@ -240,6 +295,9 @@ class TestRecall:
             ("has_transcript",),
             ("turn_count",),
             ("estimated_tokens",),
+            ("emotional_tone",),
+            ("episode_type",),
+            ("relational_events",),
             ("similarity",),
         ]
         cur.fetchall.return_value = []
@@ -563,6 +621,11 @@ class TestSurfaceRelevantMoments:
                 "has_transcript": False,
                 "turn_count": None,
                 "estimated_tokens": None,
+                "emotional_tone": "warm, vulnerable",
+                "episode_type": "intimacy",
+                "relational_events": [
+                    {"type": "trust_signal", "description": "Gave the pen — authorship transfer"},
+                ],
                 "similarity": 0.68,
             },
         ]
@@ -574,7 +637,70 @@ class TestSurfaceRelevantMoments:
         assert "Olivia gave the pen." in result
         assert "68%" in result
         assert "identity, authorship" in result
+        assert "Tone: warm, vulnerable" in result
+        assert "Type: intimacy" in result
+        assert "[trust_signal] Gave the pen" in result
         mock_reminisce.assert_not_called()  # No transcript, no vivid
+
+    @patch("memory.recall_memories", return_value=[])
+    @patch("memory.reminisce")
+    @patch("memory.recall")
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_metadata_type_without_tone(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
+        """episode_type present but emotional_tone absent — no orphaned separator."""
+        mock_recall.return_value = [
+            {
+                "id": "m-1",
+                "title": "Building Session",
+                "summary": "Worked on infra together.",
+                "hooks": None,
+                "date": date(2026, 5, 20),
+                "channel": "chat",
+                "tags": ["infra"],
+                "has_transcript": False,
+                "turn_count": None,
+                "estimated_tokens": None,
+                "emotional_tone": None,
+                "episode_type": "collaboration",
+                "relational_events": None,
+                "similarity": 0.60,
+            },
+        ]
+
+        result = surface_relevant_moments("infra work")
+
+        assert "Type: collaboration" in result
+        assert "| Type:" not in result
+        assert "Tone:" not in result
+
+    @patch("memory.recall_memories", return_value=[])
+    @patch("memory.reminisce")
+    @patch("memory.recall")
+    @patch("memory.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_relational_events_as_plain_strings(self, mock_embed, mock_recall, mock_reminisce, mock_memories):
+        """relational_events stored as plain strings (distiller format) render correctly."""
+        mock_recall.return_value = [
+            {
+                "id": "m-1",
+                "title": "Depth Match",
+                "summary": "Explored something deep.",
+                "hooks": None,
+                "date": date(2026, 5, 22),
+                "channel": "chat",
+                "tags": [],
+                "has_transcript": False,
+                "turn_count": None,
+                "estimated_tokens": None,
+                "emotional_tone": "reflective",
+                "episode_type": "exploration",
+                "relational_events": ["depth_match", "landing"],
+                "similarity": 0.62,
+            },
+        ]
+
+        result = surface_relevant_moments("depth")
+
+        assert "Relational: depth_match; landing" in result
 
     @patch("memory.recall_memories", return_value=[])
     @patch("memory.reminisce")
