@@ -100,16 +100,52 @@ class TestGetClientIP:
         request.client.host = "10.0.0.1"
         assert server._get_client_ip(request) == "10.0.0.1"
 
-    def test_does_not_use_xff(self):
-        """X-Forwarded-For is client-spoofable — must not be used."""
+    def test_uses_rightmost_xff_behind_alb(self):
+        """Behind ALB (private client.host), use rightmost XFF entry."""
+        from unittest.mock import MagicMock
+
+        import server
+
+        request = MagicMock()
+        request.headers = {"X-Forwarded-For": "spoofed.by.client, 203.0.113.42"}
+        request.client.host = "10.0.0.83"
+        assert server._get_client_ip(request) == "203.0.113.42"
+
+    def test_ignores_xff_on_direct_connection(self):
+        """Direct connection (public client.host) — XFF is untrusted."""
         from unittest.mock import MagicMock
 
         import server
 
         request = MagicMock()
         request.headers = {"X-Forwarded-For": "spoofed.ip.here"}
-        request.client.host = "10.0.0.1"
-        assert server._get_client_ip(request) == "10.0.0.1"
+        request.client.host = "203.0.113.1"
+        assert server._get_client_ip(request) == "203.0.113.1"
+
+    def test_cf_ip_takes_priority_over_xff(self):
+        """CF-Connecting-IP wins even when XFF is present."""
+        from unittest.mock import MagicMock
+
+        import server
+
+        request = MagicMock()
+        request.headers = {
+            "CF-Connecting-IP": "198.51.100.5",
+            "X-Forwarded-For": "10.0.0.1, 203.0.113.42",
+        }
+        request.client.host = "10.0.0.83"
+        assert server._get_client_ip(request) == "198.51.100.5"
+
+    def test_private_host_no_xff_returns_private_ip(self):
+        """Behind ALB but no XFF header — fall through to client.host."""
+        from unittest.mock import MagicMock
+
+        import server
+
+        request = MagicMock()
+        request.headers = {}
+        request.client.host = "10.0.0.83"
+        assert server._get_client_ip(request) == "10.0.0.83"
 
     def test_no_client_returns_unknown(self):
         from unittest.mock import MagicMock

@@ -687,18 +687,28 @@ app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None, lifespan=lifesp
 
 
 def _get_client_ip(request: Request) -> str:
-    """Extract real client IP from behind Cloudflare → ALB → ECS chain.
+    """Extract real client IP from behind ALB (or Cloudflare → ALB) chain.
 
-    CF-Connecting-IP is set by Cloudflare and cannot be spoofed *through*
-    Cloudflare (it overwrites the header). Only trustworthy if the ALB
-    security group restricts ingress to Cloudflare's IP ranges — otherwise
-    direct-to-ALB requests can set it to anything. XFF is always
-    client-controllable, so we skip it entirely.
+    Priority:
+    1. CF-Connecting-IP — set by Cloudflare, trustworthy when ALB SG restricts
+       to CF ranges (overwrites any client-sent value).
+    2. Rightmost X-Forwarded-For entry — added by the ALB itself, cannot be
+       spoofed by the client. The ALB always appends the real connecting IP as
+       the last entry. Only used when request.client.host is a private IP
+       (meaning we're behind the ALB).
+    3. request.client.host — direct connection fallback.
     """
     cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
     if cf_ip:
         return cf_ip
-    return request.client.host if request.client else "unknown"
+
+    client_host = request.client.host if request.client else "unknown"
+    if client_host.startswith(("10.", "172.", "192.168.")):
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            return xff.split(",")[-1].strip()
+
+    return client_host
 
 
 limiter = Limiter(key_func=_get_client_ip)
