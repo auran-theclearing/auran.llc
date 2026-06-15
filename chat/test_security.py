@@ -320,3 +320,425 @@ class TestRateLimiterConfig:
         import server
 
         assert server.limiter._key_func is server._get_client_ip
+
+
+# ===========================================================================
+# Session cookie auth
+# ===========================================================================
+
+
+class TestSessionCookie:
+    @pytest.fixture()
+    def _session_env(self, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "SESSION_SECRET_KEY", "test-secret-key-32bytes-long!!")
+        monkeypatch.setattr(server, "CHAT_USER", "")
+        monkeypatch.setattr(server, "CHAT_PASS", "")
+        monkeypatch.setattr(server, "CF_TEAM_DOMAIN", "")
+        monkeypatch.setattr(server, "CF_ACCESS_AUD", "")
+        server._session_serializer = None
+
+    @pytest.fixture()
+    def session_client(self, _session_env):
+        import server
+
+        return TestClient(server.app, raise_server_exceptions=False)
+
+    def _mint_cookie(self, identity: str) -> str:
+        from itsdangerous import URLSafeTimedSerializer
+
+        s = URLSafeTimedSerializer("test-secret-key-32bytes-long!!")
+        return s.dumps({"sub": identity})
+
+    def test_valid_cookie_authenticates(self, session_client):
+        cookie = self._mint_cookie("olivia@auran.llc")
+        resp = session_client.get("/health", cookies={"auran_session": cookie})
+        assert resp.status_code == 200
+
+    def test_valid_cookie_allows_protected_route(self, session_client):
+        cookie = self._mint_cookie("olivia@auran.llc")
+        resp = session_client.get("/chat/status", cookies={"auran_session": cookie})
+        assert resp.status_code == 200
+
+    def test_invalid_cookie_returns_401(self, session_client):
+        resp = session_client.get("/chat/status", cookies={"auran_session": "garbage-value"})
+        assert resp.status_code == 401
+
+    def test_missing_cookie_returns_401(self, session_client):
+        resp = session_client.get("/chat/status")
+        assert resp.status_code == 401
+
+    def test_expired_cookie_returns_401(self, session_client, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "SESSION_MAX_AGE", 1)
+        cookie = self._mint_cookie("olivia@auran.llc")
+        time.sleep(2.1)
+        resp = session_client.get("/chat/status", cookies={"auran_session": cookie})
+        assert resp.status_code == 401
+
+    def test_cookie_signed_with_wrong_key_returns_401(self, session_client):
+        from itsdangerous import URLSafeTimedSerializer
+
+        wrong_key_serializer = URLSafeTimedSerializer("wrong-key-entirely")
+        bad_cookie = wrong_key_serializer.dumps({"sub": "attacker@evil.com"})
+        resp = session_client.get("/chat/status", cookies={"auran_session": bad_cookie})
+        assert resp.status_code == 401
+
+    def test_empty_sub_in_cookie_returns_401(self, session_client):
+        from itsdangerous import URLSafeTimedSerializer
+
+        s = URLSafeTimedSerializer("test-secret-key-32bytes-long!!")
+        cookie = s.dumps({"sub": ""})
+        resp = session_client.get("/chat/status", cookies={"auran_session": cookie})
+        assert resp.status_code == 401
+
+    def test_cookie_refreshed_on_success(self, session_client):
+        cookie = self._mint_cookie("olivia@auran.llc")
+        resp = session_client.get("/chat/status", cookies={"auran_session": cookie})
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "")
+        assert "auran_session=" in set_cookie
+        assert "httponly" in set_cookie.lower()
+        assert "secure" in set_cookie.lower()
+
+
+# ===========================================================================
+# CF Access JWT auth
+# ===========================================================================
+
+
+class TestCFAccessJWT:
+    @pytest.fixture()
+    def _cf_env(self, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "CF_TEAM_DOMAIN", "test-team")
+        monkeypatch.setattr(server, "CF_ACCESS_AUD", "test-aud-tag")
+        monkeypatch.setattr(server, "SESSION_SECRET_KEY", "test-secret-key-32bytes-long!!")
+        monkeypatch.setattr(server, "CHAT_USER", "")
+        monkeypatch.setattr(server, "CHAT_PASS", "")
+        server._session_serializer = None
+
+    @pytest.fixture()
+    def cf_client(self, _cf_env):
+        import server
+
+        return TestClient(server.app, raise_server_exceptions=False)
+
+    def test_valid_jwt_authenticates(self, cf_client, monkeypatch):
+        import server
+
+        async def mock_validate(token):
+            if token == "valid-cf-token":
+                return "olivia@auran.llc"
+            return None
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+        resp = cf_client.get("/chat/status", cookies={"CF_Authorization": "valid-cf-token"})
+        assert resp.status_code == 200
+
+    def test_valid_jwt_mints_session_cookie(self, cf_client, monkeypatch):
+        import server
+
+        async def mock_validate(token):
+            return "olivia@auran.llc"
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+        resp = cf_client.get("/chat/status", cookies={"CF_Authorization": "valid-cf-token"})
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "")
+        assert "auran_session=" in set_cookie
+
+    def test_invalid_jwt_returns_401(self, cf_client, monkeypatch):
+        import server
+
+        async def mock_validate(token):
+            return None
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+        resp = cf_client.get("/chat/status", cookies={"CF_Authorization": "bad-token"})
+        assert resp.status_code == 401
+
+    def test_missing_cf_cookie_returns_401(self, cf_client, monkeypatch):
+        import server
+
+        async def mock_validate(token):
+            return "olivia@auran.llc"
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+        resp = cf_client.get("/chat/status")
+        assert resp.status_code == 401
+
+
+# ===========================================================================
+# Auth chain fallback order
+# ===========================================================================
+
+
+class TestAuthChainFallback:
+    @pytest.fixture()
+    def _all_methods(self, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "SESSION_SECRET_KEY", "test-secret-key-32bytes-long!!")
+        monkeypatch.setattr(server, "CF_TEAM_DOMAIN", "test-team")
+        monkeypatch.setattr(server, "CF_ACCESS_AUD", "test-aud-tag")
+        monkeypatch.setattr(server, "CHAT_USER", "testuser")
+        monkeypatch.setattr(server, "CHAT_PASS", "testpass")
+        server._session_serializer = None
+
+    @pytest.fixture()
+    def chain_client(self, _all_methods):
+        import server
+
+        return TestClient(server.app, raise_server_exceptions=False)
+
+    def _mint_cookie(self, identity: str) -> str:
+        from itsdangerous import URLSafeTimedSerializer
+
+        s = URLSafeTimedSerializer("test-secret-key-32bytes-long!!")
+        return s.dumps({"sub": identity})
+
+    def test_cookie_takes_priority_over_jwt_and_basic(self, chain_client, monkeypatch):
+        """Cookie is checked first — valid cookie means JWT never checked."""
+        import server
+
+        jwt_called = []
+
+        async def mock_validate(token):
+            jwt_called.append(True)
+            return "other@auran.llc"
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+        cookie = self._mint_cookie("olivia@auran.llc")
+        resp = chain_client.get(
+            "/chat/status",
+            cookies={"auran_session": cookie, "CF_Authorization": "some-token"},
+            headers=_basic_auth_header("testuser", "testpass"),
+        )
+        assert resp.status_code == 200
+        assert jwt_called == []
+
+    def test_jwt_fallback_when_no_cookie(self, chain_client, monkeypatch):
+        import server
+
+        async def mock_validate(token):
+            return "olivia@auran.llc"
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+        resp = chain_client.get("/chat/status", cookies={"CF_Authorization": "valid-token"})
+        assert resp.status_code == 200
+
+    def test_basic_auth_fallback_when_no_cookie_no_jwt(self, chain_client, monkeypatch):
+        import server
+
+        async def mock_validate(token):
+            return None
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+        resp = chain_client.get("/chat/status", headers=_basic_auth_header("testuser", "testpass"))
+        assert resp.status_code == 200
+
+    def test_basic_auth_mints_cookie_during_transition(self, chain_client, monkeypatch):
+        import server
+
+        async def mock_validate(token):
+            return None
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+        resp = chain_client.get("/chat/status", headers=_basic_auth_header("testuser", "testpass"))
+        assert resp.status_code == 200
+        set_cookie = resp.headers.get("set-cookie", "")
+        assert "auran_session=" in set_cookie
+
+    def test_all_methods_fail_returns_401(self, chain_client, monkeypatch):
+        import server
+
+        async def mock_validate(token):
+            return None
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+        resp = chain_client.get(
+            "/chat/status",
+            cookies={"CF_Authorization": "bad-token"},
+            headers=_basic_auth_header("wrong", "wrong"),
+        )
+        assert resp.status_code == 401
+
+
+# ===========================================================================
+# Unified rate limiting (protects all auth methods)
+# ===========================================================================
+
+
+class TestUnifiedRateLimiting:
+    @pytest.fixture()
+    def _cf_only(self, monkeypatch):
+        import server
+
+        monkeypatch.setattr(server, "CF_TEAM_DOMAIN", "test-team")
+        monkeypatch.setattr(server, "CF_ACCESS_AUD", "test-aud-tag")
+        monkeypatch.setattr(server, "SESSION_SECRET_KEY", "test-secret-key-32bytes-long!!")
+        monkeypatch.setattr(server, "CHAT_USER", "")
+        monkeypatch.setattr(server, "CHAT_PASS", "")
+        server._session_serializer = None
+
+    @pytest.fixture()
+    def cf_rate_client(self, _cf_only):
+        import server
+
+        return TestClient(server.app, raise_server_exceptions=False)
+
+    def test_jwt_failures_trigger_lockout(self, cf_rate_client, monkeypatch):
+        """Rate limiting fires even without Basic Auth — protects JWT path."""
+        import server
+
+        async def mock_validate(token):
+            return None
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+
+        for _ in range(server._AUTH_FAILURE_LIMIT):
+            cf_rate_client.get("/chat/status", cookies={"CF_Authorization": "bad-token"})
+
+        resp = cf_rate_client.get("/chat/status", cookies={"CF_Authorization": "bad-token"})
+        assert resp.status_code == 429
+
+    def test_valid_jwt_resets_failures(self, cf_rate_client, monkeypatch):
+        """Successful JWT auth clears failure counters."""
+        import server
+
+        call_count = [0]
+
+        async def mock_validate(token):
+            call_count[0] += 1
+            if call_count[0] <= 5:
+                return None
+            return "olivia@auran.llc"
+
+        monkeypatch.setattr(server, "_validate_cf_jwt", mock_validate)
+
+        for _ in range(5):
+            cf_rate_client.get("/chat/status", cookies={"CF_Authorization": "bad"})
+
+        assert len(server._auth_failures.get("testclient", [])) > 0
+
+        cf_rate_client.get("/chat/status", cookies={"CF_Authorization": "now-valid"})
+        assert server._auth_failures.get("testclient") is None
+
+    def test_no_auth_configured_returns_401_not_500(self, monkeypatch):
+        """With no auth methods configured, returns 401 (fail-closed)."""
+        import server
+
+        monkeypatch.setattr(server, "CF_TEAM_DOMAIN", "")
+        monkeypatch.setattr(server, "CF_ACCESS_AUD", "")
+        monkeypatch.setattr(server, "SESSION_SECRET_KEY", "")
+        monkeypatch.setattr(server, "CHAT_USER", "")
+        monkeypatch.setattr(server, "CHAT_PASS", "")
+
+        client = TestClient(server.app, raise_server_exceptions=False)
+        resp = client.get("/chat/status")
+        assert resp.status_code == 401
+
+
+# ===========================================================================
+# JWT validation unit tests
+# ===========================================================================
+
+
+class TestValidateCFJWT:
+    def test_rejects_token_with_wrong_issuer(self):
+        import jwt as pyjwt
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        import server
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+        token = pyjwt.encode(
+            {"email": "olivia@auran.llc", "aud": "test-aud", "iss": "https://evil.com"},
+            private_key,
+            algorithm="RS256",
+            headers={"kid": "test-kid"},
+        )
+
+        jwk = pyjwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+        jwk["kid"] = "test-kid"
+
+        server.CF_TEAM_DOMAIN = "test-team"
+        server.CF_ACCESS_AUD = "test-aud"
+        server._jwks_cache = {"keys": [jwk], "fetched_at": time.monotonic()}
+
+        import asyncio
+
+        result = asyncio.run(server._validate_cf_jwt(token))
+        assert result is None
+
+    def test_accepts_token_with_correct_claims(self):
+        import jwt as pyjwt
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        import server
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+        token = pyjwt.encode(
+            {
+                "email": "olivia@auran.llc",
+                "aud": "test-aud",
+                "iss": "https://test-team.cloudflareaccess.com",
+                "exp": time.time() + 300,
+            },
+            private_key,
+            algorithm="RS256",
+            headers={"kid": "test-kid"},
+        )
+
+        jwk = pyjwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+        jwk["kid"] = "test-kid"
+
+        server.CF_TEAM_DOMAIN = "test-team"
+        server.CF_ACCESS_AUD = "test-aud"
+        server._jwks_cache = {"keys": [jwk], "fetched_at": time.monotonic()}
+
+        import asyncio
+
+        result = asyncio.run(server._validate_cf_jwt(token))
+        assert result == "olivia@auran.llc"
+
+    def test_kid_mismatch_skips_key(self):
+        import jwt as pyjwt
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        import server
+
+        real_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+        wrong_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+        token = pyjwt.encode(
+            {
+                "email": "olivia@auran.llc",
+                "aud": "test-aud",
+                "iss": "https://test-team.cloudflareaccess.com",
+                "exp": time.time() + 300,
+            },
+            real_key,
+            algorithm="RS256",
+            headers={"kid": "real-kid"},
+        )
+
+        wrong_jwk = pyjwt.algorithms.RSAAlgorithm.to_jwk(wrong_key.public_key(), as_dict=True)
+        wrong_jwk["kid"] = "wrong-kid"
+        real_jwk = pyjwt.algorithms.RSAAlgorithm.to_jwk(real_key.public_key(), as_dict=True)
+        real_jwk["kid"] = "real-kid"
+
+        server.CF_TEAM_DOMAIN = "test-team"
+        server.CF_ACCESS_AUD = "test-aud"
+        server._jwks_cache = {"keys": [wrong_jwk, real_jwk], "fetched_at": time.monotonic()}
+
+        import asyncio
+
+        result = asyncio.run(server._validate_cf_jwt(token))
+        assert result == "olivia@auran.llc"

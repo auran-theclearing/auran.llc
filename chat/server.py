@@ -801,6 +801,7 @@ async def auth_middleware(request: Request, call_next):
     if SESSION_SECRET_KEY:
         identity = _validate_session_cookie(request.cookies.get("auran_session", ""))
         if identity:
+            _auth_success(client_ip)
             response = await call_next(request)
             _set_session_cookie(response, identity)
             return response
@@ -820,7 +821,9 @@ async def auth_middleware(request: Request, call_next):
     # --- 3. Basic Auth fallback (transition period) ---
     if CHAT_USER and CHAT_PASS and check_basic_auth(request):
         _auth_success(client_ip)
-        return await call_next(request)
+        response = await call_next(request)
+        _set_session_cookie(response, CHAT_USER)
+        return response
 
     # --- All methods failed ---
     _auth_failures.setdefault(client_ip, []).append(now)
@@ -894,15 +897,7 @@ async def health():
         "build": os.environ.get("BUILD_SHA", "dev"),
         "model": ANTHROPIC_MODEL,
         "has_api_key": bool(ANTHROPIC_API_KEY),
-        "auth_methods": [
-            m
-            for m in [
-                "cookie" if SESSION_SECRET_KEY else "",
-                "cf_access" if (CF_TEAM_DOMAIN and CF_ACCESS_AUD) else "",
-                "basic" if (CHAT_USER and CHAT_PASS) else "",
-            ]
-            if m
-        ],
+        "has_auth": bool(SESSION_SECRET_KEY or (CF_TEAM_DOMAIN and CF_ACCESS_AUD) or (CHAT_USER and CHAT_PASS)),
         "has_memory": has_memory,
         "warmup_enabled": WARMUP_ENABLED,
         "warmup_model": WARMUP_MODEL,
