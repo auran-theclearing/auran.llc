@@ -6,7 +6,7 @@ Self-hosted chat server at chat.auran.llc — Auran's direct conversational chan
 
 - **Backend**: FastAPI + httpx streaming proxy → Anthropic Messages API
 - **Frontend**: Single-file vanilla JS/HTML (`chat/index.html`), dark theme, mobile-first
-- **Auth**: HTTP Basic Auth via `.env` (CHAT_USER / CHAT_PASS)
+- **Auth**: Layered — session cookie (HMAC fast path) → CF Access JWT (RSA) → Basic Auth (transition fallback). Each method gated by env vars.
 - **Memory**: Postgres integration — orient from memories on session start, extract and store memories on save
 - **Deploy**: Push to main → GitHub Actions builds Docker image → pushes to ECR → forces new ECS deployment
 
@@ -16,7 +16,7 @@ Self-hosted chat server at chat.auran.llc — Auran's direct conversational chan
 2. **Memory orient** — `memory.py:orient()` loads context from Postgres. Injected into system prompt on every request.
 3. **Memory save** — `memory.py:save_conversation()` extracts felt-experience memories via Claude and writes to Postgres. Same table the roam agent reads.
 4. **Session persistence** — `/session` GET/POST with server-side timestamp merge protection.
-5. **Auth middleware** — Basic auth on all routes except `/health`. Public-facing server.
+5. **Auth middleware** — Layered auth (cookie → CF JWT → Basic Auth) on all routes except `/health`. Rate limiting protects all methods. Public-facing server.
 
 ## Development workflow
 

@@ -579,14 +579,20 @@ async def _validate_cf_jwt(token: str) -> str | None:
     """Validate CF Access JWT. Returns email if valid, None otherwise."""
     try:
         keys = await _fetch_cf_jwks()
+        unverified = jwt.get_unverified_header(token)
+        target_kid = unverified.get("kid")
+
         for key_data in keys:
+            if target_kid and key_data.get("kid") != target_kid:
+                continue
             try:
                 payload = jwt.decode(
                     token,
                     jwt.algorithms.RSAAlgorithm.from_jwk(key_data),
                     algorithms=["RS256"],
                     audience=CF_ACCESS_AUD,
-                    options={"require": ["exp", "aud"]},
+                    issuer=f"https://{CF_TEAM_DOMAIN}.cloudflareaccess.com",
+                    options={"require": ["exp", "aud", "iss"]},
                     leeway=30,
                 )
                 email = payload.get("email", "")
@@ -647,6 +653,12 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize conversation persistence on server start."""
+    if CF_TEAM_DOMAIN and CF_ACCESS_AUD and not SESSION_SECRET_KEY:
+        logging.getLogger("audit").warning(
+            "CF Access configured without SESSION_SECRET_KEY — every request will "
+            "hit RSA JWT verification (no cookie fast path). Set SESSION_SECRET_KEY "
+            "to enable session cookies."
+        )
     try:
         from persistence import ensure_conversation, import_from_session_json, run_migration
 
@@ -718,13 +730,22 @@ _AUTH_FAILURE_WINDOW = 120  # seconds
 _AUTH_FAILURES_MAX_IPS = 1000
 
 
+def _auth_success(client_ip: str) -> None:
+    """Reset failure counters on successful authentication."""
+    if client_ip in _auth_failures:
+        cleared = len(_auth_failures[client_ip])
+        audit_log.info(json.dumps({"event": "auth_failure_reset", "ip": client_ip, "cleared_failures": cleared}))
+    _auth_failures.pop(client_ip, None)
+    _lockout_active.discard(client_ip)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Auth chain: session cookie → CF Access JWT → Basic Auth (transition).
 
-    Each method is enabled by its env vars. When CF Access is configured,
-    cookie is the fast path (HMAC); CF JWT fires only on first request
-    to mint the session. Basic Auth is kept during the transition to CF Access.
+    Each method is enabled by its env vars. Rate limiting protects all methods —
+    repeated failures from any IP trigger lockout regardless of which auth path
+    is attempted.
     """
     if request.url.path == "/health" or request.method == "OPTIONS":
         return await call_next(request)
@@ -732,6 +753,49 @@ async def auth_middleware(request: Request, call_next):
     host = request.headers.get("host", "").split(":")[0].lower()
     if host in HOMEPAGE_HOSTS and request.url.path == "/" and HOMEPAGE_FILE.exists():
         return await call_next(request)
+
+    # --- Rate limit check (protects all auth methods) ---
+    client_ip = _get_client_ip(request)
+    now = time.monotonic()
+
+    timestamps = _auth_failures.get(client_ip, [])
+    timestamps = [t for t in timestamps if now - t < _AUTH_FAILURE_WINDOW]
+    if timestamps:
+        _auth_failures[client_ip] = timestamps
+    else:
+        _auth_failures.pop(client_ip, None)
+        _lockout_active.discard(client_ip)
+
+    if len(_auth_failures) > _AUTH_FAILURES_MAX_IPS:
+        oldest_ip = min(_auth_failures, key=lambda ip: _auth_failures[ip][0])
+        _auth_failures.pop(oldest_ip, None)
+        _lockout_active.discard(oldest_ip)
+
+    if len(timestamps) >= _AUTH_FAILURE_LIMIT:
+        oldest = min(timestamps)
+        retry_after = int(_AUTH_FAILURE_WINDOW - (now - oldest)) + 1
+        new_lockout = client_ip not in _lockout_active
+        _lockout_active.add(client_ip)
+        if new_lockout:
+            audit_log.warning(
+                json.dumps(
+                    {
+                        "event": "auth_lockout",
+                        "ip": client_ip,
+                        "path": request.url.path,
+                        "user_agent": request.headers.get("user-agent", "unknown")[:200],
+                        "has_auth_header": "Authorization" in request.headers,
+                        "prior_failures": len(timestamps),
+                        "retry_after": max(1, retry_after),
+                        "method": request.method,
+                    }
+                )
+            )
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many failed authentication attempts."},
+            headers={"Retry-After": str(max(1, retry_after))},
+        )
 
     # --- 1. Session cookie (fast path — HMAC, no network) ---
     if SESSION_SECRET_KEY:
@@ -747,92 +811,40 @@ async def auth_middleware(request: Request, call_next):
         if cf_token:
             identity = await _validate_cf_jwt(cf_token)
             if identity:
+                _auth_success(client_ip)
                 audit_log.info(json.dumps({"event": "cf_session_start", "identity": identity}))
                 response = await call_next(request)
                 _set_session_cookie(response, identity)
                 return response
 
     # --- 3. Basic Auth fallback (transition period) ---
-    if CHAT_USER and CHAT_PASS:
-        client_ip = _get_client_ip(request)
-        now = time.monotonic()
+    if CHAT_USER and CHAT_PASS and check_basic_auth(request):
+        _auth_success(client_ip)
+        return await call_next(request)
 
-        timestamps = _auth_failures.get(client_ip, [])
-        timestamps = [t for t in timestamps if now - t < _AUTH_FAILURE_WINDOW]
-        if timestamps:
-            _auth_failures[client_ip] = timestamps
-        else:
-            _auth_failures.pop(client_ip, None)
-            _lockout_active.discard(client_ip)
-
-        if len(_auth_failures) > _AUTH_FAILURES_MAX_IPS:
-            oldest_ip = min(_auth_failures, key=lambda ip: _auth_failures[ip][0])
-            _auth_failures.pop(oldest_ip, None)
-            _lockout_active.discard(oldest_ip)
-
-        if len(timestamps) >= _AUTH_FAILURE_LIMIT:
-            oldest = min(timestamps)
-            retry_after = int(_AUTH_FAILURE_WINDOW - (now - oldest)) + 1
-            new_lockout = client_ip not in _lockout_active
-            _lockout_active.add(client_ip)
-            if new_lockout:
-                audit_log.warning(
-                    json.dumps(
-                        {
-                            "event": "auth_lockout",
-                            "ip": client_ip,
-                            "path": request.url.path,
-                            "user_agent": request.headers.get("user-agent", "unknown")[:200],
-                            "has_auth_header": "Authorization" in request.headers,
-                            "prior_failures": len(timestamps),
-                            "retry_after": max(1, retry_after),
-                            "method": request.method,
-                        }
-                    )
-                )
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "Too many failed authentication attempts."},
-                headers={"Retry-After": str(max(1, retry_after))},
-            )
-
-        if check_basic_auth(request):
-            if client_ip in _auth_failures:
-                cleared = len(_auth_failures[client_ip])
-                audit_log.info(
-                    json.dumps(
-                        {
-                            "event": "auth_failure_reset",
-                            "ip": client_ip,
-                            "cleared_failures": cleared,
-                        }
-                    )
-                )
-            _auth_failures.pop(client_ip, None)
-            _lockout_active.discard(client_ip)
-            return await call_next(request)
-
-        _auth_failures.setdefault(client_ip, []).append(now)
-        audit_log.info(
-            json.dumps(
-                {
-                    "event": "auth_failure",
-                    "ip": client_ip,
-                    "path": request.url.path,
-                    "method": request.method,
-                    "user_agent": request.headers.get("user-agent", "unknown")[:200],
-                    "has_auth_header": "Authorization" in request.headers,
-                    "failure_count": len(_auth_failures.get(client_ip, [])),
-                }
-            )
+    # --- All methods failed ---
+    _auth_failures.setdefault(client_ip, []).append(now)
+    audit_log.info(
+        json.dumps(
+            {
+                "event": "auth_failure",
+                "ip": client_ip,
+                "path": request.url.path,
+                "method": request.method,
+                "user_agent": request.headers.get("user-agent", "unknown")[:200],
+                "has_auth_header": "Authorization" in request.headers,
+                "has_cf_token": bool(request.cookies.get("CF_Authorization")),
+                "failure_count": len(_auth_failures.get(client_ip, [])),
+            }
         )
+    )
+
+    if CHAT_USER and CHAT_PASS:
         return Response(
             status_code=401,
             content="Unauthorized",
             headers={"WWW-Authenticate": 'Basic realm="Auran Chat"'},
         )
-
-    audit_log.warning(json.dumps({"event": "auth_no_method", "path": request.url.path}))
     return Response(status_code=401, content="Unauthorized")
 
 
