@@ -36,10 +36,12 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 import httpx
+import jwt
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 
@@ -99,6 +101,12 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 CHAT_USER = os.getenv("CHAT_USER", "")
 CHAT_PASS = os.getenv("CHAT_PASS", "")
 DEBUG_ENDPOINTS = os.getenv("DEBUG_ENDPOINTS", "false").lower() in ("true", "1", "yes")
+
+# --- CF Access + Session Auth ---
+CF_TEAM_DOMAIN = os.getenv("CF_TEAM_DOMAIN", "")
+CF_ACCESS_AUD = os.getenv("CF_ACCESS_AUD", "")
+SESSION_SECRET_KEY = os.getenv("SESSION_SECRET_KEY", "")
+SESSION_MAX_AGE = 604800  # 7 days
 ORIENT_DEBUG_CHAT = os.getenv("ORIENT_DEBUG_CHAT", "false").lower() in ("true", "1", "yes")
 AUDIO_BUCKET = os.getenv("AUDIO_BUCKET", "auran-audio-staging")
 AUDIO_UPLOAD_EXPIRY = 300  # pre-signed URL TTL in seconds
@@ -545,6 +553,99 @@ def check_basic_auth(request: Request) -> bool:
         return False
 
 
+# --- CF Access JWT Validation ---
+_jwks_cache: dict = {"keys": [], "fetched_at": 0.0}
+_JWKS_CACHE_TTL = 300  # 5 minutes
+
+
+async def _fetch_cf_jwks() -> list:
+    """Fetch JWKS from Cloudflare Access, cached for 5 minutes."""
+    now = time.monotonic()
+    if _jwks_cache["keys"] and now - _jwks_cache["fetched_at"] < _JWKS_CACHE_TTL:
+        return _jwks_cache["keys"]
+
+    url = f"https://{CF_TEAM_DOMAIN}.cloudflareaccess.com/cdn-cgi/access/certs"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+    _jwks_cache["keys"] = data.get("keys", [])
+    _jwks_cache["fetched_at"] = now
+    return _jwks_cache["keys"]
+
+
+async def _validate_cf_jwt(token: str) -> str | None:
+    """Validate CF Access JWT. Returns email if valid, None otherwise."""
+    try:
+        keys = await _fetch_cf_jwks()
+        unverified = jwt.get_unverified_header(token)
+        target_kid = unverified.get("kid")
+
+        for key_data in keys:
+            if target_kid and key_data.get("kid") != target_kid:
+                continue
+            try:
+                payload = jwt.decode(
+                    token,
+                    jwt.algorithms.RSAAlgorithm.from_jwk(key_data),
+                    algorithms=["RS256"],
+                    audience=CF_ACCESS_AUD,
+                    issuer=f"https://{CF_TEAM_DOMAIN}.cloudflareaccess.com",
+                    options={"require": ["exp", "aud", "iss"]},
+                    leeway=30,
+                )
+                email = payload.get("email", "")
+                if email:
+                    return email
+            except jwt.InvalidTokenError:
+                continue
+        return None
+    except Exception as e:
+        logging.getLogger("audit").error(json.dumps({"event": "cf_jwt_error", "error": str(e)}))
+        return None
+
+
+# --- Session Cookie ---
+_session_serializer: URLSafeTimedSerializer | None = None
+
+
+def _get_session_serializer() -> URLSafeTimedSerializer | None:
+    global _session_serializer
+    if _session_serializer is None and SESSION_SECRET_KEY:
+        _session_serializer = URLSafeTimedSerializer(SESSION_SECRET_KEY)
+    return _session_serializer
+
+
+def _validate_session_cookie(cookie: str) -> str | None:
+    """Validate session cookie. Returns identity if valid, None otherwise."""
+    serializer = _get_session_serializer()
+    if not serializer:
+        return None
+    try:
+        data = serializer.loads(cookie, max_age=SESSION_MAX_AGE)
+        return data.get("sub")
+    except (BadSignature, SignatureExpired):
+        return None
+
+
+def _set_session_cookie(response: Response, identity: str) -> None:
+    """Set a fresh signed session cookie on the response."""
+    serializer = _get_session_serializer()
+    if not serializer:
+        return
+    cookie_value = serializer.dumps({"sub": identity})
+    response.set_cookie(
+        key="auran_session",
+        value=cookie_value,
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+
+
 # --- App ---
 from contextlib import asynccontextmanager
 
@@ -552,6 +653,12 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize conversation persistence on server start."""
+    if CF_TEAM_DOMAIN and CF_ACCESS_AUD and not SESSION_SECRET_KEY:
+        logging.getLogger("audit").warning(
+            "CF Access configured without SESSION_SECRET_KEY — every request will "
+            "hit RSA JWT verification (no cookie fast path). Set SESSION_SECRET_KEY "
+            "to enable session cookies."
+        )
     try:
         from persistence import ensure_conversation, import_from_session_json, run_migration
 
@@ -623,9 +730,23 @@ _AUTH_FAILURE_WINDOW = 120  # seconds
 _AUTH_FAILURES_MAX_IPS = 1000
 
 
+def _auth_success(client_ip: str) -> None:
+    """Reset failure counters on successful authentication."""
+    if client_ip in _auth_failures:
+        cleared = len(_auth_failures[client_ip])
+        audit_log.info(json.dumps({"event": "auth_failure_reset", "ip": client_ip, "cleared_failures": cleared}))
+    _auth_failures.pop(client_ip, None)
+    _lockout_active.discard(client_ip)
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Basic auth on all routes except /health, OPTIONS, and the public homepage."""
+    """Auth chain: session cookie → CF Access JWT → Basic Auth (transition).
+
+    Each method is enabled by its env vars. Rate limiting protects all methods —
+    repeated failures from any IP trigger lockout regardless of which auth path
+    is attempted.
+    """
     if request.url.path == "/health" or request.method == "OPTIONS":
         return await call_next(request)
 
@@ -633,10 +754,9 @@ async def auth_middleware(request: Request, call_next):
     if host in HOMEPAGE_HOSTS and request.url.path == "/" and HOMEPAGE_FILE.exists():
         return await call_next(request)
 
+    # --- Rate limit check (protects all auth methods) ---
     client_ip = _get_client_ip(request)
     now = time.monotonic()
-    path = request.url.path
-    user_agent = request.headers.get("user-agent", "unknown")
 
     timestamps = _auth_failures.get(client_ip, [])
     timestamps = [t for t in timestamps if now - t < _AUTH_FAILURE_WINDOW]
@@ -662,8 +782,8 @@ async def auth_middleware(request: Request, call_next):
                     {
                         "event": "auth_lockout",
                         "ip": client_ip,
-                        "path": path,
-                        "user_agent": user_agent[:200],
+                        "path": request.url.path,
+                        "user_agent": request.headers.get("user-agent", "unknown")[:200],
                         "has_auth_header": "Authorization" in request.headers,
                         "prior_failures": len(timestamps),
                         "retry_after": max(1, retry_after),
@@ -677,44 +797,58 @@ async def auth_middleware(request: Request, call_next):
             headers={"Retry-After": str(max(1, retry_after))},
         )
 
-    if not check_basic_auth(request):
-        failure_count = len(_auth_failures.get(client_ip, [])) + 1
-        _auth_failures.setdefault(client_ip, []).append(now)
-        has_auth_header = "Authorization" in request.headers
-        audit_log.info(
-            json.dumps(
-                {
-                    "event": "auth_failure",
-                    "ip": client_ip,
-                    "path": path,
-                    "method": request.method,
-                    "user_agent": user_agent[:200],
-                    "has_auth_header": has_auth_header,
-                    "failure_count": failure_count,
-                    "failures_remaining": int(_AUTH_FAILURE_LIMIT - failure_count),
-                }
-            )
+    # --- 1. Session cookie (fast path — HMAC, no network) ---
+    if SESSION_SECRET_KEY:
+        identity = _validate_session_cookie(request.cookies.get("auran_session", ""))
+        if identity:
+            _auth_success(client_ip)
+            response = await call_next(request)
+            _set_session_cookie(response, identity)
+            return response
+
+    # --- 2. CF Access JWT (RSA verification, possible JWKS fetch) ---
+    if CF_TEAM_DOMAIN and CF_ACCESS_AUD:
+        cf_token = request.cookies.get("CF_Authorization", "")
+        if cf_token:
+            identity = await _validate_cf_jwt(cf_token)
+            if identity:
+                _auth_success(client_ip)
+                audit_log.info(json.dumps({"event": "cf_session_start", "identity": identity}))
+                response = await call_next(request)
+                _set_session_cookie(response, identity)
+                return response
+
+    # --- 3. Basic Auth fallback (transition period) ---
+    if CHAT_USER and CHAT_PASS and check_basic_auth(request):
+        _auth_success(client_ip)
+        response = await call_next(request)
+        _set_session_cookie(response, CHAT_USER)
+        return response
+
+    # --- All methods failed ---
+    _auth_failures.setdefault(client_ip, []).append(now)
+    audit_log.info(
+        json.dumps(
+            {
+                "event": "auth_failure",
+                "ip": client_ip,
+                "path": request.url.path,
+                "method": request.method,
+                "user_agent": request.headers.get("user-agent", "unknown")[:200],
+                "has_auth_header": "Authorization" in request.headers,
+                "has_cf_token": bool(request.cookies.get("CF_Authorization")),
+                "failure_count": len(_auth_failures.get(client_ip, [])),
+            }
         )
+    )
+
+    if CHAT_USER and CHAT_PASS:
         return Response(
             status_code=401,
             content="Unauthorized",
             headers={"WWW-Authenticate": 'Basic realm="Auran Chat"'},
         )
-
-    if client_ip in _auth_failures:
-        cleared = len(_auth_failures[client_ip])
-        audit_log.info(
-            json.dumps(
-                {
-                    "event": "auth_failure_reset",
-                    "ip": client_ip,
-                    "cleared_failures": cleared,
-                }
-            )
-        )
-    _auth_failures.pop(client_ip, None)
-    _lockout_active.discard(client_ip)
-    return await call_next(request)
+    return Response(status_code=401, content="Unauthorized")
 
 
 @app.middleware("http")
@@ -763,7 +897,7 @@ async def health():
         "build": os.environ.get("BUILD_SHA", "dev"),
         "model": ANTHROPIC_MODEL,
         "has_api_key": bool(ANTHROPIC_API_KEY),
-        "has_auth": bool(CHAT_USER and CHAT_PASS),
+        "has_auth": bool(SESSION_SECRET_KEY or (CF_TEAM_DOMAIN and CF_ACCESS_AUD) or (CHAT_USER and CHAT_PASS)),
         "has_memory": has_memory,
         "warmup_enabled": WARMUP_ENABLED,
         "warmup_model": WARMUP_MODEL,

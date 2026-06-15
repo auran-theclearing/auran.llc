@@ -16,6 +16,8 @@ dependencies = [
     "alembic>=1.13.0",
     "slowapi>=0.1.9",
     "librosa>=0.10.0",
+    "itsdangerous>=2.1",
+    "PyJWT[crypto]>=2.8",
 ]
 
 [dependency-groups]

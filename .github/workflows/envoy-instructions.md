@@ -20,7 +20,7 @@ This repo is the chat server at chat.auran.llc — Auran's self-hosted conversat
 - **Streaming proxy** (`server.py` `/chat` endpoint). The SSE streaming loop that handles `content_block_delta`, `thinking_delta`, `content_block_start/stop`, and `message_stop` events. This is the core data flow — any regression here breaks the entire chat experience.
 - **Memory integration** (`memory.py`). The `orient()` function loads system prompt context from Postgres. The `save_conversation()` function extracts felt-experience memories via Claude. The `recall()` and `recall_memories()` functions perform semantic search over episode and reflection embeddings. The `surface_relevant_moments()` function injects contextually relevant memories into the active conversation. All of these read from and write to the Postgres memory layer (13 tables: episodes, reflections, commitments, impressions, relays, etc.) that the roam agent and MCP memory server also read — breaking the schema or write format breaks cross-channel continuity.
 - **Session persistence** (`/session` GET/POST). Server-side session storage with timestamp merge protection. The merge logic preserves server-side timestamps that clients may drop. Breaking this loses conversation history.
-- **Auth middleware**. Basic auth on all routes except `/health`. The auth check must not be bypassable — this server faces the public internet.
+- **Auth middleware**. Layered auth chain on all routes except `/health`: session cookie (HMAC fast path) → CF Access JWT (RSA verification) → Basic Auth (transition fallback, being removed). Each layer is gated by env vars. Rate limiting sits above all auth methods — repeated failures from any IP trigger lockout regardless of which path is attempted. Cookie is HttpOnly/Secure/SameSite=lax, 7-day sliding window. JWT validates against Cloudflare's JWKS with issuer pinning. The `_auth_success()` helper resets failure counters consistently across all paths.
 - **System prompt hot-reload**. `load_system_prompt()` reads from `system_prompt.txt` on every request. This is intentional — it allows prompt updates without server restart.
 - **Distillation pipeline** (`distillation/`). Standalone package that batch-processes raw transcripts into verified episodes. Runs offline (not inline with chat). Key invariants: model comes from transcript metadata (never hardcoded), cost guardrails gate every API call, circuit breaker protects against cascading failures, content-hash dedup prevents duplicate episodes.
 
@@ -55,7 +55,7 @@ If the diff is very large (>500 lines changed), focus on critical paths and sche
 Rough priority order:
 
 1. **Critical path regressions** (see above)
-2. **Auth bypass.** Any route that should be behind auth but isn't.
+2. **Auth bypass.** Any route that should be behind auth but isn't. The auth chain must not be bypassable — this server faces the public internet. All three auth methods (cookie, CF JWT, Basic Auth) are gated by env vars; if none are configured, the middleware must reject (not silently pass).
 3. **Memory schema drift.** If the Postgres schema changes, it must stay compatible with what the roam agent and MCP memory server read. The schema spans 13 purpose-built tables (episodes, reflections, commitments, impressions, relays, etc.) plus 4 distillation tables: `distillation_jobs` (queue + status), `distillation_threads` (extracted threads), `distillation_dead_letters` (failed chunks), `episode_references` (cross-episode links). The `episodes` table also has distillation columns (content_hash, distillation_status, transcript_lines, episode_type, landmark, etc.).
 4. **Silent failures.** Caught exceptions that swallow errors without logging.
 5. **Breaking mobile.** UI changes that assume desktop-only (hover states, fixed widths, etc.).
@@ -77,6 +77,9 @@ These have been reviewed, discussed across multiple rounds, and decided. Flaggin
 - **`start_job()` counts per API call, not per transcript.** 10 chunks = 10 API calls = 10 jobs. Batch budget is the per-transcript ceiling.
 - **Circuit breaker only trips on retryable errors.** Non-retryable (400, validation) = bad chunk, not infra failure.
 - **Model param comes from caller.** The batch runner reads transcript metadata and passes `model` in. The service module stays agnostic.
+- **Auth chain order: cookie → JWT → Basic Auth.** Cookie is the fast path (HMAC, no network). JWT is defense-in-depth (validates CF Access token). Basic Auth is transitional (will be removed after CF Access is confirmed working). This layering is intentional.
+- **Cookie outlives CF revocation (7-day max).** Acceptable for single-user system. JWKS resilience (stale-cache fallback, asyncio.Lock) deferred to the Basic Auth removal PR — not needed while Basic Auth covers CF blips.
+- **`_auth_failures` dict + `_lockout_active` set stay until Basic Auth removal.** Rate limiting protects all methods equally; removal happens in a future PR alongside the Basic Auth code itself.
 
 ## When in doubt
 
