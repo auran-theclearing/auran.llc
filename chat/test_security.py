@@ -119,8 +119,8 @@ class TestGetClientIP:
 
         request = MagicMock()
         request.headers = {"X-Forwarded-For": "spoofed.ip.here"}
-        request.client.host = "203.0.113.1"
-        assert server._get_client_ip(request) == "203.0.113.1"
+        request.client.host = "8.8.8.8"
+        assert server._get_client_ip(request) == "8.8.8.8"
 
     def test_cf_ip_takes_priority_over_xff(self):
         """CF-Connecting-IP wins even when XFF is present."""
@@ -135,6 +135,17 @@ class TestGetClientIP:
         }
         request.client.host = "10.0.0.83"
         assert server._get_client_ip(request) == "198.51.100.5"
+
+    def test_ignores_xff_for_public_172_range(self):
+        """172.217.x.x (Google) is public despite starting with 172."""
+        from unittest.mock import MagicMock
+
+        import server
+
+        request = MagicMock()
+        request.headers = {"X-Forwarded-For": "attacker.ip.here"}
+        request.client.host = "172.217.14.206"
+        assert server._get_client_ip(request) == "172.217.14.206"
 
     def test_private_host_no_xff_returns_private_ip(self):
         """Behind ALB but no XFF header — fall through to client.host."""

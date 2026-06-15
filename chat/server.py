@@ -23,6 +23,7 @@ Requires .env with:
 import argparse
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -694,8 +695,8 @@ def _get_client_ip(request: Request) -> str:
        to CF ranges (overwrites any client-sent value).
     2. Rightmost X-Forwarded-For entry — added by the ALB itself, cannot be
        spoofed by the client. The ALB always appends the real connecting IP as
-       the last entry. Only used when request.client.host is a private IP
-       (meaning we're behind the ALB).
+       the last entry. Only used when request.client.host is RFC1918/loopback/
+       link-local (meaning we're behind the ALB).
     3. request.client.host — direct connection fallback.
     """
     cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
@@ -703,7 +704,11 @@ def _get_client_ip(request: Request) -> str:
         return cf_ip
 
     client_host = request.client.host if request.client else "unknown"
-    if client_host.startswith(("10.", "172.", "192.168.")):
+    try:
+        is_private = ipaddress.ip_address(client_host).is_private
+    except ValueError:
+        is_private = False
+    if is_private:
         xff = request.headers.get("X-Forwarded-For", "")
         if xff:
             return xff.split(",")[-1].strip()
