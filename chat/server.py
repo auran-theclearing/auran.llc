@@ -695,8 +695,10 @@ def _get_client_ip(request: Request) -> str:
        to CF ranges (overwrites any client-sent value).
     2. Rightmost X-Forwarded-For entry — added by the ALB itself, cannot be
        spoofed by the client. The ALB always appends the real connecting IP as
-       the last entry. Only used when request.client.host is RFC1918/loopback/
-       link-local (meaning we're behind the ALB).
+       the last entry. Only used when request.client.host is non-globally-routable
+       (per Python's ipaddress.is_private — covers RFC1918, loopback, link-local,
+       CGN, and other IANA special-use ranges). In practice, the ALB peer is
+       always a VPC-internal 10.x address.
     3. request.client.host — direct connection fallback.
     """
     cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
@@ -711,7 +713,9 @@ def _get_client_ip(request: Request) -> str:
     if is_private:
         xff = request.headers.get("X-Forwarded-For", "")
         if xff:
-            return xff.split(",")[-1].strip()
+            rightmost = xff.split(",")[-1].strip()
+            if rightmost:
+                return rightmost
 
     return client_host
 
