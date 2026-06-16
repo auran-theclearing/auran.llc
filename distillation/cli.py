@@ -42,14 +42,23 @@ def main():
 
     elif command == "refine":
         if len(sys.argv) < 3:
-            print("Usage: distill refine <transcript_path> [--model MODEL]")
+            print("Usage: distill refine <transcript_path> [--model MODEL] [--after LINE_NUM]")
             sys.exit(1)
         model = None
+        after_line = None
         if "--model" in sys.argv:
             idx = sys.argv.index("--model")
             if idx + 1 < len(sys.argv):
                 model = sys.argv[idx + 1]
-        _run_refine(sys.argv[2], model=model)
+        if "--after" in sys.argv:
+            idx = sys.argv.index("--after")
+            if idx + 1 < len(sys.argv):
+                try:
+                    after_line = int(sys.argv[idx + 1])
+                except ValueError:
+                    print("Error: --after requires a line number (integer)", file=sys.stderr)
+                    sys.exit(1)
+        _run_refine(sys.argv[2], model=model, after_line=after_line)
 
     elif command == "review":
         _run_review()
@@ -105,7 +114,7 @@ def _run_clean(path: str):
         print(f"WARNING: High reduction (>{threshold_pct:.0f}%) — flagged for manual review")
 
 
-def _run_refine(path: str, model: str | None = None):
+def _run_refine(path: str, model: str | None = None, after_line: int | None = None):
     import json
     from pathlib import Path
 
@@ -131,10 +140,23 @@ def _run_refine(path: str, model: str | None = None):
         sys.exit(1)
 
     raw_text = transcript_path.read_text()
+
+    if after_line is not None:
+        lines = raw_text.splitlines(keepends=True)
+        if after_line > len(lines):
+            print(
+                f"Error: --after {after_line} exceeds file length ({len(lines)} lines)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raw_text = "".join(lines[after_line - 1 :])
+        print(f"Starting from line {after_line} ({len(lines) - after_line + 1} lines)")
+
     stem = transcript_path.stem
     output_dir = transcript_path.parent / "distill" / "episodes"
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{stem}-episodes.json"
+    suffix = f"-from-L{after_line}" if after_line else ""
+    output_path = output_dir / f"{stem}{suffix}-episodes.json"
 
     print(f"Transcript: {transcript_path.name} ({len(raw_text):,} chars)")
     print(f"Model: {model}")
