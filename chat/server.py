@@ -694,7 +694,9 @@ def _get_client_ip(request: Request) -> str:
     Priority:
     1. CF-Connecting-IP — only trusted when TRUST_CF_HEADER is set (meaning
        Cloudflare is in the path via orange-cloud DNS). Without CF in the path,
-       any client can spoof this header.
+       any client can spoof this header. NOTE: TRUST_CF_HEADER alone is not
+       sufficient — the ALB SG must also restrict ingress to Cloudflare IP
+       ranges, otherwise direct-to-ALB requests bypass CF and spoof this header.
     2. Rightmost X-Forwarded-For entry — added by the ALB itself, cannot be
        spoofed by the client. The ALB always appends the real connecting IP as
        the last entry. Only used when request.client.host is non-globally-routable
