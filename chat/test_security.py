@@ -58,47 +58,63 @@ def client(_auth_creds):
 
 
 class TestGetClientIP:
-    """CF-Connecting-IP is the canonical source behind Cloudflare."""
+    """IP extraction behind ALB, with optional Cloudflare trust."""
 
-    def test_prefers_cf_connecting_ip(self):
-        from unittest.mock import MagicMock
+    def test_prefers_cf_connecting_ip_when_trusted(self):
+        from unittest.mock import MagicMock, patch
 
         import server
 
         request = MagicMock()
         request.headers = {"CF-Connecting-IP": "1.2.3.4"}
         request.client.host = "10.0.0.1"
-        assert server._get_client_ip(request) == "1.2.3.4"
+        with patch.object(server, "TRUST_CF_HEADER", True):
+            assert server._get_client_ip(request) == "1.2.3.4"
+
+    def test_ignores_cf_header_when_untrusted(self):
+        """Without TRUST_CF_HEADER, CF-Connecting-IP is client-spoofable."""
+        from unittest.mock import MagicMock, patch
+
+        import server
+
+        request = MagicMock()
+        request.headers = {"CF-Connecting-IP": "spoofed.ip", "X-Forwarded-For": "real.client.ip"}
+        request.client.host = "10.0.0.83"
+        with patch.object(server, "TRUST_CF_HEADER", False):
+            assert server._get_client_ip(request) == "real.client.ip"
 
     def test_strips_whitespace(self):
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
 
         import server
 
         request = MagicMock()
         request.headers = {"CF-Connecting-IP": "  1.2.3.4  "}
         request.client.host = "10.0.0.1"
-        assert server._get_client_ip(request) == "1.2.3.4"
+        with patch.object(server, "TRUST_CF_HEADER", True):
+            assert server._get_client_ip(request) == "1.2.3.4"
 
     def test_ignores_empty_cf_header(self):
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
 
         import server
 
         request = MagicMock()
         request.headers = {"CF-Connecting-IP": ""}
         request.client.host = "10.0.0.1"
-        assert server._get_client_ip(request) == "10.0.0.1"
+        with patch.object(server, "TRUST_CF_HEADER", True):
+            assert server._get_client_ip(request) == "10.0.0.1"
 
     def test_ignores_whitespace_only_cf_header(self):
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
 
         import server
 
         request = MagicMock()
         request.headers = {"CF-Connecting-IP": "   "}
         request.client.host = "10.0.0.1"
-        assert server._get_client_ip(request) == "10.0.0.1"
+        with patch.object(server, "TRUST_CF_HEADER", True):
+            assert server._get_client_ip(request) == "10.0.0.1"
 
     def test_uses_rightmost_xff_behind_alb(self):
         """Behind ALB (private client.host), use rightmost XFF entry."""
@@ -123,8 +139,8 @@ class TestGetClientIP:
         assert server._get_client_ip(request) == "8.8.8.8"
 
     def test_cf_ip_takes_priority_over_xff(self):
-        """CF-Connecting-IP wins even when XFF is present."""
-        from unittest.mock import MagicMock
+        """CF-Connecting-IP wins over XFF when trusted."""
+        from unittest.mock import MagicMock, patch
 
         import server
 
@@ -134,7 +150,8 @@ class TestGetClientIP:
             "X-Forwarded-For": "10.0.0.1, 203.0.113.42",
         }
         request.client.host = "10.0.0.83"
-        assert server._get_client_ip(request) == "198.51.100.5"
+        with patch.object(server, "TRUST_CF_HEADER", True):
+            assert server._get_client_ip(request) == "198.51.100.5"
 
     def test_ignores_xff_for_public_172_range(self):
         """172.217.x.x (Google) is public despite starting with 172."""
