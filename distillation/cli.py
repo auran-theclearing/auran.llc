@@ -142,6 +142,9 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
     raw_text = transcript_path.read_text()
 
     if after_line is not None:
+        if after_line < 1:
+            print("Error: --after must be a positive line number", file=sys.stderr)
+            sys.exit(1)
         lines = raw_text.splitlines(keepends=True)
         if after_line > len(lines):
             print(
@@ -195,7 +198,12 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
     total_cost = 0.0
     failed_chunks = []
 
-    def _write_output():
+    all_moments = []
+
+    def _write_output(*, done=False):
+        import os
+        import tempfile
+
         seen_hashes = set()
         deduped = []
         for ep in all_episodes:
@@ -205,24 +213,42 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
             seen_hashes.add(h)
             deduped.append(ep)
 
+        clean_episodes = [{k: v for k, v in ep.items() if not k.startswith("_")} for ep in deduped]
+
+        is_complete = done and not failed_chunks
+        succeeded_chunks = len(set(ep.get("_chunk_index") for ep in all_episodes))
+
         output = {
             "source_transcript": transcript_path.name,
             "model": model,
             "total_cost_usd": round(total_cost, 4),
-            "status": "complete" if not failed_chunks else "partial",
+            "status": "complete" if is_complete else "in_progress" if not done else "partial",
             "stats": {
                 "chunks_total": len(chunks),
-                "chunks_succeeded": len(chunks) - len(failed_chunks),
+                "chunks_succeeded": succeeded_chunks,
                 "chunks_failed": failed_chunks,
-                "raw_episodes": len(all_episodes),
-                "deduped_episodes": len(deduped),
+                "episodes": len(clean_episodes),
                 "duplicates_removed": len(all_episodes) - len(deduped),
                 "threads": len(all_threads),
+                "moments": len(all_moments),
             },
-            "episodes": deduped,
+            "episodes": clean_episodes,
             "threads": all_threads,
+            "moments": all_moments,
         }
-        output_path.write_text(json.dumps(output, indent=2, default=str))
+
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=output_path.parent, suffix=".tmp", prefix=output_path.stem
+        )
+        try:
+            with os.fdopen(tmp_fd, "w") as f:
+                json.dump(output, f, indent=2, default=str)
+            os.replace(tmp_path, output_path)
+        except BaseException:
+            os.unlink(tmp_path)
+            raise
+
+    refine_logger = logging.getLogger("distillation.refine")
 
     for i, chunk in enumerate(chunks):
         print(f"  Chunk {i + 1}/{len(chunks)}...", end=" ", flush=True)
@@ -241,6 +267,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
             )
             chunk_episodes = result.get("episodes", [])
             chunk_threads = result.get("threads", [])
+            chunk_moments = result.get("moments", [])
 
             for ep in chunk_episodes:
                 ep["_chunk_index"] = i
@@ -248,18 +275,21 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
 
             all_episodes.extend(chunk_episodes)
             all_threads.extend(chunk_threads)
+            all_moments.extend(chunk_moments)
             total_cost = cost_guardrail.batch_spent_usd
             print(f"{len(chunk_episodes)} episodes (${total_cost:.4f} total)")
 
             _write_output()
 
         except Exception as e:
+            refine_logger.exception("Chunk %d/%d failed", i + 1, len(chunks))
             print(f"FAILED: {e}")
             failed_chunks.append(i)
             _write_output()
             continue
 
-    # Final summary
+    _write_output(done=True)
+
     seen = set()
     deduped_final = []
     for ep in all_episodes:
@@ -281,6 +311,9 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
     print("  2. Review and edit episodes in the JSON")
     print("  3. git commit (creates the diff trail)")
     print("  4. distill push <path> (when DB wiring is ready)")
+
+    if failed_chunks:
+        sys.exit(1)
 
 
 def _run_review():
