@@ -23,6 +23,7 @@ Requires .env with:
 import argparse
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -105,6 +106,7 @@ DEBUG_ENDPOINTS = os.getenv("DEBUG_ENDPOINTS", "false").lower() in ("true", "1",
 # --- CF Access + Session Auth ---
 CF_TEAM_DOMAIN = os.getenv("CF_TEAM_DOMAIN", "")
 CF_ACCESS_AUD = os.getenv("CF_ACCESS_AUD", "")
+TRUST_CF_HEADER = os.getenv("TRUST_CF_HEADER", "false").lower() in ("true", "1", "yes")
 SESSION_SECRET_KEY = os.getenv("SESSION_SECRET_KEY", "")
 SESSION_MAX_AGE = 604800  # 7 days
 ORIENT_DEBUG_CHAT = os.getenv("ORIENT_DEBUG_CHAT", "false").lower() in ("true", "1", "yes")
@@ -687,18 +689,40 @@ app = FastAPI(title="Auran Chat", docs_url=None, redoc_url=None, lifespan=lifesp
 
 
 def _get_client_ip(request: Request) -> str:
-    """Extract real client IP from behind Cloudflare → ALB → ECS chain.
+    """Extract real client IP from behind ALB (or Cloudflare → ALB) chain.
 
-    CF-Connecting-IP is set by Cloudflare and cannot be spoofed *through*
-    Cloudflare (it overwrites the header). Only trustworthy if the ALB
-    security group restricts ingress to Cloudflare's IP ranges — otherwise
-    direct-to-ALB requests can set it to anything. XFF is always
-    client-controllable, so we skip it entirely.
+    Priority:
+    1. CF-Connecting-IP — only trusted when TRUST_CF_HEADER is set (meaning
+       Cloudflare is in the path via orange-cloud DNS). Without CF in the path,
+       any client can spoof this header. NOTE: TRUST_CF_HEADER alone is not
+       sufficient — the ALB SG must also restrict ingress to Cloudflare IP
+       ranges, otherwise direct-to-ALB requests bypass CF and spoof this header.
+    2. Rightmost X-Forwarded-For entry — added by the ALB itself, cannot be
+       spoofed by the client. The ALB always appends the real connecting IP as
+       the last entry. Only used when request.client.host is non-globally-routable
+       (per Python's ipaddress.is_private — covers RFC1918, loopback, link-local,
+       CGN, and other IANA special-use ranges). In practice, the ALB peer is
+       always a VPC-internal 10.x address.
+    3. request.client.host — direct connection fallback.
     """
-    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
-    if cf_ip:
-        return cf_ip
-    return request.client.host if request.client else "unknown"
+    if TRUST_CF_HEADER:
+        cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+        if cf_ip:
+            return cf_ip
+
+    client_host = request.client.host if request.client else "unknown"
+    try:
+        is_private = ipaddress.ip_address(client_host).is_private
+    except ValueError:
+        is_private = False
+    if is_private:
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            rightmost = xff.split(",")[-1].strip()
+            if rightmost:
+                return rightmost
+
+    return client_host
 
 
 limiter = Limiter(key_func=_get_client_ip)
