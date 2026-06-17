@@ -4,7 +4,7 @@
  */
 import { strict as assert } from 'node:assert';
 
-// Mirror of the formatTime function from index.html (line 676)
+// Mirror of formatTime() from index.html — search "function formatTime" to find source
 function formatTime(ts) {
   if (!ts) return '';
   const normalized = (ts.endsWith('Z') || ts.includes('+') || ts.includes('-', 10)) ? ts : ts + 'Z';
