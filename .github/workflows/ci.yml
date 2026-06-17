@@ -66,6 +66,15 @@ jobs:
         working-directory: chat
         run: uv run pytest test_scene_memory.py -v
 
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test formatTime
+        run: node chat/test_format_time.mjs
+
   test-distillation:
     runs-on: ubuntu-latest
     steps:
