@@ -66,6 +66,7 @@ python -m distillation.cli refine <transcript_path> [--model MODEL] [--after LIN
 ```
 
 - `refine` — clean → chunk → API call → episodes JSON (local-first, no DB required)
+- `push` — insert verified episodes JSON into Postgres (requires DB connection via `DATABASE_URL`)
 - `clean` — run just the clean pass (line markers, noise stripping, paste tagging)
 - Model auto-detected from transcript YAML frontmatter; override with `--model`
 - `--after LINE_NUM` resumes from a specific file line (line markers offset correctly)
