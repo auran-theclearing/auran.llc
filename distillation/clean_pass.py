@@ -48,15 +48,14 @@ def _is_turn_boundary(line: str) -> bool:
     return False
 
 
-def inject_line_markers(raw_text: str, start_num: int = 1) -> str:
+def inject_line_markers(raw_text: str, start_line: int = 1) -> str:
     lines = raw_text.split("\n")
     marked_lines = []
-    marker_num = start_num
 
-    for line in lines:
+    for i, line in enumerate(lines):
         if _is_turn_boundary(line):
-            marked_lines.append(f"[L{marker_num:04d}] {line}")
-            marker_num += 1
+            actual_line_num = i + start_line
+            marked_lines.append(f"[L{actual_line_num:04d}] {line}")
         else:
             marked_lines.append(line)
 
@@ -109,9 +108,9 @@ def tag_pasted_content(text: str) -> str:
 
 
 def run_clean_pass(
-    raw_text: str, high_reduction_threshold: float = 0.60, line_offset: int = 0
+    raw_text: str, high_reduction_threshold: float = 0.60, start_line: int = 1
 ) -> tuple[str, dict]:
-    marked = inject_line_markers(raw_text, start_num=1 + line_offset)
+    marked = inject_line_markers(raw_text, start_line=start_line)
     cleaned, stats = clean_transcript(marked, high_reduction_threshold=high_reduction_threshold)
     cleaned = normalize_roles(cleaned)
     cleaned = tag_pasted_content(cleaned)

@@ -160,7 +160,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
 
     raw_text = transcript_path.read_text()
 
-    turn_offset = 0
+    start_line = 1
     if after_line is not None:
         if after_line < 1:
             print("Error: --after must be a positive line number", file=sys.stderr)
@@ -172,13 +172,10 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
                 file=sys.stderr,
             )
             sys.exit(1)
-        from distillation.clean_pass import _is_turn_boundary
-
-        skipped = lines[: after_line - 1]
-        turn_offset = sum(1 for line in skipped if _is_turn_boundary(line))
+        start_line = after_line
         raw_text = "".join(lines[after_line - 1 :])
         remaining = len(lines) - after_line + 1
-        print(f"Starting from line {after_line} ({remaining} lines, turn offset {turn_offset})")
+        print(f"Starting from line {after_line} ({remaining} lines)")
 
     stem = transcript_path.stem
     output_dir = transcript_path.parent / "distill" / "episodes"
@@ -196,7 +193,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
     cleaned, stats = run_clean_pass(
         raw_text,
         high_reduction_threshold=config.high_reduction_threshold,
-        line_offset=turn_offset,
+        start_line=start_line,
     )
     print(f"  Reduction: {stats['reduction_pct']:.1f}%")
 

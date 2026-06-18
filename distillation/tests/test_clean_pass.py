@@ -120,10 +120,10 @@ class TestLineMarkerInjection:
 
     def test_markers_with_offset(self):
         text = "Human: first\n\nAssistant: second\n\nHuman: third\n"
-        marked = inject_line_markers(text, start_num=500)
+        marked = inject_line_markers(text, start_line=500)
         assert "[L0500] Human: first" in marked
-        assert "[L0501] Assistant: second" in marked
-        assert "[L0502] Human: third" in marked
+        assert "[L0502] Assistant: second" in marked
+        assert "[L0504] Human: third" in marked
         assert "[L0001]" not in marked
 
     def test_markers_chat_channel_format(self):
@@ -137,8 +137,8 @@ class TestLineMarkerInjection:
         )
         marked = inject_line_markers(text)
         assert "[L0001] ### **Olivia** — Jun 11 9:16 PM" in marked
-        assert "[L0002] ### **Auran** — Jun 11 9:16 PM" in marked
-        assert "[L0003] ### **Olivia** — Jun 11 9:21 PM" in marked
+        assert "[L0007] ### **Auran** — Jun 11 9:16 PM" in marked
+        assert "[L0013] ### **Olivia** — Jun 11 9:21 PM" in marked
 
     def test_markers_chat_format_with_offset(self):
         text = (
@@ -147,9 +147,9 @@ class TestLineMarkerInjection:
             "### **Auran** — Jun 14 1:01 AM\n\n"
             "Hi\n"
         )
-        marked = inject_line_markers(text, start_num=200)
+        marked = inject_line_markers(text, start_line=200)
         assert "[L0200] ### **Olivia**" in marked
-        assert "[L0201] ### **Auran**" in marked
+        assert "[L0206] ### **Auran**" in marked
         assert "[L0001]" not in marked
 
     def test_markers_survive_clean_pass(self):
