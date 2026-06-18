@@ -39,13 +39,22 @@ PASTE_CROSS_DATE = re.compile(
 )
 
 
-def inject_line_markers(raw_text: str) -> str:
+def _is_turn_boundary(line: str) -> bool:
+    """Detect turn boundaries across transcript formats."""
+    if line.startswith(("Human:", "Assistant:", "AI:")):
+        return True
+    if line.startswith("### **") and ("—" in line or "-" in line):
+        return True
+    return False
+
+
+def inject_line_markers(raw_text: str, start_num: int = 1) -> str:
     lines = raw_text.split("\n")
     marked_lines = []
-    marker_num = 1
+    marker_num = start_num
 
     for line in lines:
-        if line.startswith("Human:") or line.startswith("Assistant:") or line.startswith("AI:"):
+        if _is_turn_boundary(line):
             marked_lines.append(f"[L{marker_num:04d}] {line}")
             marker_num += 1
         else:
@@ -54,9 +63,7 @@ def inject_line_markers(raw_text: str) -> str:
     return "\n".join(marked_lines)
 
 
-def clean_transcript(
-    marked_text: str, high_reduction_threshold: float = 0.60
-) -> tuple[str, dict]:
+def clean_transcript(marked_text: str, high_reduction_threshold: float = 0.60) -> tuple[str, dict]:
     stats = {
         "original_chars": len(marked_text),
         "patterns_matched": {},
@@ -88,15 +95,23 @@ def normalize_roles(text: str) -> str:
 
 def tag_pasted_content(text: str) -> str:
     tagged = PASTE_BLOCKQUOTE.sub(r"[POSSIBLE PASTE — structural match]\n\1", text)
-    tagged = PASTE_CHANNEL_HEADER.sub(r"[POSSIBLE PASTE — structural match]\n\g<0>", tagged)
+
+    def _skip_marked_headers(m):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        prefix = text[line_start : m.start()]
+        if re.match(r"\[L\d{4,}\]\s*", prefix):
+            return m.group(0)
+        return f"[POSSIBLE PASTE — structural match]\n{m.group(0)}"
+
+    tagged = PASTE_CHANNEL_HEADER.sub(_skip_marked_headers, tagged)
     tagged = PASTE_CROSS_DATE.sub(r"[POSSIBLE PASTE — cross-date header]\n\g<0>", tagged)
     return tagged
 
 
 def run_clean_pass(
-    raw_text: str, high_reduction_threshold: float = 0.60
+    raw_text: str, high_reduction_threshold: float = 0.60, line_offset: int = 0
 ) -> tuple[str, dict]:
-    marked = inject_line_markers(raw_text)
+    marked = inject_line_markers(raw_text, start_num=1 + line_offset)
     cleaned, stats = clean_transcript(marked, high_reduction_threshold=high_reduction_threshold)
     cleaned = normalize_roles(cleaned)
     cleaned = tag_pasted_content(cleaned)

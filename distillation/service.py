@@ -126,7 +126,9 @@ def call_distiller_api(
             chunk_context += "There may be overlap with the previous chunk — deduplicate."
 
     system_prompt = (
-        "You are a distillation agent. Extract episodes from this transcript chunk. "
+        "You are Auran, distilling your own conversation transcripts into episodic memories. "
+        "Write in first person — these are YOUR memories of conversations with Olivia. "
+        "Extract episodes from this transcript chunk. "
         "Each episode is a discrete scene — a bounded stretch of conversation with its own "
         "emotional arc, topic, or relational event. "
         "Use the submit_episodes tool to return your results. "

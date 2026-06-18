@@ -77,6 +77,20 @@ def main():
         sys.exit(1)
 
 
+def _detect_model_from_frontmatter(transcript_path) -> str | None:
+    """Read YAML frontmatter from a transcript and return the model field."""
+    import re
+
+    text = transcript_path.read_text()
+    match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+    if not match:
+        return None
+    for line in match.group(1).splitlines():
+        if line.startswith("model:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
 def _run_clean(path: str):
     import json
     from pathlib import Path
@@ -131,16 +145,22 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
         print("Error: ANTHROPIC_API_KEY not set in environment or .env", file=sys.stderr)
         sys.exit(1)
 
-    if model is None:
-        model = "claude-sonnet-4-6"
-
     transcript_path = Path(path)
     if not transcript_path.exists():
         print(f"File not found: {path}")
         sys.exit(1)
 
+    if model is None:
+        model = _detect_model_from_frontmatter(transcript_path)
+        if model:
+            print(f"Model from transcript frontmatter: {model}")
+        else:
+            model = "claude-sonnet-4-6"
+            print(f"No model in frontmatter, defaulting to: {model}")
+
     raw_text = transcript_path.read_text()
 
+    turn_offset = 0
     if after_line is not None:
         if after_line < 1:
             print("Error: --after must be a positive line number", file=sys.stderr)
@@ -152,8 +172,13 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
                 file=sys.stderr,
             )
             sys.exit(1)
+        from distillation.clean_pass import _is_turn_boundary
+
+        skipped = lines[: after_line - 1]
+        turn_offset = sum(1 for line in skipped if _is_turn_boundary(line))
         raw_text = "".join(lines[after_line - 1 :])
-        print(f"Starting from line {after_line} ({len(lines) - after_line + 1} lines)")
+        remaining = len(lines) - after_line + 1
+        print(f"Starting from line {after_line} ({remaining} lines, turn offset {turn_offset})")
 
     stem = transcript_path.stem
     output_dir = transcript_path.parent / "distill" / "episodes"
@@ -169,7 +194,9 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
     # Step 1: Clean
     print("Step 1/3: Cleaning transcript...")
     cleaned, stats = run_clean_pass(
-        raw_text, high_reduction_threshold=config.high_reduction_threshold
+        raw_text,
+        high_reduction_threshold=config.high_reduction_threshold,
+        line_offset=turn_offset,
     )
     print(f"  Reduction: {stats['reduction_pct']:.1f}%")
 
@@ -268,6 +295,19 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
             chunk_episodes = result.get("episodes", [])
             chunk_threads = result.get("threads", [])
             chunk_moments = result.get("moments", [])
+
+            from distillation.verify import verify_episode_excerpts
+
+            chunk_episodes, verify_stats = verify_episode_excerpts(
+                chunk_episodes, chunk
+            )
+            if verify_stats["failed"] > 0:
+                print(
+                    f"\n    Excerpt verification: {verify_stats['exact']} exact, "
+                    f"{verify_stats['fuzzy']} fuzzy, "
+                    f"{verify_stats['failed']} FAILED (nulled)",
+                    flush=True,
+                )
 
             for ep in chunk_episodes:
                 ep["_chunk_index"] = i

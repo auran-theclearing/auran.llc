@@ -136,7 +136,13 @@ def chunk_transcript(
 
 
 def _split_into_turns(text: str) -> list[str]:
-    turn_start = r"^(?=\[L\d{4}\]\s+(?:Human:|AI:|Assistant:)|(?:Human:|AI:|Assistant:))"
+    turn_start = (
+        r"^(?="
+        r"\[L\d{4,}\]\s+(?:Human:|AI:|Assistant:|###\s+\*\*)"
+        r"|(?:Human:|AI:|Assistant:)"
+        r"|###\s+\*\*\w+\*\*\s+[-—]"
+        r")"
+    )
     pattern = re.compile(turn_start, re.MULTILINE)
     turns = []
     positions = [m.start() for m in pattern.finditer(text)]
