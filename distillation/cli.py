@@ -472,6 +472,7 @@ def _run_push(path: str):
     finally:
         conn.close()
 
+
 def _run_review():
     print("Not yet wired: requires database connection.", file=sys.stderr)
     sys.exit(2)
