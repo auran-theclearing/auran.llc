@@ -418,7 +418,8 @@ def _run_push(path: str, source_model: str | None = None):
         skipped = 0
 
         for i, ep in enumerate(episodes_list):
-            ep_content_hash = content_hash(ep.get("summary", ep.get("title", "")))
+            hash_input = ep.get("summary") or ep.get("title") or ""
+            ep_content_hash = content_hash(hash_input) if hash_input.strip() else None
             transcript_lines = ep.get("transcript_lines")
             if isinstance(transcript_lines, list):
                 transcript_lines = ",".join(str(x) for x in transcript_lines)
