@@ -55,6 +55,25 @@ Automated via GitHub Actions (`.github/workflows/deploy.yml`):
 
 Manual deploy (emergency): `cd auran-infra/chat-ecs && ./deploy.sh`
 
+## Distillation
+
+Standalone package in `distillation/` — processes raw transcripts into episodic memories offline.
+
+```bash
+cd distillation
+uv pip install -e ".[dev]" --system
+python -m distillation.cli refine <transcript_path> [--model MODEL] [--after LINE_NUM]
+```
+
+- `refine` — clean → chunk → API call → episodes JSON (local-first, no DB required)
+- `clean` — run just the clean pass (line markers, noise stripping, paste tagging)
+- Model auto-detected from transcript YAML frontmatter; override with `--model`
+- `--after LINE_NUM` resumes from a specific file line (line markers offset correctly)
+- Output: `<transcript_dir>/distill/episodes/<stem>-episodes.json`
+- Line numbers in output (`transcript_lines`) are actual source file line numbers
+- Cost guardrails, circuit breaker, and excerpt verification run automatically
+- Tests: `pytest tests/ -v` (118 tests)
+
 ## Infrastructure
 
 - **ECS Fargate**: cluster `auran`, service `auran-chat`

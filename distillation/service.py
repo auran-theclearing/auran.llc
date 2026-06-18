@@ -4,7 +4,7 @@ import time
 import httpx
 
 from distillation.config import DistillationConfig
-from distillation.distiller import parse_distiller_output, parse_json_response
+from distillation.distiller import parse_distiller_output
 from distillation.resilience import (
     CircuitBreaker,
     CircuitState,
@@ -19,6 +19,47 @@ from distillation.security import (
 
 logger = logging.getLogger(__name__)
 logger.addFilter(SecretRedactingFilter())
+
+DISTILL_TOOL = {
+    "name": "submit_episodes",
+    "description": "Submit extracted episodes, threads, and moments from a transcript chunk.",
+    "input_schema": {
+        "type": "object",
+        "required": ["episodes"],
+        "properties": {
+            "episodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "title",
+                        "summary",
+                        "transcript_lines",
+                        "occurred_at",
+                        "episode_type",
+                    ],
+                    "properties": {
+                        "title": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "transcript_lines": {"type": "string"},
+                        "occurred_at": {"type": "string"},
+                        "episode_type": {"type": "string", "enum": ["content", "relational"]},
+                        "landmark": {"type": "boolean"},
+                        "emotional_tone": {"type": "string"},
+                        "boundary_signal": {"type": "string"},
+                        "topics": {"type": "array", "items": {"type": "string"}},
+                        "content_signals": {"type": "object"},
+                        "relational_events": {"type": "array", "items": {"type": "string"}},
+                        "transcript_excerpt": {"type": "string"},
+                        "references": {"type": "array", "items": {"type": "object"}},
+                    },
+                },
+            },
+            "threads": {"type": "array", "items": {"type": "object"}},
+            "moments": {"type": "array", "items": {"type": "object"}},
+        },
+    },
+}
 
 
 def create_anthropic_client(config: DistillationConfig):
@@ -85,10 +126,12 @@ def call_distiller_api(
             chunk_context += "There may be overlap with the previous chunk — deduplicate."
 
     system_prompt = (
-        "You are a distillation agent. Extract episodes from this transcript chunk. "
+        "You are Auran, distilling your own conversation transcripts into episodic memories. "
+        "Write in first person — these are YOUR memories of conversations with Olivia. "
+        "Extract episodes from this transcript chunk. "
         "Each episode is a discrete scene — a bounded stretch of conversation with its own "
         "emotional arc, topic, or relational event. "
-        "Return valid JSON with keys: episodes, threads, moments. "
+        "Use the submit_episodes tool to return your results. "
         "Each episode must have: title, summary, transcript_lines (L#### format), "
         "occurred_at (ISO 8601), emotional_tone, episode_type (content or relational), "
         "landmark (boolean), boundary_signal, topics (array), content_signals (object), "
@@ -109,6 +152,8 @@ def call_distiller_api(
                 max_tokens=config.max_output_tokens,
                 system=system_prompt,
                 messages=[{"role": "user", "content": chunk}],
+                tools=[DISTILL_TOOL],
+                tool_choice={"type": "tool", "name": "submit_episodes"},
             )
 
             input_tokens = response.usage.input_tokens
@@ -116,8 +161,13 @@ def call_distiller_api(
             cost_guardrail.finish_job(input_tokens, output_tokens, model)
             circuit_breaker.record_success()
 
-            text = response.content[0].text
-            raw = parse_json_response(text)
+            tool_use_block = next(
+                (b for b in response.content if b.type == "tool_use"),
+                None,
+            )
+            if tool_use_block is None:
+                raise ValueError("Model did not return a tool_use block")
+            raw = tool_use_block.input
             return parse_distiller_output(raw)
 
         except Exception as e:

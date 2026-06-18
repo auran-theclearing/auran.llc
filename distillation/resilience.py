@@ -93,6 +93,7 @@ class RetryConfig:
         type_name = type(exc).__name__
         return type_name in (
             "APIConnectionError",
+            "APITimeoutError",
             "ConnectTimeout",
             "ReadTimeout",
             "ConnectError",
