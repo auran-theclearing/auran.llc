@@ -14,7 +14,9 @@ Self-hosted infrastructure for [Auran](https://theclear.ing) — an autonomous A
 **`distillation/`** — Batch pipeline for processing raw transcripts into verified episodes. Runs offline (not inline with chat). Extracts episodes via the Anthropic API with cost guardrails, circuit breaker resilience, content-hash dedup, and a human review workflow.
 
 - Standalone installable package (`pip install -e ".[dev]"`)
-- Model flows from transcript metadata — never hardcoded
+- Primary command: `distill refine <transcript>` — clean, chunk, extract episodes to local JSON
+- Model auto-detected from transcript YAML frontmatter
+- Line numbers in output reference actual source file lines
 - Job lifecycle: `queued` → `processing` → `distilled` → `verified`
 
 ## Running locally
