@@ -63,9 +63,19 @@ def main():
 
     elif command == "push":
         if len(sys.argv) < 3:
-            print("Usage: distill push <episodes_json_path>")
+            print("Usage: distill push <episodes_json_path> [--source-model MODEL]")
             sys.exit(1)
-        _run_push(sys.argv[2])
+        source_model = None
+        remaining = sys.argv[3:]
+        i = 0
+        while i < len(remaining):
+            if remaining[i] == "--source-model" and i + 1 < len(remaining):
+                source_model = remaining[i + 1]
+                i += 2
+            else:
+                print(f"Unknown argument: {remaining[i]}", file=sys.stderr)
+                sys.exit(1)
+        _run_push(sys.argv[2], source_model=source_model)
 
     elif command == "review":
         _run_review()
@@ -157,8 +167,9 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
         print(f"File not found: {path}")
         sys.exit(1)
 
+    frontmatter_model = _detect_model_from_frontmatter(transcript_path)
     if model is None:
-        model = _detect_model_from_frontmatter(transcript_path)
+        model = frontmatter_model
         if model:
             print(f"Model from transcript frontmatter: {model}")
         else:
@@ -251,6 +262,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
 
         output = {
             "source_transcript": transcript_path.name,
+            "source_model": frontmatter_model,
             "model": model,
             "total_cost_usd": round(total_cost, 4),
             "status": "complete" if is_complete else "in_progress" if not done else "partial",
@@ -358,7 +370,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
         sys.exit(1)
 
 
-def _run_push(path: str):
+def _run_push(path: str, source_model: str | None = None):
     import json
     from pathlib import Path
 
@@ -383,10 +395,17 @@ def _run_push(path: str):
 
     source_transcript = data.get("source_transcript", episodes_path.stem)
     distiller_model = data.get("model", "unknown")
+    resolved_source_model = source_model or data.get("source_model")
+    if not resolved_source_model:
+        print(
+            "Error: source_model not found in envelope. Pass --source-model MODEL.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     status = data.get("status", "complete")
 
     print(f"Pushing {len(episodes_list)} episodes from {source_transcript}")
-    print(f"Model: {distiller_model}, Status: {status}")
+    print(f"Source model: {resolved_source_model}, Distiller: {distiller_model}, Status: {status}")
     print()
 
     db_url = config.database_url.get_secret_value()
@@ -426,7 +445,7 @@ def _run_push(path: str):
                 "boundary_signal": ep.get("boundary_signal"),
                 "episode_type": ep.get("episode_type"),
                 "landmark": ep.get("landmark", False),
-                "source_model": "claude-opus-4-6",
+                "source_model": resolved_source_model,
                 "distiller_model": distiller_model,
                 "distillation_status": "distilled" if status == "complete" else "partial",
             }

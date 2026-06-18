@@ -32,15 +32,13 @@ def upgrade() -> None:
         ),
         sa.Column("transcript_file", sa.Text, nullable=False, unique=True),
         sa.Column("channel", sa.Text, nullable=False),
-        sa.Column(
-            "status", sa.Text, nullable=False, server_default=sa.text("'queued'")
-        ),
+        sa.Column("status", sa.Text, nullable=False, server_default=sa.text("'queued'")),
         sa.Column("total_chunks", sa.Integer),
         sa.Column("chunks_done", sa.Integer, server_default=sa.text("0")),
         sa.Column("episode_count", sa.Integer),
         sa.Column("episodes_verified", sa.Integer, server_default=sa.text("0")),
         sa.Column("episodes_approved", sa.Integer, server_default=sa.text("0")),
-        sa.Column("api_cost_usd", sa.Float),
+        sa.Column("api_cost_usd", sa.Numeric(8, 4)),
         sa.Column("source_model", sa.Text),
         sa.Column("distiller_model", sa.Text),
         sa.Column("error_message", sa.Text),
@@ -79,9 +77,7 @@ def upgrade() -> None:
     op.add_column("episodes", sa.Column("distiller_model", sa.Text))
     op.add_column(
         "episodes",
-        sa.Column(
-            "distillation_status", sa.Text, server_default=sa.text("'manual'")
-        ),
+        sa.Column("distillation_status", sa.Text, server_default=sa.text("'manual'")),
     )
     op.add_column(
         "episodes",
