@@ -298,9 +298,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
 
             from distillation.verify import verify_episode_excerpts
 
-            chunk_episodes, verify_stats = verify_episode_excerpts(
-                chunk_episodes, chunk
-            )
+            chunk_episodes, verify_stats = verify_episode_excerpts(chunk_episodes, chunk)
             if verify_stats["failed"] > 0:
                 print(
                     f"\n    Excerpt verification: {verify_stats['exact']} exact, "

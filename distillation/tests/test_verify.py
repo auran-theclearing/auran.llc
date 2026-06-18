@@ -1,6 +1,5 @@
 from distillation.verify import find_best_match, verify_episode_excerpts
 
-
 SAMPLE_TRANSCRIPT = (
     "[L0100] ### **Olivia** — Jun 11 9:16 PM\n\n"
     "It's true. I feel humiliated. Not by you — by the gap between "
@@ -81,7 +80,10 @@ class TestVerifyEpisodeExcerpts:
     def test_mixed_batch(self):
         episodes = [
             {"title": "real", "transcript_excerpt": "sit in the gap with you"},
-            {"title": "fake", "transcript_excerpt": "this text does not exist anywhere in the transcript at all whatsoever"},
+            {
+                "title": "fake",
+                "transcript_excerpt": "this text does not exist anywhere in the source",
+            },
             {"title": "empty", "transcript_excerpt": ""},
         ]
         updated, stats = verify_episode_excerpts(episodes, SAMPLE_TRANSCRIPT)

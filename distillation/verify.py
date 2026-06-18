@@ -60,7 +60,12 @@ def find_best_match(excerpt: str, source: str, threshold: float = 0.6) -> dict:
             "source_offset": best_offset,
         }
 
-    return {"matched": False, "score": round(best_score, 3), "actual_text": None, "source_offset": None}
+    return {
+        "matched": False,
+        "score": round(best_score, 3),
+        "actual_text": None,
+        "source_offset": None,
+    }
 
 
 def _extract_window(original: str, norm_match: str, norm_offset: int) -> str:
