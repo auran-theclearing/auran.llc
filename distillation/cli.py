@@ -63,19 +63,26 @@ def main():
 
     elif command == "push":
         if len(sys.argv) < 3:
-            print("Usage: distill push <episodes_json_path> [--source-model MODEL]")
+            print(
+                "Usage: distill push <episodes_json_path>"
+                " [--source-model MODEL] [--channel CHANNEL]"
+            )
             sys.exit(1)
         source_model = None
+        channel = "chat"
         remaining = sys.argv[3:]
         i = 0
         while i < len(remaining):
             if remaining[i] == "--source-model" and i + 1 < len(remaining):
                 source_model = remaining[i + 1]
                 i += 2
+            elif remaining[i] == "--channel" and i + 1 < len(remaining):
+                channel = remaining[i + 1]
+                i += 2
             else:
                 print(f"Unknown argument: {remaining[i]}", file=sys.stderr)
                 sys.exit(1)
-        _run_push(sys.argv[2], source_model=source_model)
+        _run_push(sys.argv[2], source_model=source_model, channel=channel)
 
     elif command == "review":
         _run_review()
@@ -370,7 +377,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
         sys.exit(1)
 
 
-def _run_push(path: str, source_model: str | None = None):
+def _run_push(path: str, source_model: str | None = None, channel: str = "chat"):
     import json
     from pathlib import Path
 
@@ -416,8 +423,10 @@ def _run_push(path: str, source_model: str | None = None):
         cur = conn.cursor()
         inserted = 0
         skipped = 0
+        current_ep = (0, "(not started)")
 
         for i, ep in enumerate(episodes_list):
+            current_ep = (i + 1, ep.get("title", f"Episode {i + 1}"))
             hash_input = ep.get("summary") or ep.get("title") or ""
             ep_content_hash = content_hash(hash_input) if hash_input.strip() else None
             transcript_lines = ep.get("transcript_lines")
@@ -436,7 +445,7 @@ def _run_push(path: str, source_model: str | None = None):
                 if ep.get("relational_events")
                 else None,
                 "topics": ep.get("topics"),
-                "channel": "chat",
+                "channel": channel,
                 "significance": "high" if ep.get("landmark") else "moderate",
                 "occurred_at": ep.get("occurred_at"),
                 "transcript_file": source_transcript,
@@ -484,11 +493,18 @@ def _run_push(path: str, source_model: str | None = None):
         conn.commit()
         print(f"Done. {inserted} inserted, {skipped} skipped (duplicates).")
         print()
-        print("Embeddings not generated — run `distill backfill embeddings` later.")
+        print("Episodes pushed without embeddings — they won't appear in")
+        print("recall/search until embeddings are generated via Voyage AI.")
 
     except Exception as e:
         conn.rollback()
-        print(f"Error: {e}", file=sys.stderr)
+        print(
+            f"Error at episode {current_ep[0]} ({current_ep[1]}): {e}",
+            file=sys.stderr,
+        )
+        import traceback
+
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)
     finally:
         conn.close()
