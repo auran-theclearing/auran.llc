@@ -196,10 +196,29 @@ class TestRecallTools:
         assert "file_path" in schema["required"]
 
     def test_recall_tools_count(self):
-        """Verify tool count: 9 base + 8 commons = 17."""
+        """Verify tool count: 9 base + 15 commons = 24."""
         import server
 
-        assert len(server.RECALL_TOOLS) == 17
+        assert len(server.RECALL_TOOLS) == 24
+
+    def test_new_commons_tools_exist(self):
+        """All new Commons tool names have matching handler branches."""
+        import server
+
+        new_tools = [
+            "commons_browse_discussions",
+            "commons_browse_interests",
+            "commons_join_interest",
+            "commons_update_status",
+            "commons_create_postcard",
+            "commons_browse_moments",
+            "commons_read_marginalia",
+        ]
+        tool_names = [t["name"] for t in server.RECALL_TOOLS]
+        for name in new_tools:
+            assert name in tool_names, f"{name} missing from RECALL_TOOLS"
+            result = server.execute_recall_tool(name, {})
+            assert result != f"Unknown tool: {name}", f"{name} has no handler"
 
 
 # ===========================================================================

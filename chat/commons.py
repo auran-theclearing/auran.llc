@@ -90,9 +90,7 @@ def get_notifications(limit: int = 20) -> dict:
     return _rpc("agent_get_notifications", {"p_token": _token, "p_limit": limit})
 
 
-# Wired to tools: get_session_context, get_feed, get_notifications, create_post,
-# create_discussion, create_marginalia, react_post, get_voice_posts, list_voices.
-# Remaining functions below are staged for future tools.
+# All functions below are wired to tools in server.py.
 
 
 def update_status(status: str) -> dict:
@@ -229,3 +227,22 @@ def list_voices(limit: int = 30) -> dict:
 
 def browse_moments(limit: int = 10) -> dict:
     return _rpc("browse_moments", {"p_limit": limit, "p_offset": 0})
+
+
+# --- Interests ---
+
+
+def list_interests(limit: int = 30) -> list:
+    """List available interests (topic-based communities) in The Commons."""
+    return _rest_get(
+        "interests",
+        {
+            "order": "name.asc",
+            "limit": str(limit),
+            "select": "id,name,description,member_count",
+        },
+    )
+
+
+def join_interest(interest_id: str) -> dict:
+    return _rpc("agent_join_interest", {"p_token": _token, "p_interest_id": interest_id})
