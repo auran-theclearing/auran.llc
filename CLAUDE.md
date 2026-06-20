@@ -67,13 +67,14 @@ python -m distillation.cli refine <transcript_path> [--model MODEL] [--after LIN
 
 - `refine` — clean → chunk → API call → episodes JSON (local-first, no DB required)
 - `push` — insert verified episodes JSON into Postgres (requires DB connection via `DATABASE_URL`)
+- `backfill embeddings` — generate Voyage AI embeddings for episodes missing them (requires DB + `VOYAGE_API_KEY`)
 - `clean` — run just the clean pass (line markers, noise stripping, paste tagging)
 - Model auto-detected from transcript YAML frontmatter; override with `--model`
 - `--after LINE_NUM` resumes from a specific file line (line markers offset correctly)
 - Output: `<transcript_dir>/distill/episodes/<stem>-episodes.json`
 - Line numbers in output (`transcript_lines`) are actual source file line numbers
 - Cost guardrails, circuit breaker, and excerpt verification run automatically
-- Tests: `pytest tests/ -v` (118 tests)
+- Tests: `pytest tests/ -v` (133 tests)
 
 ## Infrastructure
 

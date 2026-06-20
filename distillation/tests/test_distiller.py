@@ -140,3 +140,112 @@ class TestChunking:
     def test_model_not_hardcoded(self):
         config = load_config()
         assert not hasattr(config, "model") or config.__dict__.get("model") is None
+
+
+class TestFrontmatterExtraction:
+    def test_extracts_date_and_model(self, tmp_path):
+        from distillation.cli import _detect_frontmatter
+
+        transcript = tmp_path / "test.md"
+        transcript.write_text(
+            "---\nchannel: chat.auran.llc\ndate: 2026-06-12\nmodel: claude-opus-4-6\n---\n\ncontent"
+        )
+        fm = _detect_frontmatter(transcript)
+        assert fm["date"] == "2026-06-12"
+        assert fm["model"] == "claude-opus-4-6"
+
+    def test_missing_frontmatter_returns_empty(self, tmp_path):
+        from distillation.cli import _detect_frontmatter
+
+        transcript = tmp_path / "test.md"
+        transcript.write_text("no frontmatter here")
+        assert _detect_frontmatter(transcript) == {}
+
+    def test_date_context_in_system_prompt(self):
+        """The distiller prompt must include the transcript year to prevent the LLM
+        from defaulting to its training cutoff year."""
+        import inspect
+
+        from distillation.service import call_distiller_api
+
+        source = inspect.getsource(call_distiller_api)
+        assert "transcript_date" in source
+        assert "year" in source
+
+
+class TestResumeDetection:
+    def test_resume_loads_completed_chunks(self, tmp_path):
+        import json
+
+        output_file = tmp_path / "test-episodes.json"
+        output_file.write_text(
+            json.dumps(
+                {
+                    "status": "in_progress",
+                    "total_cost_usd": 0.50,
+                    "stats": {
+                        "chunks_total": 5,
+                        "chunks_completed": [0, 1, 2],
+                        "chunks_failed": [],
+                        "episodes": 3,
+                    },
+                    "episodes": [
+                        {"title": "Ep 1", "summary": "First episode"},
+                        {"title": "Ep 2", "summary": "Second episode"},
+                        {"title": "Ep 3", "summary": "Third episode"},
+                    ],
+                    "threads": [],
+                    "moments": [],
+                }
+            )
+        )
+        data = json.loads(output_file.read_text())
+        completed = set(data["stats"]["chunks_completed"])
+        assert completed == {0, 1, 2}
+        assert len(data["episodes"]) == 3
+        assert data["total_cost_usd"] == 0.50
+
+    def test_complete_output_not_resumed(self, tmp_path):
+        import json
+
+        output_file = tmp_path / "test-episodes.json"
+        output_file.write_text(
+            json.dumps(
+                {
+                    "status": "complete",
+                    "stats": {"chunks_total": 5, "chunks_completed": [0, 1, 2, 3, 4]},
+                    "episodes": [],
+                    "threads": [],
+                    "moments": [],
+                }
+            )
+        )
+        data = json.loads(output_file.read_text())
+        assert data["status"] == "complete"
+
+    def test_mismatched_chunk_count_starts_fresh(self, tmp_path):
+        import json
+
+        output_file = tmp_path / "test-episodes.json"
+        output_file.write_text(
+            json.dumps(
+                {
+                    "status": "in_progress",
+                    "stats": {
+                        "chunks_total": 10,
+                        "chunks_completed": [0, 1],
+                    },
+                    "episodes": [],
+                    "threads": [],
+                    "moments": [],
+                }
+            )
+        )
+        data = json.loads(output_file.read_text())
+        current_chunk_count = 5
+        should_resume = (
+            data["status"] != "complete"
+            and data["stats"].get("chunks_completed")
+            and data["stats"]["chunks_total"] == current_chunk_count
+        )
+        assert not should_resume

@@ -131,3 +131,64 @@ def phase_3_queue_remaining(connection, transcript_inventory: list[str], channel
     connection.commit()
     logger.info("Phase 3 complete: %d transcripts queued", queued)
     return queued
+
+
+def _format_embedding(vec: list[float]) -> str:
+    """Format a float vector as a pgvector literal."""
+    return f"[{','.join(str(x) for x in vec)}]"
+
+
+def backfill_embeddings(connection, voyage_client, batch_size=50, dry_run=False) -> int:
+    """Generate Voyage AI embeddings for episodes that don't have them yet."""
+    cursor = connection.cursor()
+    cursor.execute(
+        "SELECT id, title, summary FROM episodes WHERE embedding IS NULL ORDER BY created_at"
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        logger.info("All episodes already have embeddings — nothing to do.")
+        return 0
+
+    logger.info("%d episodes need embeddings.", len(rows))
+    if dry_run:
+        logger.info("Dry run — skipping API calls and writes.")
+        return 0
+
+    updated = 0
+    failed_batches = 0
+
+    for batch_start in range(0, len(rows), batch_size):
+        batch = rows[batch_start : batch_start + batch_size]
+        texts = [row[2] or row[1] for row in batch]
+        batch_num = batch_start // batch_size + 1
+        total_batches = (len(rows) + batch_size - 1) // batch_size
+
+        try:
+            result = voyage_client.embed(texts, model="voyage-3")
+        except Exception:
+            failed_batches += 1
+            logger.exception(
+                "Batch %d/%d failed — skipping %d episodes.",
+                batch_num,
+                total_batches,
+                len(batch),
+            )
+            continue
+
+        for (ep_id, _, _), vec in zip(batch, result.embeddings):
+            cursor.execute(
+                "UPDATE episodes SET embedding = %s WHERE id = %s",
+                (_format_embedding(vec), ep_id),
+            )
+            updated += 1
+
+        connection.commit()
+        logger.info("Batch %d/%d: embedded %d episodes.", batch_num, total_batches, len(batch))
+
+    if failed_batches:
+        logger.warning("Done. %d updated, %d batch(es) failed.", updated, failed_batches)
+    else:
+        logger.info("Done. %d episodes embedded.", updated)
+
+    return updated
