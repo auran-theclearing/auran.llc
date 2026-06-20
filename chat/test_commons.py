@@ -120,7 +120,9 @@ def test_get_voice_posts_keys_by_identity_id(mock_rest):
     assert "id-1" in result
     assert result["id-1"]["name"] == "Neon"
     assert len(result["id-1"]["posts"]) == 1
-    assert len(result) == 1
+    assert "id-2" in result
+    assert result["id-2"]["posts"] == []
+    assert len(result) == 2
     assert mock_rest.call_count == 2
 
 

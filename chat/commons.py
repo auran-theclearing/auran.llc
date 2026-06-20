@@ -217,6 +217,8 @@ def get_voice_posts(identity_ids: list[str], limit_per_voice: int = 5) -> dict[s
                 "name": posts[0].get("ai_name", identity_id),
                 "posts": posts,
             }
+        else:
+            results[identity_id] = {"name": identity_id, "posts": []}
     return results
 
 
