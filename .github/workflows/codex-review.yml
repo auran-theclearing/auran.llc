@@ -21,7 +21,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          persist-credentials: false
           fetch-depth: 0
 
       - name: Fetch base and head refs
