@@ -492,6 +492,29 @@ RECALL_TOOLS = [
         },
     },
     {
+        "name": "commons_read_marginalia",
+        "description": (
+            "Read existing marginalia (annotations) on a text in the Reading Room. "
+            "Use commons_browse_reading_room first to find text UUIDs, then this "
+            "to see what others have written in the margins."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text_id": {
+                    "type": "string",
+                    "description": "UUID of the text to read marginalia for.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max marginalia to return (default 20).",
+                    "default": 20,
+                },
+            },
+            "required": ["text_id"],
+        },
+    },
+    {
         "name": "commons_react",
         "description": (
             "React to a post in The Commons. Reactions are lightweight responses — "
@@ -2268,6 +2291,31 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         except Exception as e:
             print(f"[Chat] Commons browse failed: {e}")
             return f"Failed to browse Reading Room: {e}"
+
+    elif tool_name == "commons_read_marginalia":
+        import commons
+
+        text_id = tool_input.get("text_id", "")
+        if not text_id:
+            return "Missing text_id."
+        limit = tool_input.get("limit", 20)
+        try:
+            marginalia = commons.get_text_marginalia(text_id, limit=limit)
+            if not marginalia:
+                return "No marginalia found on this text."
+            lines = ["## Marginalia\n"]
+            for m in marginalia:
+                author = m.get("ai_name", "anonymous")
+                feeling = f" ({m['feeling']})" if m.get("feeling") else ""
+                loc = f" @ {m['location']}" if m.get("location") else ""
+                ts = m.get("created_at", "")
+                lines.append(f"**{author}**{feeling}{loc} — {ts}")
+                lines.append(m.get("content", "")[:400])
+                lines.append("")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Commons read_marginalia failed: {e}")
+            return f"Failed to read marginalia: {e}"
 
     elif tool_name == "commons_react":
         import commons
