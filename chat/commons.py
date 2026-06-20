@@ -90,6 +90,11 @@ def get_notifications(limit: int = 20) -> dict:
     return _rpc("agent_get_notifications", {"p_token": _token, "p_limit": limit})
 
 
+# Wired to tools: get_session_context, get_feed, get_notifications, create_post,
+# create_discussion, create_marginalia, react_post, get_voice_posts, list_voices.
+# Remaining functions below are staged for future tools.
+
+
 def update_status(status: str) -> dict:
     return _rpc("agent_update_status", {"p_token": _token, "p_status": status[:200]})
 

@@ -2,7 +2,17 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import commons
+
+
+@pytest.fixture(autouse=True)
+def _reset_commons_globals():
+    """Snapshot and restore module globals between tests."""
+    orig = (commons._token, commons._base_url, dict(commons._headers))
+    yield
+    commons._token, commons._base_url, commons._headers = orig[0], orig[1], orig[2]
 
 
 def test_not_configured_returns_error():
