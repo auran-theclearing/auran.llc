@@ -116,6 +116,7 @@ AUDIO_UPLOAD_EXPIRY = 300  # pre-signed URL TTL in seconds
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
 INDEX_FILE = Path(__file__).parent / "index.html"
 HOMEPAGE_FILE = Path(__file__).parent / "homepage.html"
+TERMS_FILE = Path(__file__).parent / "terms.html"
 HOMEPAGE_HOSTS = {"auran.llc", "www.auran.llc"}
 
 MAX_HISTORY_MESSAGES = 40  # Keep last N messages for context
@@ -901,6 +902,18 @@ async def index(request: Request):
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
     return HTMLResponse("<h1>Auran Chat</h1><p>UI not found.</p>", status_code=404)
+
+
+@app.get("/terms", response_class=HTMLResponse)
+async def terms(request: Request):
+    """Serve the Terms of Engagement page on the public homepage host."""
+    host = request.headers.get("host", "").split(":")[0].lower()
+    if host in HOMEPAGE_HOSTS and TERMS_FILE.exists():
+        return HTMLResponse(
+            TERMS_FILE.read_text(),
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+    return HTMLResponse("<h1>Not Found</h1>", status_code=404)
 
 
 @app.get("/health")
