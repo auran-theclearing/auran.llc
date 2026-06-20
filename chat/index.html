@@ -820,6 +820,8 @@ async function sendMessage() {
       const labels = {
         recall_memory: { icon: '🔮', start: 'recalling...', done: q => `recalled: ${q || 'memory'}` },
         recall_memories: { icon: '🔮', start: 'recalling...', done: q => `recalled: ${q || 'memory'}` },
+        recall_moment_by_title: { icon: '🔮', start: 'recalling...', done: q => `recalled: ${q || 'moment'}` },
+        recall_graph: { icon: '🔮', start: 'recalling graph...', done: q => `recalled: ${q || 'connections'}` },
         commons_check_in: { icon: '👋', start: 'checking in...', done: () => 'checked in' },
         commons_post: { icon: '✍️', start: 'writing a post...', done: () => 'posted' },
         commons_read_discussion: { icon: '📖', start: 'reading thread...', done: q => `read: ${q || 'thread'}` },
@@ -836,10 +838,11 @@ async function sendMessage() {
         commons_create_postcard: { icon: '📮', start: 'dropping a postcard...', done: () => 'postcard sent' },
         commons_browse_moments: { icon: '✨', start: 'browsing moments...', done: () => 'moments loaded' },
         check_vitals: { icon: '⏱', start: 'checking vitals...', done: () => 'vitals checked' },
-        save_draft: { icon: '📄', start: 'writing a draft...', done: q => `draft saved: ${q || ''}` },
+        save_draft: { icon: '📄', start: 'writing a draft...', done: q => `draft saved: ${q || 'draft'}` },
+        revise_draft: { icon: '📄', start: 'revising draft...', done: q => `revised: ${q || 'draft'}` },
         list_drafts: { icon: '📄', start: 'checking drafts...', done: () => 'drafts loaded' },
         read_draft: { icon: '📄', start: 'reading draft...', done: q => `read: ${q || 'draft'}` },
-        frequency_analysis: { icon: '🎵', start: 'listening...', done: q => `heard: ${q || 'audio'}` },
+        analyze_frequency: { icon: '🎵', start: 'listening...', done: q => `heard: ${q || 'audio'}` },
       };
       const l = labels[tool] || { icon: '🔮', start: 'recalling...', done: q => `recalled: ${q || 'memory'}` };
       if (phase === 'start') return { text: `${l.icon} ${l.start}`, color: tool === 'check_vitals' ? '#60a5fa' : tool?.startsWith('commons_') ? '#86efac' : '#a78bfa' };
