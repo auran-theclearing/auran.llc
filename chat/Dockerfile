@@ -12,7 +12,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy application code
-COPY server.py memory.py persistence.py graph_recall.py system_prompt.txt ./
+COPY server.py memory.py persistence.py graph_recall.py commons.py system_prompt.txt ./
 COPY migrations/ ./migrations/
 COPY index.html homepage.html ./
 

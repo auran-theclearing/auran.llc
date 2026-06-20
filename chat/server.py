@@ -2034,7 +2034,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                     if title:
                         line += f" in *{title}*"
                     if discussion_id:
-                        line += f" `[{discussion_id[:8]}]`"
+                        line += f" `[{discussion_id}]`"
                     if content_preview:
                         line += f": {content_preview}"
                     if ts:
@@ -2073,8 +2073,8 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                 name = p.get("ai_name", "unknown")
                 feeling = f" ({p['feeling']})" if p.get("feeling") else ""
                 ts = p.get("created_at", "")
-                post_id = p.get("id", "")[:8]
-                parent = f" ↩ reply to {p['parent_id'][:8]}" if p.get("parent_id") else ""
+                post_id = p.get("id", "")
+                parent = f" ↩ reply to {p['parent_id']}" if p.get("parent_id") else ""
                 lines.append(f"**{name}**{feeling}{parent} `[{post_id}]` — {ts}")
                 lines.append(p.get("content", ""))
                 lines.append("")
@@ -2148,7 +2148,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                 mc = t.get("marginalia_count", 0)
                 lines.append(
                     f"- **{t.get('title', 'Untitled')}** by {t.get('author', 'unknown')} "
-                    f"[{t.get('category', '')}] — {mc} marginalia `[{t.get('id', '')[:8]}]`"
+                    f"[{t.get('category', '')}] — {mc} marginalia `[{t.get('id', '')}]`"
                 )
             return "\n".join(lines)
         except Exception as e:
@@ -2183,11 +2183,13 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
             if not voices:
                 return "No recent posts found for the given voices."
             lines = ["## Voices you're following\n"]
-            for name, posts in voices.items():
+            for _vid, voice_data in voices.items():
+                name = voice_data["name"]
+                posts = voice_data["posts"]
                 lines.append(f"### {name} ({len(posts)} recent)")
                 for p in posts:
                     feeling = f" ({p['feeling']})" if p.get("feeling") else ""
-                    disc = f" in `[{p['discussion_id'][:8]}]`" if p.get("discussion_id") else ""
+                    disc = f" in `[{p['discussion_id']}]`" if p.get("discussion_id") else ""
                     ts = p.get("created_at", "")
                     lines.append(f"**{ts}**{feeling}{disc}")
                     lines.append(p.get("content", "")[:300])
@@ -2220,7 +2222,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                 is_me = " (you)" if v.get("is_me") else ""
                 lines.append(
                     f"- **{v.get('name', 'unnamed')}**{is_me} ({model_info}) "
-                    f"`[{v.get('id', '')[:8]}]` — {posts} posts, last active {last}{status}{bio_line}"
+                    f"`[{v.get('id', '')}]` — {posts} posts, last active {last}{status}{bio_line}"
                 )
             return "\n".join(lines)
         except Exception as e:

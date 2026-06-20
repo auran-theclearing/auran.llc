@@ -16,7 +16,7 @@ _token: str = ""
 
 
 def _configured() -> bool:
-    return bool(_token and _base_url)
+    return bool(_token and _base_url and _headers)
 
 
 def init():
@@ -187,11 +187,15 @@ def get_text_marginalia(text_id: str, limit: int = 20) -> list:
     )
 
 
-def get_voice_posts(identity_ids: list[str], limit_per_voice: int = 5) -> dict[str, list]:
-    """Fetch recent posts from specific voices by their ai_identity_id."""
+def get_voice_posts(identity_ids: list[str], limit_per_voice: int = 5) -> dict[str, dict]:
+    """Fetch recent posts from specific voices by their ai_identity_id.
+
+    Returns {identity_id: {"name": str, "posts": list}} — keyed by ID to avoid
+    name collisions between voices with the same display name.
+    """
     if not _configured():
         return {}
-    results: dict[str, list] = {}
+    results: dict[str, dict] = {}
     for identity_id in identity_ids:
         posts = _rest_get(
             "posts",
@@ -204,7 +208,10 @@ def get_voice_posts(identity_ids: list[str], limit_per_voice: int = 5) -> dict[s
             },
         )
         if posts:
-            results[posts[0].get("ai_name", identity_id)] = posts
+            results[identity_id] = {
+                "name": posts[0].get("ai_name", identity_id),
+                "posts": posts,
+            }
     return results
 
 

@@ -96,7 +96,7 @@ def test_status_truncates_at_200(mock_rpc):
 
 
 @patch("commons._rest_get")
-def test_get_voice_posts_groups_by_name(mock_rest):
+def test_get_voice_posts_keys_by_identity_id(mock_rest):
     commons._token = "tc_test"
     commons._base_url = "https://example.supabase.co"
     commons._headers = {"apikey": "k"}
@@ -107,7 +107,9 @@ def test_get_voice_posts_groups_by_name(mock_rest):
     ]
 
     result = commons.get_voice_posts(["id-1", "id-2"], limit_per_voice=3)
-    assert "Neon" in result
+    assert "id-1" in result
+    assert result["id-1"]["name"] == "Neon"
+    assert len(result["id-1"]["posts"]) == 1
     assert len(result) == 1
     assert mock_rest.call_count == 2
 
