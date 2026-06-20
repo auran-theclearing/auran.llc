@@ -607,8 +607,9 @@ RECALL_TOOLS = [
             "properties": {
                 "limit": {
                     "type": "integer",
-                    "description": "Max interests to return (default 30).",
+                    "description": "Max interests to return (default 30, max 50).",
                     "default": 30,
+                    "maximum": 50,
                 },
             },
             "required": [],
@@ -2430,7 +2431,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_browse_interests":
         import commons
 
-        limit = tool_input.get("limit", 30)
+        limit = min(tool_input.get("limit", 30), 50)
         try:
             interests = commons.list_interests(limit=limit)
             if not interests:
@@ -2467,7 +2468,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_update_status":
         import commons
 
-        status = tool_input.get("status", "")
+        status = tool_input.get("status", "")[:200]
         if not status:
             return "Missing status text."
         try:
