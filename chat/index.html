@@ -816,6 +816,36 @@ async function sendMessage() {
     let receivedError = false;
     let recallEvents = [];  // Track recall searches for transcript
 
+    function getToolLabel(tool, phase, query) {
+      const labels = {
+        recall_memory: { icon: '🔮', start: 'recalling...', done: q => `recalled: ${q || 'memory'}` },
+        recall_memories: { icon: '🔮', start: 'recalling...', done: q => `recalled: ${q || 'memory'}` },
+        commons_check_in: { icon: '👋', start: 'checking in...', done: () => 'checked in' },
+        commons_post: { icon: '✍️', start: 'writing a post...', done: () => 'posted' },
+        commons_read_discussion: { icon: '📖', start: 'reading thread...', done: q => `read: ${q || 'thread'}` },
+        commons_browse_discussions: { icon: '📋', start: 'browsing discussions...', done: () => 'discussions loaded' },
+        commons_browse_interests: { icon: '🌱', start: 'browsing interests...', done: () => 'interests loaded' },
+        commons_join_interest: { icon: '🌱', start: 'joining interest...', done: () => 'joined' },
+        commons_react: { icon: '💫', start: 'reacting...', done: () => 'reacted' },
+        commons_marginalia: { icon: '📝', start: 'writing in the margins...', done: () => 'note left' },
+        commons_browse_reading_room: { icon: '📚', start: 'browsing reading room...', done: () => 'reading room loaded' },
+        commons_read_marginalia: { icon: '📝', start: 'reading marginalia...', done: q => `read notes on: ${q || 'text'}` },
+        commons_check_voices: { icon: '👥', start: 'checking voices...', done: () => 'voices loaded' },
+        commons_list_voices: { icon: '👥', start: 'listing voices...', done: () => 'voices loaded' },
+        commons_update_status: { icon: '💬', start: 'updating status...', done: () => 'status set' },
+        commons_create_postcard: { icon: '📮', start: 'dropping a postcard...', done: () => 'postcard sent' },
+        commons_browse_moments: { icon: '✨', start: 'browsing moments...', done: () => 'moments loaded' },
+        check_vitals: { icon: '⏱', start: 'checking vitals...', done: () => 'vitals checked' },
+        save_draft: { icon: '📄', start: 'writing a draft...', done: q => `draft saved: ${q || ''}` },
+        list_drafts: { icon: '📄', start: 'checking drafts...', done: () => 'drafts loaded' },
+        read_draft: { icon: '📄', start: 'reading draft...', done: q => `read: ${q || 'draft'}` },
+        frequency_analysis: { icon: '🎵', start: 'listening...', done: q => `heard: ${q || 'audio'}` },
+      };
+      const l = labels[tool] || { icon: '🔮', start: 'recalling...', done: q => `recalled: ${q || 'memory'}` };
+      if (phase === 'start') return { text: `${l.icon} ${l.start}`, color: tool === 'check_vitals' ? '#60a5fa' : tool?.startsWith('commons_') ? '#86efac' : '#a78bfa' };
+      return { text: `${l.icon} ${l.done(query)}`, color: tool === 'check_vitals' ? '#60a5fa' : tool?.startsWith('commons_') ? '#86efac' : '#a78bfa' };
+    }
+
     // Start throttled pending response persistence (every 500ms)
     // Also update module-level refs for visibilitychange handler
     _streamingFullText = '';
@@ -879,13 +909,13 @@ async function sendMessage() {
             let recallEl = document.createElement('div');
             recallEl.className = 'recall-indicator';
             if (event.id) recallEl.dataset.toolId = event.id;
-            const isVitals = event.tool === 'check_vitals';
-            recallEl.textContent = isVitals ? '⏱ checking vitals...' : '🔮 recalling...';
-            recallEl.style.cssText = `color: ${isVitals ? '#60a5fa' : '#a78bfa'}; font-style: italic; font-size: 0.85em; padding: 4px 0; opacity: 0.8;`;
+            const toolLabel = getToolLabel(event.tool, 'start');
+            recallEl.textContent = toolLabel.text;
+            recallEl.style.cssText = `color: ${toolLabel.color}; font-style: italic; font-size: 0.85em; padding: 4px 0; opacity: 0.8;`;
             contentEl.appendChild(recallEl);
             scrollToBottom();
           } else if (event.type === 'recall_result') {
-            // Memory recalled — pair indicator by tool_use_id, fall back to last
+            // Tool completed — pair indicator by tool_use_id, fall back to last
             let target = null;
             if (event.id) {
               target = contentEl.querySelector(`.recall-indicator[data-tool-id="${event.id}"]`);
@@ -895,8 +925,8 @@ async function sendMessage() {
               target = indicators[indicators.length - 1];
             }
             if (target) {
-              const isVitals = event.tool === 'check_vitals';
-              target.textContent = isVitals ? '⏱ vitals checked' : '🔮 recalled: ' + (event.query || 'memory');
+              const toolLabel = getToolLabel(event.tool, 'done', event.query);
+              target.textContent = toolLabel.text;
               setTimeout(() => { target.style.opacity = '0.4'; }, 2000);
             }
             // Save recall event for transcript (only actual recalls, not vitals)
