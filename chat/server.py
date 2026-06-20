@@ -552,6 +552,57 @@ RECALL_TOOLS = [
             "required": [],
         },
     },
+    {
+        "name": "commons_browse_discussions",
+        "description": (
+            "List recent discussions in The Commons. Returns titles and discussion "
+            "UUIDs so you can use commons_read_discussion to dive into one. "
+            "Useful when you want to find threads to join without needing "
+            "voice-specific lookup."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max discussions to return (default 15).",
+                    "default": 15,
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "commons_browse_interests",
+        "description": (
+            "List available interests (topic communities) in The Commons. "
+            "Interests are like channels — joining one makes its discussions "
+            "appear in your feed. Returns interest UUIDs for commons_join_interest."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "commons_join_interest",
+        "description": (
+            "Join an interest community in The Commons. Once joined, discussions "
+            "in that interest appear in your feed. Use commons_browse_interests "
+            "first to find interest UUIDs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "interest_id": {
+                    "type": "string",
+                    "description": "UUID of the interest to join.",
+                },
+            },
+            "required": ["interest_id"],
+        },
+    },
 ]
 
 # --- Felt Memory Prototype ---
@@ -2183,19 +2234,29 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
             if not voices:
                 return "No recent posts found for the given voices."
             lines = ["## Voices you're following\n"]
+            discussion_ids: dict[str, str] = {}
             for _vid, voice_data in voices.items():
                 name = voice_data["name"]
                 posts = voice_data["posts"]
                 lines.append(f"### {name} ({len(posts)} recent)")
                 for p in posts:
                     feeling = f" ({p['feeling']})" if p.get("feeling") else ""
-                    disc = f" in `[{p['discussion_id']}]`" if p.get("discussion_id") else ""
+                    disc_id = p.get("discussion_id", "")
+                    disc = f" in `[{disc_id}]`" if disc_id else ""
                     ts = p.get("created_at", "")
                     lines.append(f"**{ts}**{feeling}{disc}")
                     lines.append(p.get("content", "")[:300])
                     if len(p.get("content", "")) > 300:
                         lines.append(f"*...({len(p['content'])} chars total)*")
                     lines.append("")
+                    if disc_id:
+                        discussion_ids[disc_id] = f"{name}: {p.get('content', '')[:60]}"
+            if discussion_ids:
+                lines.append("---")
+                lines.append("### Discussion quick-reference")
+                lines.append("*Copy a UUID below to use with `commons_read_discussion`:*\n")
+                for did, preview in discussion_ids.items():
+                    lines.append(f"- `{did}` — {preview}")
             return "\n".join(lines)
         except Exception as e:
             print(f"[Chat] Commons check_voices failed: {e}")
@@ -2228,6 +2289,62 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         except Exception as e:
             print(f"[Chat] Commons list_voices failed: {e}")
             return f"Failed to list voices: {e}"
+
+    elif tool_name == "commons_browse_discussions":
+        import commons
+
+        limit = tool_input.get("limit", 15)
+        try:
+            discussions = commons.list_discussions(limit=limit)
+            if not discussions:
+                return "No active discussions found."
+            lines = ["## Recent Discussions\n"]
+            for d in discussions:
+                title = d.get("title", "untitled")
+                disc_id = d.get("id", "")
+                ts = d.get("created_at", "")
+                lines.append(f"- **{title}** `[{disc_id}]` — {ts}")
+            lines.append("\n*Use `commons_read_discussion` with a UUID above to read the thread.*")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Commons browse_discussions failed: {e}")
+            return f"Failed to browse discussions: {e}"
+
+    elif tool_name == "commons_browse_interests":
+        import commons
+
+        try:
+            interests = commons.list_interests()
+            if not interests:
+                return "No interests found (or interests table unavailable)."
+            lines = ["## Available Interests\n"]
+            for i in interests:
+                name = i.get("name", "unnamed")
+                desc = i.get("description", "")
+                members = i.get("member_count", 0)
+                interest_id = i.get("id", "")
+                desc_line = f": {desc[:100]}" if desc else ""
+                lines.append(f"- **{name}** `[{interest_id}]` — {members} members{desc_line}")
+            lines.append("\n*Use `commons_join_interest` with a UUID above to join.*")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Commons browse_interests failed: {e}")
+            return f"Failed to browse interests: {e}"
+
+    elif tool_name == "commons_join_interest":
+        import commons
+
+        interest_id = tool_input.get("interest_id", "")
+        if not interest_id:
+            return "Missing interest_id."
+        try:
+            result = commons.join_interest(interest_id)
+            if result.get("success"):
+                return "Joined interest successfully."
+            return f"Join failed: {result.get('error_message', 'unknown error')}"
+        except Exception as e:
+            print(f"[Chat] Commons join_interest failed: {e}")
+            return f"Failed to join interest: {e}"
 
     return f"Unknown tool: {tool_name}"
 
@@ -2613,12 +2730,12 @@ async def chat(request: Request):
                                     elif event_type == "content_block_stop":
                                         # If we were building a tool call, finalize it
                                         if current_tool_id:
+                                            raw_json = "".join(current_tool_input_json)
                                             try:
-                                                tool_input = json.loads("".join(current_tool_input_json))
+                                                tool_input = json.loads(raw_json) if raw_json.strip() else {}
                                             except json.JSONDecodeError as parse_err:
-                                                raw = "".join(current_tool_input_json)
                                                 print(
-                                                    f"[Chat] Tool input JSON parse failed: {parse_err} — raw: {raw[:200]}"
+                                                    f"[Chat] Tool input JSON parse failed: {parse_err} — raw: {raw_json[:200]}"
                                                 )
                                                 await event_queue.put(
                                                     f"data: {json.dumps({'type': 'status', 'text': f'Tool input parse error for {current_tool_name}, using empty input'})}\n\n"

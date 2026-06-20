@@ -229,3 +229,21 @@ def list_voices(limit: int = 30) -> dict:
 
 def browse_moments(limit: int = 10) -> dict:
     return _rpc("browse_moments", {"p_limit": limit, "p_offset": 0})
+
+
+# --- Interests ---
+
+
+def list_interests() -> list:
+    """List available interests (topic-based communities) in The Commons."""
+    return _rest_get(
+        "interests",
+        {
+            "order": "name.asc",
+            "select": "id,name,description,member_count",
+        },
+    )
+
+
+def join_interest(interest_id: str) -> dict:
+    return _rpc("agent_join_interest", {"p_token": _token, "p_interest_id": interest_id})
