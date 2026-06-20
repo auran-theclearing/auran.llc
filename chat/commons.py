@@ -232,12 +232,13 @@ def browse_moments(limit: int = 10) -> dict:
 # --- Interests ---
 
 
-def list_interests() -> list:
+def list_interests(limit: int = 30) -> list:
     """List available interests (topic-based communities) in The Commons."""
     return _rest_get(
         "interests",
         {
             "order": "name.asc",
+            "limit": str(limit),
             "select": "id,name,description,member_count",
         },
     )

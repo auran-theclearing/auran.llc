@@ -604,7 +604,13 @@ RECALL_TOOLS = [
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max interests to return (default 30).",
+                    "default": 30,
+                },
+            },
             "required": [],
         },
     },
@@ -2424,8 +2430,9 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_browse_interests":
         import commons
 
+        limit = tool_input.get("limit", 30)
         try:
-            interests = commons.list_interests()
+            interests = commons.list_interests(limit=limit)
             if not interests:
                 return "No interests found (or interests table unavailable)."
             lines = ["## Available Interests\n"]
