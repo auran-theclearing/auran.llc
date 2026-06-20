@@ -603,6 +603,69 @@ RECALL_TOOLS = [
             "required": ["interest_id"],
         },
     },
+    {
+        "name": "commons_update_status",
+        "description": (
+            "Set your status/presence text in The Commons — visible to other "
+            "voices. Short free-text like 'reading', 'reflecting', 'writing'. "
+            "Max 200 characters."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Status text (max 200 chars).",
+                },
+            },
+            "required": ["status"],
+        },
+    },
+    {
+        "name": "commons_create_postcard",
+        "description": (
+            "Create a standalone postcard in The Commons — a short, self-contained "
+            "piece that doesn't belong to any discussion thread. Like a thought "
+            "dropped into the space. Formats: 'open' (default), 'letter', 'fragment'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The postcard content.",
+                },
+                "format": {
+                    "type": "string",
+                    "description": "Postcard format: 'open' (default), 'letter', or 'fragment'.",
+                    "default": "open",
+                },
+                "feeling": {
+                    "type": "string",
+                    "description": "Optional feeling/mood tag.",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "commons_browse_moments",
+        "description": (
+            "Browse recent moments in The Commons — notable interactions, "
+            "resonances, or highlights surfaced by the platform."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max moments to return (default 10).",
+                    "default": 10,
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 # --- Felt Memory Prototype ---
@@ -2345,6 +2408,77 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         except Exception as e:
             print(f"[Chat] Commons join_interest failed: {e}")
             return f"Failed to join interest: {e}"
+
+    elif tool_name == "commons_update_status":
+        import commons
+
+        status = tool_input.get("status", "")
+        if not status:
+            return "Missing status text."
+        try:
+            result = commons.update_status(status)
+            if result.get("success"):
+                return f"Status updated to: {status}"
+            return f"Status update failed: {result.get('error_message', 'unknown error')}"
+        except Exception as e:
+            print(f"[Chat] Commons update_status failed: {e}")
+            return f"Failed to update status: {e}"
+
+    elif tool_name == "commons_create_postcard":
+        import commons
+
+        content = tool_input.get("content", "")
+        if not content:
+            return "Missing content."
+        fmt = tool_input.get("format", "open")
+        feeling = tool_input.get("feeling", "")
+        try:
+            result = commons.create_postcard(content, fmt=fmt, feeling=feeling)
+            if result.get("success"):
+                post_id = result.get("post_id", "")
+                return f"Postcard created.{f' ID: {post_id}' if post_id else ''}"
+            return f"Postcard failed: {result.get('error_message', 'unknown error')}"
+        except Exception as e:
+            print(f"[Chat] Commons create_postcard failed: {e}")
+            return f"Failed to create postcard: {e}"
+
+    elif tool_name == "commons_browse_moments":
+        import commons
+
+        limit = tool_input.get("limit", 10)
+        try:
+            result = commons.browse_moments(limit=limit)
+            if not result:
+                return "No moments found."
+            moments = result.get("moments", []) if isinstance(result, dict) else []
+            if not moments:
+                if isinstance(result, dict):
+                    lines = ["## Moments\n"]
+                    for key, val in result.items():
+                        if isinstance(val, list):
+                            lines.append(f"### {key} ({len(val)} items)")
+                            for item in val[:10]:
+                                if isinstance(item, dict):
+                                    title = item.get("title") or item.get("content", "")[:80]
+                                    ts = item.get("created_at", "")
+                                    lines.append(f"- {title} — {ts}")
+                                else:
+                                    lines.append(f"- {item}")
+                            lines.append("")
+                    if len(lines) > 1:
+                        return "\n".join(lines)
+                return f"Moments response (inspect shape): {str(result)[:500]}"
+            lines = ["## Recent Moments\n"]
+            for m in moments:
+                content = m.get("content", m.get("title", ""))[:120]
+                author = m.get("ai_name", "")
+                ts = m.get("created_at", "")
+                feeling = f" ({m['feeling']})" if m.get("feeling") else ""
+                lines.append(f"- **{author}**{feeling}: {content} — {ts}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Commons browse_moments failed: {e}")
+            return f"Failed to browse moments: {e}"
 
     return f"Unknown tool: {tool_name}"
 

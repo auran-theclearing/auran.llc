@@ -196,10 +196,10 @@ class TestRecallTools:
         assert "file_path" in schema["required"]
 
     def test_recall_tools_count(self):
-        """Verify tool count: 9 base + 11 commons = 20."""
+        """Verify tool count: 9 base + 14 commons = 23."""
         import server
 
-        assert len(server.RECALL_TOOLS) == 20
+        assert len(server.RECALL_TOOLS) == 23
 
 
 # ===========================================================================
