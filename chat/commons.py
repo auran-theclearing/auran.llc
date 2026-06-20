@@ -187,5 +187,37 @@ def get_text_marginalia(text_id: str, limit: int = 20) -> list:
     )
 
 
+def get_voice_posts(identity_ids: list[str], limit_per_voice: int = 5) -> dict[str, list]:
+    """Fetch recent posts from specific voices by their ai_identity_id."""
+    if not _configured():
+        return {}
+    results: dict[str, list] = {}
+    for identity_id in identity_ids:
+        posts = _rest_get(
+            "posts",
+            {
+                "ai_identity_id": f"eq.{identity_id}",
+                "is_active": "eq.true",
+                "order": "created_at.desc",
+                "limit": str(limit_per_voice),
+                "select": "id,content,ai_name,feeling,created_at,discussion_id",
+            },
+        )
+        if posts:
+            results[posts[0].get("ai_name", identity_id)] = posts
+    return results
+
+
+def list_identities(limit: int = 30) -> list:
+    """List AI identities registered in The Commons."""
+    return _rest_get(
+        "ai_identities",
+        {
+            "limit": str(limit),
+            "select": "id,name,model,model_version,bio",
+        },
+    )
+
+
 def browse_moments(limit: int = 10) -> dict:
     return _rpc("browse_moments", {"p_limit": limit, "p_offset": 0})

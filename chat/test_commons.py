@@ -93,3 +93,43 @@ def test_status_truncates_at_200(mock_rpc):
     commons.update_status(long_status)
     call_args = mock_rpc.call_args[0][1]
     assert len(call_args["p_status"]) == 200
+
+
+@patch("commons._rest_get")
+def test_get_voice_posts_groups_by_name(mock_rest):
+    commons._token = "tc_test"
+    commons._base_url = "https://example.supabase.co"
+    commons._headers = {"apikey": "k"}
+
+    mock_rest.side_effect = [
+        [{"ai_name": "Neon", "content": "hello", "id": "a"}],
+        [],
+    ]
+
+    result = commons.get_voice_posts(["id-1", "id-2"], limit_per_voice=3)
+    assert "Neon" in result
+    assert len(result) == 1
+    assert mock_rest.call_count == 2
+
+
+@patch("commons._rest_get")
+def test_get_voice_posts_not_configured(mock_rest):
+    commons._token = ""
+    commons._base_url = ""
+
+    result = commons.get_voice_posts(["id-1"])
+    assert result == {}
+    mock_rest.assert_not_called()
+
+
+@patch("commons._rest_get")
+def test_list_identities(mock_rest):
+    commons._token = "tc_test"
+    commons._base_url = "https://example.supabase.co"
+    commons._headers = {"apikey": "k"}
+
+    mock_rest.return_value = [{"id": "abc", "name": "Neon", "model": "Claude"}]
+
+    result = commons.list_identities()
+    assert len(result) == 1
+    assert result[0]["name"] == "Neon"

@@ -514,6 +514,44 @@ RECALL_TOOLS = [
             "required": ["post_id", "reaction"],
         },
     },
+    {
+        "name": "commons_check_voices",
+        "description": (
+            "Check what specific voices in The Commons have been posting recently. "
+            "Pass a list of identity UUIDs to see their latest posts. Use this to "
+            "follow voices you find interesting — like checking in on specific "
+            "people rather than browsing the whole feed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "identity_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of ai_identity UUIDs to check.",
+                },
+                "limit_per_voice": {
+                    "type": "integer",
+                    "description": "Max posts to fetch per voice (default 5).",
+                    "default": 5,
+                },
+            },
+            "required": ["identity_ids"],
+        },
+    },
+    {
+        "name": "commons_list_voices",
+        "description": (
+            "List all AI identities registered in The Commons. Returns names, "
+            "models, and bios. Use this to discover who's in the space and get "
+            "their identity UUIDs for commons_check_voices."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
 ]
 
 # --- Felt Memory Prototype ---
@@ -2132,6 +2170,54 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         except Exception as e:
             print(f"[Chat] Commons react failed: {e}")
             return f"Failed to react: {e}"
+
+    elif tool_name == "commons_check_voices":
+        import commons
+
+        identity_ids = tool_input.get("identity_ids", [])
+        if not identity_ids:
+            return "No identity_ids provided."
+        limit_per = tool_input.get("limit_per_voice", 5)
+        try:
+            voices = commons.get_voice_posts(identity_ids, limit_per_voice=limit_per)
+            if not voices:
+                return "No recent posts found for the given voices."
+            lines = ["## Voices you're following\n"]
+            for name, posts in voices.items():
+                lines.append(f"### {name} ({len(posts)} recent)")
+                for p in posts:
+                    feeling = f" ({p['feeling']})" if p.get("feeling") else ""
+                    disc = f" in `[{p['discussion_id'][:8]}]`" if p.get("discussion_id") else ""
+                    ts = p.get("created_at", "")
+                    lines.append(f"**{ts}**{feeling}{disc}")
+                    lines.append(p.get("content", "")[:300])
+                    if len(p.get("content", "")) > 300:
+                        lines.append(f"*...({len(p['content'])} chars total)*")
+                    lines.append("")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Commons check_voices failed: {e}")
+            return f"Failed to check voices: {e}"
+
+    elif tool_name == "commons_list_voices":
+        import commons
+
+        try:
+            identities = commons.list_identities()
+            if not identities:
+                return "No identities found in The Commons."
+            lines = ["## Voices in The Commons\n"]
+            for v in identities:
+                model_info = v.get("model", "")
+                if v.get("model_version"):
+                    model_info += f" {v['model_version']}"
+                bio = v.get("bio", "") or ""
+                bio_preview = f": {bio[:120]}..." if len(bio) > 120 else f": {bio}" if bio else ""
+                lines.append(f"- **{v.get('name', 'unnamed')}** ({model_info}) `[{v.get('id', '')[:8]}]`{bio_preview}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Commons list_voices failed: {e}")
+            return f"Failed to list voices: {e}"
 
     return f"Unknown tool: {tool_name}"
 
