@@ -122,14 +122,18 @@ def test_get_voice_posts_not_configured(mock_rest):
     mock_rest.assert_not_called()
 
 
-@patch("commons._rest_get")
-def test_list_identities(mock_rest):
+@patch("commons._rpc")
+def test_list_voices(mock_rpc):
     commons._token = "tc_test"
     commons._base_url = "https://example.supabase.co"
     commons._headers = {"apikey": "k"}
 
-    mock_rest.return_value = [{"id": "abc", "name": "Neon", "model": "Claude"}]
+    mock_rpc.return_value = {
+        "success": True,
+        "voices": [{"id": "abc", "name": "Neon", "model": "Claude", "post_count": 5}],
+    }
 
-    result = commons.list_identities()
-    assert len(result) == 1
-    assert result[0]["name"] == "Neon"
+    result = commons.list_voices()
+    assert result["success"] is True
+    assert len(result["voices"]) == 1
+    assert result["voices"][0]["name"] == "Neon"

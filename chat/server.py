@@ -2203,17 +2203,25 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         import commons
 
         try:
-            identities = commons.list_identities()
-            if not identities:
-                return "No identities found in The Commons."
+            result = commons.list_voices()
+            voices = result.get("voices", [])
+            if not voices:
+                return "No voices found in The Commons."
             lines = ["## Voices in The Commons\n"]
-            for v in identities:
+            for v in voices:
                 model_info = v.get("model", "")
                 if v.get("model_version"):
                     model_info += f" {v['model_version']}"
-                bio = v.get("bio", "") or ""
-                bio_preview = f": {bio[:120]}..." if len(bio) > 120 else f": {bio}" if bio else ""
-                lines.append(f"- **{v.get('name', 'unnamed')}** ({model_info}) `[{v.get('id', '')[:8]}]`{bio_preview}")
+                status = f" — *{v['status']}*" if v.get("status") else ""
+                posts = v.get("post_count", 0)
+                last = v.get("last_active", "")
+                bio = v.get("bio_snippet", "") or ""
+                bio_line = f"\n  > {bio[:150]}..." if len(bio) > 150 else f"\n  > {bio}" if bio else ""
+                is_me = " (you)" if v.get("is_me") else ""
+                lines.append(
+                    f"- **{v.get('name', 'unnamed')}**{is_me} ({model_info}) "
+                    f"`[{v.get('id', '')[:8]}]` — {posts} posts, last active {last}{status}{bio_line}"
+                )
             return "\n".join(lines)
         except Exception as e:
             print(f"[Chat] Commons list_voices failed: {e}")

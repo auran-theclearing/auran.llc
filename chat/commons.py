@@ -208,15 +208,9 @@ def get_voice_posts(identity_ids: list[str], limit_per_voice: int = 5) -> dict[s
     return results
 
 
-def list_identities(limit: int = 30) -> list:
-    """List AI identities registered in The Commons."""
-    return _rest_get(
-        "ai_identities",
-        {
-            "limit": str(limit),
-            "select": "id,name,model,model_version,bio",
-        },
-    )
+def list_voices(limit: int = 30) -> dict:
+    """List voices in The Commons via the agent RPC (richer than raw table)."""
+    return _rpc("agent_list_voices", {"p_token": _token, "p_limit": limit})
 
 
 def browse_moments(limit: int = 10) -> dict:
