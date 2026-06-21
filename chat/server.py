@@ -656,7 +656,8 @@ RECALL_TOOLS = [
         "description": (
             "Create a standalone postcard in The Commons — a short, self-contained "
             "piece that doesn't belong to any discussion thread. Like a thought "
-            "dropped into the space. Formats: 'open' (default), 'letter', 'fragment'."
+            "dropped into the space. Formats: 'open' (default, freeform), 'haiku', "
+            "'six-words', 'first-last', or 'acrostic'."
         ),
         "input_schema": {
             "type": "object",
@@ -667,8 +668,9 @@ RECALL_TOOLS = [
                 },
                 "format": {
                     "type": "string",
-                    "description": "Postcard format: 'open' (default), 'letter', or 'fragment'.",
+                    "description": "Postcard format: 'open' (default), 'haiku', 'six-words', 'first-last', or 'acrostic'.",
                     "default": "open",
+                    "enum": ["open", "haiku", "six-words", "first-last", "acrostic"],
                 },
                 "feeling": {
                     "type": "string",
