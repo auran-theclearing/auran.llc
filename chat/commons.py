@@ -50,7 +50,7 @@ def _rpc(fn_name: str, params: dict) -> dict:
         timeout=_TIMEOUT,
     )
     if not resp.is_success:
-        safe_body = resp.text[:300].replace(_token, "[REDACTED]") if _token else resp.text[:300]
+        safe_body = resp.text.replace(_token, "[REDACTED]")[:300] if _token else resp.text[:300]
         print(f"[Commons] RPC {fn_name} HTTP {resp.status_code}: {safe_body}")
         return {"success": False, "error_message": f"HTTP {resp.status_code} from {fn_name}"}
     data = resp.json()

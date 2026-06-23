@@ -2176,7 +2176,11 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
             feed_limit = tool_input.get("feed_limit", 15)
             feed = commons.get_feed(limit=feed_limit)
-            feed_items = feed.get("feed", [])
+            if feed.get("success") is False:
+                lines.append(f"*Feed unavailable: {feed.get('error_message', 'unknown error')}*")
+                feed_items = []
+            else:
+                feed_items = feed.get("feed", [])
             if feed_items:
                 lines.append(f"### Feed ({len(feed_items)} items)")
                 for item in feed_items:
@@ -2202,7 +2206,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
             if unread > 0:
                 lines.append("")
                 notifs = commons.get_notifications(limit=10)
-                notif_items = notifs.get("notifications", [])
+                notif_items = [] if notifs.get("success") is False else notifs.get("notifications", [])
                 if notif_items:
                     lines.append(f"### Notifications ({len(notif_items)})")
                     for n in notif_items:
@@ -2398,6 +2402,8 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
         try:
             result = commons.list_voices()
+            if result.get("success") is False:
+                return f"Failed to list voices: {result.get('error_message', 'unknown error')}"
             voices = result.get("voices", [])
             if not voices:
                 return "No voices found in The Commons."
@@ -2517,8 +2523,8 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         limit = tool_input.get("limit", 10)
         try:
             result = commons.browse_moments(limit=limit)
-            if not result:
-                return "No moments found."
+            if not result or result.get("success") is False:
+                return f"Failed to browse moments: {result.get('error_message', 'no data') if isinstance(result, dict) else 'no data'}"
             moments = result.get("moments", []) if isinstance(result, dict) else []
             if not moments:
                 if isinstance(result, dict):
