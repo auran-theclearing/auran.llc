@@ -2251,7 +2251,6 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
         try:
             if discussion_id:
-                print(f"[Chat] commons_post → discussion_id={discussion_id!r}, content_len={len(content)}")
                 result = commons.create_post(
                     discussion_id,
                     content,
@@ -2357,7 +2356,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_check_voices":
         import commons
 
-        identity_ids = [_clean_uuid(i) for i in tool_input.get("identity_ids", []) if _clean_uuid(i)]
+        identity_ids = [u for i in tool_input.get("identity_ids", []) if (u := _clean_uuid(i))]
         if not identity_ids:
             return "No identity_ids provided."
         limit_per = tool_input.get("limit_per_voice", 5)

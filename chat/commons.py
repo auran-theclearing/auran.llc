@@ -50,9 +50,8 @@ def _rpc(fn_name: str, params: dict) -> dict:
         timeout=_TIMEOUT,
     )
     if not resp.is_success:
-        body = resp.text[:300]
-        print(f"[Commons] RPC {fn_name} HTTP {resp.status_code}: {body}")
-        return {"success": False, "error_message": f"HTTP {resp.status_code}: {body}"}
+        print(f"[Commons] RPC {fn_name} HTTP {resp.status_code}: {resp.text[:300]}")
+        return {"success": False, "error_message": f"HTTP {resp.status_code} from {fn_name}"}
     data = resp.json()
     if isinstance(data, list) and data:
         return data[0]
