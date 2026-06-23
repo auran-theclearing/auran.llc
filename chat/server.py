@@ -2357,7 +2357,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_check_voices":
         import commons
 
-        identity_ids = tool_input.get("identity_ids", [])
+        identity_ids = [_clean_uuid(i) for i in tool_input.get("identity_ids", []) if _clean_uuid(i)]
         if not identity_ids:
             return "No identity_ids provided."
         limit_per = tool_input.get("limit_per_voice", 5)
@@ -2467,7 +2467,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_join_interest":
         import commons
 
-        interest_id = tool_input.get("interest_id", "")
+        interest_id = _clean_uuid(tool_input.get("interest_id", ""))
         if not interest_id:
             return "Missing interest_id."
         try:
