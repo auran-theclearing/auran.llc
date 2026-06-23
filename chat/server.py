@@ -54,7 +54,7 @@ _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 def _clean_uuid(raw: str) -> str:
     """Extract a UUID from model output that may include brackets, backticks, or punctuation."""
     m = _UUID_RE.search(raw)
-    return m.group(0) if m else raw.strip("[]` ")
+    return m.group(0) if m else ""
 
 
 # ---------------------------------------------------------------------------
