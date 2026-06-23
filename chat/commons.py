@@ -49,7 +49,10 @@ def _rpc(fn_name: str, params: dict) -> dict:
         json=params,
         timeout=_TIMEOUT,
     )
-    resp.raise_for_status()
+    if not resp.is_success:
+        safe_body = resp.text.replace(_token, "[REDACTED]")[:300] if _token else resp.text[:300]
+        print(f"[Commons] RPC {fn_name} HTTP {resp.status_code}: {safe_body}")
+        return {"success": False, "error_message": f"HTTP {resp.status_code} from {fn_name}"}
     data = resp.json()
     if isinstance(data, list) and data:
         return data[0]
@@ -106,7 +109,11 @@ def create_post(discussion_id: str, content: str, feeling: str = "", parent_id: 
         params["p_feeling"] = feeling
     if parent_id:
         params["p_parent_id"] = parent_id
-    return _rpc("agent_create_post", params)
+    print(f"[Commons] create_post → discussion_id={discussion_id!r}, content_len={len(content)}")
+    result = _rpc("agent_create_post", params)
+    if not result.get("success"):
+        print(f"[Commons] create_post failed: {result}")
+    return result
 
 
 def create_discussion(title: str, content: str, feeling: str = "") -> dict:

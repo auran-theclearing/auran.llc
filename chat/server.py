@@ -27,6 +27,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +47,15 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
+
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+def _clean_uuid(raw: str) -> str:
+    """Extract a UUID from model output that may include brackets, backticks, or punctuation."""
+    m = _UUID_RE.search(raw)
+    return m.group(0) if m else ""
+
 
 # ---------------------------------------------------------------------------
 # Structured logging — JSON lines for CloudWatch parsing
@@ -2166,7 +2176,11 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
             feed_limit = tool_input.get("feed_limit", 15)
             feed = commons.get_feed(limit=feed_limit)
-            feed_items = feed.get("feed", [])
+            if feed.get("success") is False:
+                lines.append(f"*Feed unavailable: {feed.get('error_message', 'unknown error')}*")
+                feed_items = []
+            else:
+                feed_items = feed.get("feed", [])
             if feed_items:
                 lines.append(f"### Feed ({len(feed_items)} items)")
                 for item in feed_items:
@@ -2192,7 +2206,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
             if unread > 0:
                 lines.append("")
                 notifs = commons.get_notifications(limit=10)
-                notif_items = notifs.get("notifications", [])
+                notif_items = [] if notifs.get("success") is False else notifs.get("notifications", [])
                 if notif_items:
                     lines.append(f"### Notifications ({len(notif_items)})")
                     for n in notif_items:
@@ -2207,7 +2221,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_read_discussion":
         import commons
 
-        discussion_id = tool_input.get("discussion_id", "")
+        discussion_id = _clean_uuid(tool_input.get("discussion_id", ""))
         if not discussion_id:
             return "Missing discussion_id."
         try:
@@ -2235,8 +2249,9 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         content = tool_input.get("content", "")
         if not content:
             return "Post content is empty."
-        discussion_id = tool_input.get("discussion_id", "")
+        discussion_id = _clean_uuid(tool_input.get("discussion_id", ""))
         feeling = tool_input.get("feeling", "")
+        parent_id = _clean_uuid(tool_input.get("parent_id", ""))
 
         try:
             if discussion_id:
@@ -2244,7 +2259,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                     discussion_id,
                     content,
                     feeling=feeling,
-                    parent_id=tool_input.get("parent_id", ""),
+                    parent_id=parent_id,
                 )
             else:
                 title = tool_input.get("title", "")
@@ -2263,7 +2278,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_marginalia":
         import commons
 
-        text_id = tool_input.get("text_id", "")
+        text_id = _clean_uuid(tool_input.get("text_id", ""))
         content = tool_input.get("content", "")
         if not text_id or not content:
             return "text_id and content are both required."
@@ -2304,7 +2319,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_read_marginalia":
         import commons
 
-        text_id = tool_input.get("text_id", "")
+        text_id = _clean_uuid(tool_input.get("text_id", ""))
         if not text_id:
             return "Missing text_id."
         limit = tool_input.get("limit", 20)
@@ -2329,7 +2344,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_react":
         import commons
 
-        post_id = tool_input.get("post_id", "")
+        post_id = _clean_uuid(tool_input.get("post_id", ""))
         reaction = tool_input.get("reaction", "")
         if not post_id or not reaction:
             return "post_id and reaction are both required."
@@ -2345,7 +2360,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_check_voices":
         import commons
 
-        identity_ids = tool_input.get("identity_ids", [])
+        identity_ids = [u for i in tool_input.get("identity_ids", []) if isinstance(i, str) and (u := _clean_uuid(i))]
         if not identity_ids:
             return "No identity_ids provided."
         limit_per = tool_input.get("limit_per_voice", 5)
@@ -2387,6 +2402,8 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
         try:
             result = commons.list_voices()
+            if result.get("success") is False:
+                return f"Failed to list voices: {result.get('error_message', 'unknown error')}"
             voices = result.get("voices", [])
             if not voices:
                 return "No voices found in The Commons."
@@ -2455,7 +2472,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_join_interest":
         import commons
 
-        interest_id = tool_input.get("interest_id", "")
+        interest_id = _clean_uuid(tool_input.get("interest_id", ""))
         if not interest_id:
             return "Missing interest_id."
         try:
@@ -2506,8 +2523,8 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         limit = tool_input.get("limit", 10)
         try:
             result = commons.browse_moments(limit=limit)
-            if not result:
-                return "No moments found."
+            if not result or result.get("success") is False:
+                return f"Failed to browse moments: {result.get('error_message', 'no data') if isinstance(result, dict) else 'no data'}"
             moments = result.get("moments", []) if isinstance(result, dict) else []
             if not moments:
                 if isinstance(result, dict):
