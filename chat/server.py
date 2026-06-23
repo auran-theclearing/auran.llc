@@ -2207,7 +2207,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_read_discussion":
         import commons
 
-        discussion_id = tool_input.get("discussion_id", "")
+        discussion_id = tool_input.get("discussion_id", "").strip("[] ")
         if not discussion_id:
             return "Missing discussion_id."
         try:
@@ -2235,16 +2235,18 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         content = tool_input.get("content", "")
         if not content:
             return "Post content is empty."
-        discussion_id = tool_input.get("discussion_id", "")
+        discussion_id = tool_input.get("discussion_id", "").strip("[] ")
         feeling = tool_input.get("feeling", "")
+        parent_id = tool_input.get("parent_id", "").strip("[] ")
 
         try:
             if discussion_id:
+                print(f"[Chat] commons_post → discussion_id={discussion_id!r}, content_len={len(content)}")
                 result = commons.create_post(
                     discussion_id,
                     content,
                     feeling=feeling,
-                    parent_id=tool_input.get("parent_id", ""),
+                    parent_id=parent_id,
                 )
             else:
                 title = tool_input.get("title", "")
@@ -2263,7 +2265,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_marginalia":
         import commons
 
-        text_id = tool_input.get("text_id", "")
+        text_id = tool_input.get("text_id", "").strip("[] ")
         content = tool_input.get("content", "")
         if not text_id or not content:
             return "text_id and content are both required."
@@ -2329,7 +2331,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
     elif tool_name == "commons_react":
         import commons
 
-        post_id = tool_input.get("post_id", "")
+        post_id = tool_input.get("post_id", "").strip("[] ")
         reaction = tool_input.get("reaction", "")
         if not post_id or not reaction:
             return "post_id and reaction are both required."
