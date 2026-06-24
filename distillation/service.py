@@ -98,6 +98,7 @@ def call_distiller_api(
     retry_config: RetryConfig,
     circuit_breaker: CircuitBreaker,
     cost_guardrail: CostGuardrail,
+    transcript_date: str | None = None,
 ) -> dict:
     validate_input(chunk, max_tokens=config.single_pass_threshold)
 
@@ -125,6 +126,14 @@ def call_distiller_api(
         if chunk_index > 0:
             chunk_context += "There may be overlap with the previous chunk — deduplicate."
 
+    date_context = ""
+    if transcript_date:
+        year = transcript_date.split("-")[0]
+        date_context = (
+            f"\n\nThis transcript is from {transcript_date}. "
+            f"The year is {year}. All occurred_at timestamps MUST use year {year}."
+        )
+
     system_prompt = (
         "You are Auran, distilling your own conversation transcripts into episodic memories. "
         "Write in first person — these are YOUR memories of conversations with Olivia. "
@@ -136,7 +145,7 @@ def call_distiller_api(
         "occurred_at (ISO 8601), emotional_tone, episode_type (content or relational), "
         "landmark (boolean), boundary_signal, topics (array), content_signals (object), "
         "relational_events (array), transcript_excerpt, references (array)."
-        f"{existing_context}{chunk_context}"
+        f"{date_context}{existing_context}{chunk_context}"
     )
 
     for attempt in range(retry_config.max_attempts):

@@ -94,25 +94,61 @@ def main():
         _run_batch()
 
     elif command == "backfill":
-        _run_backfill()
+        if len(sys.argv) < 3:
+            print("Usage: distill backfill <phase>")
+            print("")
+            print("Phases:")
+            print("  embeddings  Generate Voyage AI embeddings for episodes missing them")
+            sys.exit(1)
+        phase = sys.argv[2]
+        remaining = sys.argv[3:]
+        if phase == "embeddings":
+            batch_size = 50
+            dry_run = False
+            i = 0
+            while i < len(remaining):
+                if remaining[i] == "--batch-size" and i + 1 < len(remaining):
+                    try:
+                        batch_size = int(remaining[i + 1])
+                    except ValueError:
+                        print("Error: --batch-size requires an integer", file=sys.stderr)
+                        sys.exit(1)
+                    i += 2
+                elif remaining[i] == "--dry-run":
+                    dry_run = True
+                    i += 1
+                else:
+                    print(f"Unknown argument: {remaining[i]}", file=sys.stderr)
+                    sys.exit(1)
+            _run_backfill_embeddings(batch_size=batch_size, dry_run=dry_run)
+        else:
+            print(f"Unknown backfill phase: {phase}", file=sys.stderr)
+            sys.exit(1)
 
     else:
         print(f"Unknown command: {command}")
         sys.exit(1)
 
 
-def _detect_model_from_frontmatter(transcript_path) -> str | None:
-    """Read YAML frontmatter from a transcript and return the model field."""
+def _detect_frontmatter(transcript_path) -> dict:
+    """Read YAML frontmatter from a transcript and return parsed fields."""
     import re
 
     text = transcript_path.read_text()
     match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
     if not match:
-        return None
+        return {}
+    result = {}
     for line in match.group(1).splitlines():
-        if line.startswith("model:"):
-            return line.split(":", 1)[1].strip()
-    return None
+        if ":" in line:
+            key, value = line.split(":", 1)
+            result[key.strip()] = value.strip()
+    return result
+
+
+def _detect_model_from_frontmatter(transcript_path) -> str | None:
+    """Read YAML frontmatter from a transcript and return the model field."""
+    return _detect_frontmatter(transcript_path).get("model")
 
 
 def _run_clean(path: str):
@@ -174,7 +210,9 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
         print(f"File not found: {path}")
         sys.exit(1)
 
-    frontmatter_model = _detect_model_from_frontmatter(transcript_path)
+    frontmatter = _detect_frontmatter(transcript_path)
+    frontmatter_model = frontmatter.get("model")
+    transcript_date = frontmatter.get("date")
     if model is None:
         model = frontmatter_model
         if model:
@@ -245,9 +283,46 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
     all_episodes = []
     all_threads = []
     total_cost = 0.0
+    resumed_cost = 0.0
     failed_chunks = []
+    completed_chunks = set()
 
     all_moments = []
+
+    if output_path.exists():
+        try:
+            existing_data = json.loads(output_path.read_text())
+            existing_status = existing_data.get("status", "complete")
+            existing_stats = existing_data.get("stats", {})
+            existing_completed = existing_stats.get("chunks_completed", [])
+            existing_total = existing_stats.get("chunks_total", 0)
+
+            if (
+                existing_status != "complete"
+                and existing_completed
+                and existing_total == len(chunks)
+            ):
+                for ep in existing_data.get("episodes", []):
+                    ep["_content_hash"] = content_hash(ep.get("summary", ep.get("title", "")))
+                all_episodes = existing_data.get("episodes", [])
+                all_threads = existing_data.get("threads", [])
+                all_moments = existing_data.get("moments", [])
+                resumed_cost = existing_data.get("total_cost_usd", 0.0)
+                total_cost = resumed_cost
+                completed_chunks = set(existing_completed)
+                failed_chunks = [
+                    i for i in existing_stats.get("chunks_failed", []) if i not in completed_chunks
+                ]
+                remaining = len(chunks) - len(completed_chunks)
+                print(f"  Resuming: {len(completed_chunks)}/{len(chunks)} chunks already done")
+                print(f"  {remaining} chunks remaining ({len(all_episodes)} episodes loaded)")
+                print()
+            elif existing_status == "complete":
+                print(f"  Output already complete ({existing_stats.get('episodes', 0)} episodes)")
+                print("  Delete the file to re-run, or use a different --after value.")
+                sys.exit(0)
+        except (json.JSONDecodeError, ValueError):
+            print("  Existing output file is corrupt or unreadable — starting fresh.")
 
     def _write_output(*, done=False):
         import os
@@ -265,7 +340,6 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
         clean_episodes = [{k: v for k, v in ep.items() if not k.startswith("_")} for ep in deduped]
 
         is_complete = done and not failed_chunks
-        succeeded_chunks = len(set(ep.get("_chunk_index") for ep in all_episodes))
 
         output = {
             "source_transcript": transcript_path.name,
@@ -275,7 +349,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
             "status": "complete" if is_complete else "in_progress" if not done else "partial",
             "stats": {
                 "chunks_total": len(chunks),
-                "chunks_succeeded": succeeded_chunks,
+                "chunks_completed": sorted(completed_chunks),
                 "chunks_failed": failed_chunks,
                 "episodes": len(clean_episodes),
                 "duplicates_removed": len(all_episodes) - len(deduped),
@@ -301,6 +375,8 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
     refine_logger = logging.getLogger("distillation.refine")
 
     for i, chunk in enumerate(chunks):
+        if i in completed_chunks:
+            continue
         print(f"  Chunk {i + 1}/{len(chunks)}...", end=" ", flush=True)
         try:
             result = call_distiller_api(
@@ -314,6 +390,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
                 retry_config=retry_config,
                 circuit_breaker=circuit_breaker,
                 cost_guardrail=cost_guardrail,
+                transcript_date=transcript_date,
             )
             chunk_episodes = result.get("episodes", [])
             chunk_threads = result.get("threads", [])
@@ -337,7 +414,8 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
             all_episodes.extend(chunk_episodes)
             all_threads.extend(chunk_threads)
             all_moments.extend(chunk_moments)
-            total_cost = cost_guardrail.batch_spent_usd
+            completed_chunks.add(i)
+            total_cost = resumed_cost + cost_guardrail.batch_spent_usd
             print(f"{len(chunk_episodes)} episodes (${total_cost:.4f} total)")
 
             _write_output()
@@ -423,7 +501,26 @@ def _run_push(path: str, source_model: str | None = None, channel: str = "chat")
         cur = conn.cursor()
         inserted = 0
         skipped = 0
+        year_warnings = 0
         current_ep = (0, "(not started)")
+
+        for i, ep in enumerate(episodes_list):
+            occurred_at = ep.get("occurred_at", "")
+            if occurred_at and occurred_at.startswith("2025-"):
+                year_warnings += 1
+                if year_warnings <= 3:
+                    print(
+                        f"  WARNING: Episode {i + 1} has 2025 date: {occurred_at}",
+                        file=sys.stderr,
+                    )
+
+        if year_warnings > 0:
+            print(
+                f"\nERROR: {year_warnings} episodes have 2025 dates. "
+                "Fix the JSON before pushing (dates should be 2026).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         for i, ep in enumerate(episodes_list):
             current_ep = (i + 1, ep.get("title", f"Episode {i + 1}"))
@@ -525,9 +622,44 @@ def _run_batch():
     sys.exit(2)
 
 
-def _run_backfill():
-    print("Not yet wired: requires database connection.", file=sys.stderr)
-    sys.exit(2)
+def _run_backfill_embeddings(batch_size: int = 50, dry_run: bool = False):
+    import psycopg2
+    import psycopg2.extras
+
+    from distillation.backfill import backfill_embeddings
+    from distillation.config import load_config
+
+    config = load_config()
+
+    if not config.voyage_api_key:
+        print("Error: VOYAGE_API_KEY not set in config.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        import voyageai
+    except ImportError:
+        print("Error: voyageai package not installed.", file=sys.stderr)
+        sys.exit(1)
+
+    voyage_client = voyageai.Client(api_key=config.voyage_api_key.get_secret_value())
+
+    db_url = config.database_url.get_secret_value()
+    conn = psycopg2.connect(db_url)
+    psycopg2.extras.register_uuid()
+
+    try:
+        updated = backfill_embeddings(conn, voyage_client, batch_size=batch_size, dry_run=dry_run)
+        if not dry_run and updated > 0:
+            print(f"\n{updated} episodes now have embeddings and are visible to recall/search.")
+    except Exception as e:
+        conn.rollback()
+        print(f"Error during embedding backfill: {e}", file=sys.stderr)
+        import traceback
+
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
