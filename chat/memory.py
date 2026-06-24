@@ -247,7 +247,7 @@ def _query_memories(
 
     ref_types = [t for t in memory_types if t in _REFLECTION_TYPES]
     com_types = [t for t in memory_types if t in _COMMITMENT_TYPES]
-    is_relay = "bridge_log" in memory_types
+    is_relay = "bridge_log" in memory_types or "session_summary" in memory_types
 
     parts: list[str] = []
     params: list = []
@@ -261,9 +261,16 @@ def _query_memories(
         params.append(com_types)
 
     if is_relay:
+        relay_types = []
+        if "bridge_log" in memory_types:
+            relay_types.append("bridge_log")
+        if "session_summary" in memory_types:
+            relay_types.append("session_summary")
+        placeholders = ", ".join(["%s"] * len(relay_types))
         parts.append(
-            "SELECT 'bridge_log' AS memory_type, content, source_channel AS source, created_at FROM relays WHERE relay_type = 'bridge_log'"
+            f"SELECT relay_type AS memory_type, content, source_channel AS source, created_at FROM relays WHERE relay_type IN ({placeholders})"
         )
+        params.extend(relay_types)
 
     if not parts:
         cur.close()
