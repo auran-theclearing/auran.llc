@@ -268,7 +268,7 @@ def _query_memories(
             relay_types.append("session_summary")
         placeholders = ", ".join(["%s"] * len(relay_types))
         parts.append(
-            f"SELECT relay_type AS memory_type, content, source_channel AS source, created_at FROM relays WHERE relay_type IN ({placeholders})"
+            f"SELECT relay_type AS memory_type, content, source_channel AS source, created_at FROM relays WHERE relay_type IN ({placeholders})"  # noqa: S608 — parameterized %s
         )
         params.extend(relay_types)
 
