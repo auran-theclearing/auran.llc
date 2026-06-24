@@ -261,16 +261,11 @@ def _query_memories(
         params.append(com_types)
 
     if is_relay:
-        relay_types = []
-        if "bridge_log" in memory_types:
-            relay_types.append("bridge_log")
-        if "session_summary" in memory_types:
-            relay_types.append("session_summary")
-        placeholders = ", ".join(["%s"] * len(relay_types))
+        relay_types = [t for t in memory_types if t in {"bridge_log", "session_summary"}]
         parts.append(
-            f"SELECT relay_type AS memory_type, content, source_channel AS source, created_at FROM relays WHERE relay_type IN ({placeholders})"  # noqa: S608 — parameterized %s
+            "SELECT relay_type AS memory_type, content, source_channel AS source, created_at FROM relays WHERE relay_type = ANY(%s)"
         )
-        params.extend(relay_types)
+        params.append(relay_types)
 
     if not parts:
         cur.close()
