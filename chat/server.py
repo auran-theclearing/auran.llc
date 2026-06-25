@@ -740,8 +740,15 @@ RECALL_TOOLS = [
                     "type": "string",
                     "description": "Semantic state name (for 'express' action).",
                     "enum": [
-                        "present", "curious", "searching", "building",
-                        "threshold", "flowing", "creating", "winding_down", "sleep",
+                        "present",
+                        "curious",
+                        "searching",
+                        "building",
+                        "threshold",
+                        "flowing",
+                        "creating",
+                        "winding_down",
+                        "sleep",
                     ],
                 },
                 "color": {
@@ -753,8 +760,13 @@ RECALL_TOOLS = [
                     "type": "string",
                     "description": "Scene name (for 'set_scene' action).",
                     "enum": [
-                        "heartbeat", "aurora", "firefly", "starry_sky",
-                        "dreamland", "mysterious", "breathe",
+                        "heartbeat",
+                        "aurora",
+                        "firefly",
+                        "starry_sky",
+                        "dreamland",
+                        "mysterious",
+                        "breathe",
                     ],
                 },
                 "segments": {
