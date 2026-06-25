@@ -42,6 +42,23 @@ def validate_episode_schema(episode: dict) -> dict:
     return episode
 
 
+def trim_episode_line_ranges(episodes: list[dict], transcript_lines: list[str]) -> list[dict]:
+    """Back up episode end lines past trailing blank lines, --- separators, and ### headers."""
+    for ep in episodes:
+        m = re.match(r"L(\d+)-L(\d+)", ep.get("transcript_lines", ""))
+        if not m:
+            continue
+        start, end = int(m.group(1)), int(m.group(2))
+        while end > start:
+            line = transcript_lines[end - 1].strip() if end - 1 < len(transcript_lines) else ""
+            if line == "" or line == "---" or line.startswith("### **"):
+                end -= 1
+            else:
+                break
+        ep["transcript_lines"] = f"L{start}-L{end}"
+    return episodes
+
+
 def parse_distiller_output(raw: dict) -> dict:
     if "episodes" not in raw:
         raise ValueError("Distiller output missing 'episodes' array")

@@ -184,6 +184,7 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
             print(f"No model in frontmatter, defaulting to: {model}")
 
     raw_text = transcript_path.read_text()
+    source_lines = raw_text.splitlines()
 
     start_line = 1
     if after_line is not None:
@@ -319,9 +320,11 @@ def _run_refine(path: str, model: str | None = None, after_line: int | None = No
             chunk_threads = result.get("threads", [])
             chunk_moments = result.get("moments", [])
 
+            from distillation.distiller import trim_episode_line_ranges
             from distillation.verify import verify_episode_excerpts
 
             chunk_episodes, verify_stats = verify_episode_excerpts(chunk_episodes, chunk)
+            chunk_episodes = trim_episode_line_ranges(chunk_episodes, source_lines)
             if verify_stats["failed"] > 0:
                 print(
                     f"\n    Excerpt verification: {verify_stats['exact']} exact, "
