@@ -279,9 +279,10 @@ def paint(segments: list[dict], brightness: int | None = None) -> dict:
                 "success": False,
                 "error": f"Each segment needs 'range': [start, end] and 'color': [r,g,b]. Got: {seg}",
             }
+        rgb = [int(c) for c in rgb]
         if not all(0 <= c <= 255 for c in rgb):
             return {"success": False, "error": f"RGB values must be 0-255. Got: {rgb}"}
-        start, end = seg_range
+        start, end = int(seg_range[0]), int(seg_range[1])
         if not (0 <= start <= end <= 14):
             return {"success": False, "error": f"Segment range must be 0 <= start <= end <= 14. Got: {seg_range}"}
         govee_segments.append([start, end, _rgb_to_int(*rgb)])

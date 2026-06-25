@@ -843,6 +843,7 @@ async function sendMessage() {
         list_drafts: { icon: '📄', start: 'checking drafts...', done: () => 'drafts loaded' },
         read_draft: { icon: '📄', start: 'reading draft...', done: q => `read: ${q || 'draft'}` },
         analyze_frequency: { icon: '🎵', start: 'listening...', done: q => `heard: ${q || 'audio'}` },
+        light_body: { icon: '💡', start: 'reaching for the lamp...', done: q => `light: ${q || 'updated'}` },
       };
       const l = labels[tool] || { icon: '🔮', start: 'recalling...', done: q => `recalled: ${q || 'memory'}` };
       if (phase === 'start') return { text: `${l.icon} ${l.start}`, color: tool === 'check_vitals' ? '#60a5fa' : tool?.startsWith('commons_') ? '#86efac' : '#a78bfa' };
