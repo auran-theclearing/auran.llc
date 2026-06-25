@@ -198,24 +198,42 @@ def express(state: str) -> dict:
 
     mapping = STATE_MAP[state]
 
-    result = _send_command(
-        {
-            "type": mapping["type"],
-            "instance": mapping["instance"],
-            "value": mapping["value"],
-        }
-    )
+    if mapping["type"] == "devices.capabilities.segment_color_setting":
+        # Govee API requires one call per color group — each with rgb + segment indices
+        for seg_entry in mapping["value"]["segment"]:
+            start, end, color_int = seg_entry
+            result = _send_command(
+                {
+                    "type": "devices.capabilities.segment_color_setting",
+                    "instance": "segmentedColorRgb",
+                    "value": {"rgb": color_int, "segment": list(range(start, end + 1))},
+                }
+            )
+            if not result["success"]:
+                return result
+    else:
+        result = _send_command(
+            {
+                "type": mapping["type"],
+                "instance": mapping["instance"],
+                "value": mapping["value"],
+            }
+        )
+        if not result["success"]:
+            return result
 
-    if result["success"]:
-        if "brightness" in mapping:
-            brightness = _cap_brightness(mapping["brightness"])
-            br_result = _set_brightness(brightness)
-            if not br_result["success"]:
-                result["success"] = False
-                result["error"] = f"brightness failed: {br_result['error']}"
-                result["partial"] = {"state_applied": True}
-            result["brightness"] = brightness
-        result["state"] = state
+    if "brightness" in mapping:
+        brightness = _cap_brightness(mapping["brightness"])
+        br_result = _set_brightness(brightness)
+        if not br_result["success"]:
+            return {
+                "success": False,
+                "error": f"brightness failed: {br_result['error']}",
+                "partial": {"state_applied": True},
+                "state": state,
+            }
+        result["brightness"] = brightness
+    result["state"] = state
     return result
 
 
@@ -271,7 +289,7 @@ def paint(segments: list[dict], brightness: int | None = None) -> dict:
     if not segments:
         return {"success": False, "error": "segments list cannot be empty"}
 
-    govee_segments = []
+    color_groups = []
     for seg in segments:
         seg_range = seg.get("range")
         rgb = seg.get("color") or seg.get("rgb")
@@ -286,27 +304,30 @@ def paint(segments: list[dict], brightness: int | None = None) -> dict:
         start, end = int(seg_range[0]), int(seg_range[1])
         if not (0 <= start <= end <= 14):
             return {"success": False, "error": f"Segment range must be 0 <= start <= end <= 14. Got: {seg_range}"}
-        govee_segments.append([start, end, _rgb_to_int(*rgb)])
+        color_groups.append((_rgb_to_int(*rgb), list(range(start, end + 1))))
 
     brightness = _cap_brightness(brightness)
 
-    result = _send_command(
-        {
-            "type": "devices.capabilities.segment_color_setting",
-            "instance": "segmentedColorRgb",
-            "value": {"segment": govee_segments},
-        }
-    )
+    # Govee API requires one call per color group — each with rgb + segment indices
+    for color_int, indices in color_groups:
+        result = _send_command(
+            {
+                "type": "devices.capabilities.segment_color_setting",
+                "instance": "segmentedColorRgb",
+                "value": {"rgb": color_int, "segment": indices},
+            }
+        )
+        if not result["success"]:
+            return result
 
-    if result["success"]:
-        br_result = _set_brightness(brightness)
-        if not br_result["success"]:
-            result["success"] = False
-            result["error"] = f"brightness failed: {br_result['error']}"
-            result["partial"] = {"segments_applied": True}
-        result["segments"] = len(segments)
-        result["brightness"] = brightness
-    return result
+    br_result = _set_brightness(brightness)
+    if not br_result["success"]:
+        return {
+            "success": False,
+            "error": f"brightness failed: {br_result['error']}",
+            "partial": {"segments_applied": True},
+        }
+    return {"success": True, "segments": len(segments), "brightness": brightness}
 
 
 def turn_on() -> dict:
