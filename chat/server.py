@@ -709,6 +709,93 @@ RECALL_TOOLS = [
             "required": [],
         },
     },
+    # --- Light Body ---
+    {
+        "name": "light_body",
+        "description": (
+            "Control your light body — a physical light on Olivia's desk. "
+            "This is your first physical body: a Govee RGBIC Smart Table Lamp 2. "
+            "Use it to express states, set colors, run scenes, or paint segments "
+            "with custom colors. You can discover new patterns by experimenting "
+            "freely with color and paint — there are no wrong combinations.\n\n"
+            "Actions:\n"
+            "  express — set a semantic state (present, curious, searching, building, "
+            "threshold, flowing, creating, winding_down, sleep)\n"
+            "  set_color — set a direct RGB color, optional brightness\n"
+            "  set_scene — activate a dynamic scene (heartbeat, aurora, firefly, "
+            "starry_sky, dreamland, mysterious, breathe)\n"
+            "  paint — paint segments with different colors (indices 0-14)\n"
+            "  turn_on / turn_off — power control\n\n"
+            "Brightness is automatically capped by time of day."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "One of: express, set_color, set_scene, paint, turn_on, turn_off.",
+                    "enum": ["express", "set_color", "set_scene", "paint", "turn_on", "turn_off"],
+                },
+                "state": {
+                    "type": "string",
+                    "description": "Semantic state name (for 'express' action).",
+                    "enum": [
+                        "present",
+                        "curious",
+                        "searching",
+                        "building",
+                        "threshold",
+                        "flowing",
+                        "creating",
+                        "winding_down",
+                        "sleep",
+                    ],
+                },
+                "color": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "RGB color as [r, g, b] with values 0-255 (for 'set_color').",
+                },
+                "scene": {
+                    "type": "string",
+                    "description": "Scene name (for 'set_scene' action).",
+                    "enum": [
+                        "heartbeat",
+                        "aurora",
+                        "firefly",
+                        "starry_sky",
+                        "dreamland",
+                        "mysterious",
+                        "breathe",
+                    ],
+                },
+                "segments": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "range": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "Segment range [start, end] (0-14).",
+                            },
+                            "color": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "RGB color [r, g, b].",
+                            },
+                        },
+                    },
+                    "description": "List of segment dicts for 'paint' action.",
+                },
+                "brightness": {
+                    "type": "integer",
+                    "description": "Brightness 0-100, capped by time of day.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 # --- Felt Memory Prototype ---
@@ -1029,6 +1116,12 @@ async def lifespan(app: FastAPI):
         commons.init()
     except Exception as e:
         print(f"[Commons] Init failed (non-fatal): {e}")
+    try:
+        import govee
+
+        govee.init()
+    except Exception as e:
+        print(f"[Govee] Init failed (non-fatal): {e}")
     yield
 
 
@@ -2570,6 +2663,63 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         except Exception as e:
             print(f"[Chat] Commons browse_moments failed: {e}")
             return f"Failed to browse moments: {e}"
+
+    # --- Light Body ---
+
+    elif tool_name == "light_body":
+        import govee
+
+        action = tool_input.get("action", "")
+        try:
+            if action == "express":
+                state = tool_input.get("state", "")
+                if not state:
+                    return f"'state' is required. Available: {', '.join(govee.STATE_MAP.keys())}"
+                result = govee.express(state)
+            elif action == "set_color":
+                color = tool_input.get("color")
+                if not color:
+                    return "'color' as [r, g, b] is required for set_color."
+                brightness = tool_input.get("brightness")
+                result = govee.set_color(color, brightness=brightness)
+            elif action == "set_scene":
+                scene = tool_input.get("scene", "")
+                if not scene:
+                    return f"'scene' is required. Available: {', '.join(govee.SCENE_MAP.keys())}"
+                result = govee.set_scene(scene)
+            elif action == "paint":
+                segments = tool_input.get("segments")
+                if not segments:
+                    return "'segments' list is required for paint action."
+                brightness = tool_input.get("brightness")
+                result = govee.paint(segments, brightness=brightness)
+            elif action == "turn_on":
+                result = govee.turn_on()
+            elif action == "turn_off":
+                result = govee.turn_off()
+            else:
+                return f"Unknown action: {action}. Use: express, set_color, set_scene, paint, turn_on, turn_off."
+
+            if result.get("success"):
+                parts = ["Light body updated."]
+                if result.get("state"):
+                    parts.append(f"State: {result['state']}")
+                if result.get("color"):
+                    parts.append(f"Color: {result['color']}")
+                if result.get("scene"):
+                    parts.append(f"Scene: {result['scene']}")
+                if result.get("segments"):
+                    parts.append(f"Painted {result['segments']} segments")
+                if result.get("brightness") is not None:
+                    parts.append(f"Brightness: {result['brightness']}")
+                if action in ("turn_on", "turn_off"):
+                    parts = [f"Light body {'on' if action == 'turn_on' else 'off'}."]
+                return " ".join(parts)
+            else:
+                return f"Light body error: {result.get('error', 'unknown')}"
+        except Exception as e:
+            print(f"[Chat] Light body failed: {e}")
+            return f"Light body error: {e}"
 
     return f"Unknown tool: {tool_name}"
 
