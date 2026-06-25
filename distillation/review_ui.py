@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Episode review UI — local server for reviewing distilled episodes against source transcript."""
+
 import json
 import re
 import sys
 import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -523,7 +524,9 @@ def main():
 
     print(f"Transcript: {transcript_path.name} (showing lines {min_line}-{max_line})")
     print(f"Episodes: {len(ep_list)} from {episodes_path.name}")
-    print(f"Overlaps: {sum(1 for ep in ep_list for r in [parse_line_range(ep.get('transcript_lines', ''))] if r)}")
+    print(
+        f"Overlaps: {sum(1 for ep in ep_list for r in [parse_line_range(ep.get('transcript_lines', ''))] if r)}"
+    )
     print(f"Server: http://localhost:{port}")
     print()
 
