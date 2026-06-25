@@ -149,7 +149,7 @@ def _send_command(capability: dict) -> dict:
                 print(f"[Govee] Logical error: code={govee_code} msg={msg}")
                 return {"success": False, "error": f"Govee code {govee_code}: {msg}"}
         except (ValueError, AttributeError):
-            pass
+            print(f"[Govee] Response not parseable JSON: {resp.text[:200]}")
         return {"success": True, "status": resp.status_code}
     except httpx.HTTPError as e:
         print(f"[Govee] Connection error: {e}")
@@ -174,7 +174,7 @@ def _cap_brightness(requested: int | None) -> int:
     cap = _max_brightness()
     if requested is None:
         return cap
-    return min(requested, cap)
+    return max(0, min(int(requested), cap))
 
 
 def _set_brightness(level: int) -> dict:
@@ -209,7 +209,8 @@ def express(state: str) -> dict:
     if result["success"]:
         br_result = _set_brightness(brightness)
         if not br_result["success"]:
-            result["brightness_error"] = br_result["error"]
+            result["success"] = False
+            result["error"] = f"brightness failed: {br_result['error']}"
         result["state"] = state
         result["brightness"] = brightness
     return result
@@ -232,13 +233,15 @@ def set_color(rgb: list[int], brightness: int | None = None) -> dict:
     if result["success"]:
         br_result = _set_brightness(brightness)
         if not br_result["success"]:
-            result["brightness_error"] = br_result["error"]
+            result["success"] = False
+            result["error"] = f"brightness failed: {br_result['error']}"
         result["color"] = rgb
         result["brightness"] = brightness
     return result
 
 
 def set_scene(scene: str) -> dict:
+    # Scenes manage their own brightness curves on the device — no cap applied.
     if scene not in SCENE_MAP:
         return {
             "success": False,
@@ -289,7 +292,8 @@ def paint(segments: list[dict], brightness: int | None = None) -> dict:
     if result["success"]:
         br_result = _set_brightness(brightness)
         if not br_result["success"]:
-            result["brightness_error"] = br_result["error"]
+            result["success"] = False
+            result["error"] = f"brightness failed: {br_result['error']}"
         result["segments"] = len(segments)
         result["brightness"] = brightness
     return result
