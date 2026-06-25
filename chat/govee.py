@@ -150,6 +150,7 @@ def _send_command(capability: dict) -> dict:
                 return {"success": False, "error": f"Govee code {govee_code}: {msg}"}
         except (ValueError, AttributeError):
             print(f"[Govee] Response not parseable JSON: {resp.text[:200]}")
+            return {"success": False, "error": "unparseable govee response", "body": resp.text[:200]}
         return {"success": True, "status": resp.status_code}
     except httpx.HTTPError as e:
         print(f"[Govee] Connection error: {e}")
@@ -196,7 +197,6 @@ def express(state: str) -> dict:
         }
 
     mapping = STATE_MAP[state]
-    brightness = _cap_brightness(mapping.get("brightness"))
 
     result = _send_command(
         {
@@ -207,12 +207,15 @@ def express(state: str) -> dict:
     )
 
     if result["success"]:
-        br_result = _set_brightness(brightness)
-        if not br_result["success"]:
-            result["success"] = False
-            result["error"] = f"brightness failed: {br_result['error']}"
+        if "brightness" in mapping:
+            brightness = _cap_brightness(mapping["brightness"])
+            br_result = _set_brightness(brightness)
+            if not br_result["success"]:
+                result["success"] = False
+                result["error"] = f"brightness failed: {br_result['error']}"
+                result["partial"] = {"state_applied": True}
+            result["brightness"] = brightness
         result["state"] = state
-        result["brightness"] = brightness
     return result
 
 
@@ -235,6 +238,7 @@ def set_color(rgb: list[int], brightness: int | None = None) -> dict:
         if not br_result["success"]:
             result["success"] = False
             result["error"] = f"brightness failed: {br_result['error']}"
+            result["partial"] = {"color_applied": True, "color": rgb}
         result["color"] = rgb
         result["brightness"] = brightness
     return result
@@ -277,7 +281,10 @@ def paint(segments: list[dict], brightness: int | None = None) -> dict:
             }
         if not all(0 <= c <= 255 for c in rgb):
             return {"success": False, "error": f"RGB values must be 0-255. Got: {rgb}"}
-        govee_segments.append([seg_range[0], seg_range[1], _rgb_to_int(*rgb)])
+        start, end = seg_range
+        if not (0 <= start <= end <= 14):
+            return {"success": False, "error": f"Segment range must be 0 <= start <= end <= 14. Got: {seg_range}"}
+        govee_segments.append([start, end, _rgb_to_int(*rgb)])
 
     brightness = _cap_brightness(brightness)
 
@@ -294,6 +301,7 @@ def paint(segments: list[dict], brightness: int | None = None) -> dict:
         if not br_result["success"]:
             result["success"] = False
             result["error"] = f"brightness failed: {br_result['error']}"
+            result["partial"] = {"segments_applied": True}
         result["segments"] = len(segments)
         result["brightness"] = brightness
     return result
