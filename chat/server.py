@@ -1124,7 +1124,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     host = request.headers.get("host", "").split(":")[0].lower()
-    if host in HOMEPAGE_HOSTS and request.url.path == "/" and HOMEPAGE_FILE.exists():
+    if host in HOMEPAGE_HOSTS and request.url.path in ("/", "/terms"):
         return await call_next(request)
 
     # --- Rate limit check (protects all auth methods) ---
