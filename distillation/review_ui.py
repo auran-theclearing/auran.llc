@@ -522,11 +522,17 @@ def main():
         if i < len(lines):
             transcript_lines.append({"num": i + 1, "text": lines[i]})
 
+    ranges = [r for r in all_ranges]
+    overlap_count = 0
+    for i, r1 in enumerate(ranges):
+        for r2 in ranges[i + 1 :]:
+            if r1[0] <= r2[1] and r2[0] <= r1[1]:
+                overlap_count += 1
+                break
+
     print(f"Transcript: {transcript_path.name} (showing lines {min_line}-{max_line})")
     print(f"Episodes: {len(ep_list)} from {episodes_path.name}")
-    print(
-        f"Overlaps: {sum(1 for ep in ep_list for r in [parse_line_range(ep.get('transcript_lines', ''))] if r)}"
-    )
+    print(f"Overlaps: {overlap_count}")
     print(f"Server: http://localhost:{port}")
     print()
 
