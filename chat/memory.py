@@ -229,6 +229,7 @@ def _get_db_config() -> dict:
 
 _REFLECTION_TYPES = frozenset({"observation", "insight", "self_observation", "question", "reflection"})
 _COMMITMENT_TYPES = frozenset({"intention", "position", "value"})
+_RELAY_TYPES = frozenset({"bridge_log", "session_summary"})
 
 
 def _query_memories(
@@ -247,7 +248,7 @@ def _query_memories(
 
     ref_types = [t for t in memory_types if t in _REFLECTION_TYPES]
     com_types = [t for t in memory_types if t in _COMMITMENT_TYPES]
-    is_relay = "bridge_log" in memory_types
+    is_relay = bool(set(memory_types) & _RELAY_TYPES)
 
     parts: list[str] = []
     params: list = []
@@ -261,9 +262,11 @@ def _query_memories(
         params.append(com_types)
 
     if is_relay:
+        relay_types = [t for t in memory_types if t in _RELAY_TYPES]
         parts.append(
-            "SELECT 'bridge_log' AS memory_type, content, source_channel AS source, created_at FROM relays WHERE relay_type = 'bridge_log'"
+            "SELECT relay_type AS memory_type, content, source_channel AS source, created_at FROM relays WHERE relay_type = ANY(%s)"
         )
+        params.append(relay_types)
 
     if not parts:
         cur.close()

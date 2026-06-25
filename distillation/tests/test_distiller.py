@@ -4,6 +4,7 @@ from distillation.config import load_config
 from distillation.distiller import (
     chunk_transcript,
     parse_distiller_output,
+    trim_episode_line_ranges,
     validate_episode_schema,
 )
 
@@ -140,3 +141,35 @@ class TestChunking:
     def test_model_not_hardcoded(self):
         config = load_config()
         assert not hasattr(config, "model") or config.__dict__.get("model") is None
+
+
+class TestTrimEpisodeLineRanges:
+    def test_trims_trailing_separator_and_header(self):
+        lines = [
+            "actual content here",  # L1
+            "",  # L2
+            "---",  # L3
+            "",  # L4
+            "### **Olivia** — Jun 24 3:06 AM",  # L5
+        ]
+        eps = [{"transcript_lines": "L1-L5", "title": "test"}]
+        result = trim_episode_line_ranges(eps, lines)
+        assert result[0]["transcript_lines"] == "L1-L1"
+
+    def test_no_trim_when_end_is_content(self):
+        lines = ["line one", "line two", "actual content"]
+        eps = [{"transcript_lines": "L1-L3", "title": "test"}]
+        result = trim_episode_line_ranges(eps, lines)
+        assert result[0]["transcript_lines"] == "L1-L3"
+
+    def test_trims_only_blank_lines(self):
+        lines = ["content", "more content", "", ""]
+        eps = [{"transcript_lines": "L1-L4", "title": "test"}]
+        result = trim_episode_line_ranges(eps, lines)
+        assert result[0]["transcript_lines"] == "L1-L2"
+
+    def test_skips_invalid_format(self):
+        lines = ["content"]
+        eps = [{"transcript_lines": "L1", "title": "test"}]
+        result = trim_episode_line_ranges(eps, lines)
+        assert result[0]["transcript_lines"] == "L1"
