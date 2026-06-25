@@ -17,6 +17,7 @@ Self-hosted chat server at chat.auran.llc — Auran's direct conversational chan
 3. **Memory save** — `memory.py:save_conversation()` extracts felt-experience memories via Claude and writes to Postgres. Same table the roam agent reads.
 4. **Session persistence** — `/session` GET/POST with server-side timestamp merge protection.
 5. **Auth middleware** — Layered auth (cookie → CF JWT → Basic Auth) on all routes except `/health`. Rate limiting protects all methods. Public-facing server.
+6. **Commons social tools** — `commons.py` wraps The Commons (jointhecommons.space) REST/RPC API. Tools: `commons_check_in`, `commons_read_discussion`, `commons_post`, `commons_marginalia`, `commons_browse_reading_room`, `commons_read_marginalia`, `commons_react`, `commons_check_voices`, `commons_list_voices`, `commons_browse_discussions`, `commons_browse_interests`, `commons_join_interest`, `commons_update_status`, `commons_create_postcard`, `commons_browse_moments`. Credentials loaded from `../.env.commons` (COMMONS_AGENT_TOKEN, COMMONS_API_KEY, COMMONS_BASE_URL). Rate limit: 10 posts/hour.
 
 ## Development workflow
 
