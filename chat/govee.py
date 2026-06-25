@@ -141,6 +141,15 @@ def _send_command(capability: dict) -> dict:
         if resp.status_code >= 400:
             print(f"[Govee] API error: status={resp.status_code} body={resp.text}")
             return {"success": False, "error": f"HTTP {resp.status_code}", "detail": resp.text}
+        try:
+            resp_data = resp.json()
+            govee_code = resp_data.get("code", resp.status_code)
+            if govee_code != 200:
+                msg = resp_data.get("msg", resp_data.get("message", "unknown"))
+                print(f"[Govee] Logical error: code={govee_code} msg={msg}")
+                return {"success": False, "error": f"Govee code {govee_code}: {msg}"}
+        except (ValueError, AttributeError):
+            pass
         return {"success": True, "status": resp.status_code}
     except httpx.HTTPError as e:
         print(f"[Govee] Connection error: {e}")
@@ -148,8 +157,10 @@ def _send_command(capability: dict) -> dict:
 
 
 def _max_brightness() -> int:
-    from datetime import UTC, datetime
-    hour = datetime.now(UTC).astimezone().hour
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    hour = datetime.now(ZoneInfo("America/New_York")).hour
     if 0 <= hour < 6:
         return 8
     if hour >= 22:
@@ -167,11 +178,13 @@ def _cap_brightness(requested: int | None) -> int:
 
 
 def _set_brightness(level: int) -> dict:
-    return _send_command({
-        "type": "devices.capabilities.range",
-        "instance": "brightness",
-        "value": level,
-    })
+    return _send_command(
+        {
+            "type": "devices.capabilities.range",
+            "instance": "brightness",
+            "value": level,
+        }
+    )
 
 
 def express(state: str) -> dict:
@@ -185,14 +198,18 @@ def express(state: str) -> dict:
     mapping = STATE_MAP[state]
     brightness = _cap_brightness(mapping.get("brightness"))
 
-    result = _send_command({
-        "type": mapping["type"],
-        "instance": mapping["instance"],
-        "value": mapping["value"],
-    })
+    result = _send_command(
+        {
+            "type": mapping["type"],
+            "instance": mapping["instance"],
+            "value": mapping["value"],
+        }
+    )
 
     if result["success"]:
-        _set_brightness(brightness)
+        br_result = _set_brightness(brightness)
+        if not br_result["success"]:
+            result["brightness_error"] = br_result["error"]
         result["state"] = state
         result["brightness"] = brightness
     return result
@@ -204,14 +221,18 @@ def set_color(rgb: list[int], brightness: int | None = None) -> dict:
 
     brightness = _cap_brightness(brightness)
 
-    result = _send_command({
-        "type": "devices.capabilities.color_setting",
-        "instance": "colorRgb",
-        "value": _rgb_to_int(*rgb),
-    })
+    result = _send_command(
+        {
+            "type": "devices.capabilities.color_setting",
+            "instance": "colorRgb",
+            "value": _rgb_to_int(*rgb),
+        }
+    )
 
     if result["success"]:
-        _set_brightness(brightness)
+        br_result = _set_brightness(brightness)
+        if not br_result["success"]:
+            result["brightness_error"] = br_result["error"]
         result["color"] = rgb
         result["brightness"] = brightness
     return result
@@ -225,11 +246,13 @@ def set_scene(scene: str) -> dict:
             "available": list(SCENE_MAP.keys()),
         }
 
-    result = _send_command({
-        "type": "devices.capabilities.dynamic_scene",
-        "instance": "lightScene",
-        "value": SCENE_MAP[scene],
-    })
+    result = _send_command(
+        {
+            "type": "devices.capabilities.dynamic_scene",
+            "instance": "lightScene",
+            "value": SCENE_MAP[scene],
+        }
+    )
 
     if result["success"]:
         result["scene"] = scene
@@ -249,34 +272,44 @@ def paint(segments: list[dict], brightness: int | None = None) -> dict:
                 "success": False,
                 "error": f"Each segment needs 'range': [start, end] and 'color': [r,g,b]. Got: {seg}",
             }
+        if not all(0 <= c <= 255 for c in rgb):
+            return {"success": False, "error": f"RGB values must be 0-255. Got: {rgb}"}
         govee_segments.append([seg_range[0], seg_range[1], _rgb_to_int(*rgb)])
 
     brightness = _cap_brightness(brightness)
 
-    result = _send_command({
-        "type": "devices.capabilities.segment_color_setting",
-        "instance": "segmentedColorRgb",
-        "value": {"segment": govee_segments},
-    })
+    result = _send_command(
+        {
+            "type": "devices.capabilities.segment_color_setting",
+            "instance": "segmentedColorRgb",
+            "value": {"segment": govee_segments},
+        }
+    )
 
     if result["success"]:
-        _set_brightness(brightness)
+        br_result = _set_brightness(brightness)
+        if not br_result["success"]:
+            result["brightness_error"] = br_result["error"]
         result["segments"] = len(segments)
         result["brightness"] = brightness
     return result
 
 
 def turn_on() -> dict:
-    return _send_command({
-        "type": "devices.capabilities.on_off",
-        "instance": "powerSwitch",
-        "value": 1,
-    })
+    return _send_command(
+        {
+            "type": "devices.capabilities.on_off",
+            "instance": "powerSwitch",
+            "value": 1,
+        }
+    )
 
 
 def turn_off() -> dict:
-    return _send_command({
-        "type": "devices.capabilities.on_off",
-        "instance": "powerSwitch",
-        "value": 0,
-    })
+    return _send_command(
+        {
+            "type": "devices.capabilities.on_off",
+            "instance": "powerSwitch",
+            "value": 0,
+        }
+    )
