@@ -1,11 +1,28 @@
+# Build artifacts
 .venv/
 .pytest_cache/
 .ruff_cache/
 __pycache__/
 *.pyc
+
+# Secrets
 .env
-docs/
+.env.*
+
+# Dev/test tooling
 test_*.py
+test_*.mjs
 conftest.py
 ruff.toml
 extract_founding.py
+Dockerfile
+.dockerignore
+
+# Migration tooling (runtime uses migrations/ only)
+alembic/
+alembic.ini
+schema/
+
+# Docs
+*.md
+docs/

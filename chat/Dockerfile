@@ -11,10 +11,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy application code
-COPY server.py memory.py persistence.py graph_recall.py commons.py govee.py system_prompt.txt ./
-COPY migrations/ ./migrations/
-COPY index.html homepage.html terms.html ./
+# Copy application code (.dockerignore excludes tests, dev tooling, secrets)
+COPY . ./
 
 ARG BUILD_SHA=dev
 ENV PYTHONUNBUFFERED=1
