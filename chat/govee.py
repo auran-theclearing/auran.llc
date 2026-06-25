@@ -14,7 +14,7 @@ _CONTROL_ENDPOINT = f"{_GOVEE_BASE}/router/api/v1/device/control"
 
 _api_key: str = ""
 _device_id: str = ""
-_device_sku: str = "H6022"
+_device_sku: str = ""
 
 
 def _rgb_to_int(r, g, b):
@@ -102,17 +102,17 @@ def init():
 
     _api_key = os.getenv("GOVEE_API_KEY", "")
     _device_id = os.getenv("GOVEE_DEVICE_ID", "")
-    _device_sku = os.getenv("GOVEE_DEVICE_SKU", "H6022")
+    _device_sku = os.getenv("GOVEE_DEVICE_SKU", "")
 
-    if not _api_key or not _device_id:
-        print("[Govee] Not configured — missing GOVEE_API_KEY or GOVEE_DEVICE_ID")
+    if not _api_key or not _device_id or not _device_sku:
+        print("[Govee] Not configured — missing GOVEE_API_KEY, GOVEE_DEVICE_ID, or GOVEE_DEVICE_SKU")
         return
 
     print(f"[Govee] Configured — device {_device_sku} ({_device_id[:8]}...)")
 
 
 def _configured() -> bool:
-    return bool(_api_key and _device_id)
+    return bool(_api_key and _device_id and _device_sku)
 
 
 def _send_command(capability: dict) -> dict:
