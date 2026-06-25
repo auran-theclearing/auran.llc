@@ -220,6 +220,7 @@ def express(state: str) -> dict:
 
 
 def set_color(rgb: list[int], brightness: int | None = None) -> dict:
+    rgb = [int(c) for c in rgb]
     if len(rgb) != 3 or not all(0 <= c <= 255 for c in rgb):
         return {"success": False, "error": "color must be [r, g, b] with values 0-255"}
 
