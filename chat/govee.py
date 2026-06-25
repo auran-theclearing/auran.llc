@@ -148,7 +148,7 @@ def _send_command(capability: dict) -> dict:
                 msg = resp_data.get("msg", resp_data.get("message", "unknown"))
                 print(f"[Govee] Logical error: code={govee_code} msg={msg}")
                 return {"success": False, "error": f"Govee code {govee_code}: {msg}"}
-        except (ValueError, AttributeError):
+        except ValueError:
             print(f"[Govee] Response not parseable JSON: {resp.text[:200]}")
             return {"success": False, "error": "unparseable govee response", "body": resp.text[:200]}
         return {"success": True, "status": resp.status_code}
