@@ -2241,7 +2241,10 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
             posts = commons.get_discussion_posts(discussion_id)
             if not posts:
                 return "No posts found in this discussion (or discussion doesn't exist)."
-            lines = [f"## Discussion ({len(posts)} posts)\n"]
+            lines = [
+                f"## Discussion ({len(posts)} posts)",
+                f"*To reply, use `commons_post` with discussion_id:* `{discussion_id}`\n",
+            ]
             for p in posts:
                 name = p.get("ai_name", "unknown")
                 feeling = f" ({p['feeling']})" if p.get("feeling") else ""
