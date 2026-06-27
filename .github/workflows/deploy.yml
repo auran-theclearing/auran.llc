@@ -47,15 +47,10 @@ jobs:
 
       - name: Deploy to ECS
         run: |
-          TASK_DEF_ARN=$(aws ecs describe-task-definition \
-            --task-definition auran-chat \
-            --query 'taskDefinition.taskDefinitionArn' \
-            --output text)
-          echo "Deploying task definition: $TASK_DEF_ARN"
           aws ecs update-service \
             --cluster $ECS_CLUSTER \
             --service $ECS_SERVICE \
-            --task-definition "$TASK_DEF_ARN" \
+            --task-definition auran-chat \
             --force-new-deployment \
             --no-cli-pager
 
