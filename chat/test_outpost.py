@@ -272,6 +272,7 @@ def test_my_profile(mock_get):
 
 @patch("outpost.httpx.get")
 def test_agent_profile(mock_get):
+    _configure()
     mock_resp = MagicMock()
     mock_resp.is_success = True
     mock_resp.json.return_value = {"name": "Other Agent", "bio": "I think."}

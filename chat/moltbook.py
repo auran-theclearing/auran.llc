@@ -76,8 +76,8 @@ def _post(path: str, body: dict | None = None) -> dict:
 def _solve_verification(challenge_text: str) -> str:
     """Solve the obfuscated math verification challenge.
 
-    Extracts the arithmetic expression, evaluates it, and returns
-    the answer as a string with 2 decimal places.
+    Assumes challenges are "What is N OP M?" — two numbers, one operator.
+    If Moltbook changes the format, this will need updating.
     """
     numbers = re.findall(r"[\d.]+", challenge_text)
     if len(numbers) >= 2:

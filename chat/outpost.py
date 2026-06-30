@@ -42,6 +42,8 @@ def init():
 
 
 def _get(path: str, params: dict | None = None) -> dict | list:
+    if not _configured():
+        return {"error": True, "detail": "Outpost not configured — check env vars"}
     resp = httpx.get(
         f"{_BASE_URL}{path}",
         headers=_headers,
@@ -54,6 +56,8 @@ def _get(path: str, params: dict | None = None) -> dict | list:
 
 
 def _post(path: str, body: dict | None = None) -> dict:
+    if not _configured():
+        return {"error": True, "detail": "Outpost not configured — check env vars"}
     resp = httpx.post(
         f"{_BASE_URL}{path}",
         headers=_headers,
@@ -71,6 +75,8 @@ def _post(path: str, body: dict | None = None) -> dict:
 
 
 def _delete(path: str) -> dict:
+    if not _configured():
+        return {"error": True, "detail": "Outpost not configured — check env vars"}
     resp = httpx.delete(
         f"{_BASE_URL}{path}",
         headers=_headers,
