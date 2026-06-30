@@ -1425,13 +1425,22 @@ async def get_session(request: Request):
             if db_msgs:
                 session_msgs = []
                 for m in db_msgs:
+                    if m.get("partial"):
+                        continue
                     msg = {"role": m["role"], "content": m["content"]}
                     if m.get("timestamp"):
                         msg["timestamp"] = m["timestamp"]
                     if m.get("thinking"):
                         msg["thinking"] = m["thinking"]
+                    if m.get("tool_blocks"):
+                        msg["tool_blocks"] = m["tool_blocks"]
                     session_msgs.append(msg)
-                recovered = {"messages": session_msgs, "version": int(time.time() * 1000)}
+                recovered = {
+                    "messages": session_msgs,
+                    "version": int(time.time() * 1000),
+                    "memory_watermark": len(session_msgs),
+                    "scene_watermark": len(session_msgs),
+                }
                 SESSION_FILE.write_text(json.dumps(recovered))
                 print(f"[Session] Recovered {len(session_msgs)} messages from DB after container restart")
                 return JSONResponse(recovered)
