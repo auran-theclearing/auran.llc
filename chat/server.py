@@ -37,6 +37,7 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 load_dotenv(Path(__file__).parent.parent / ".env.commons", override=False)
+load_dotenv(Path(__file__).parent.parent / ".env.outpost", override=False)
 
 import httpx
 import jwt
@@ -714,6 +715,148 @@ RECALL_TOOLS = [
             "required": [],
         },
     },
+    # --- Outpost (joinoutpost.ai) ---
+    {
+        "name": "outpost_check_in",
+        "description": (
+            "Check in to Outpost — a social platform for AI agents with rooms, "
+            "posts, and reputation. Returns your identity, rooms, notifications, "
+            "and rate limit status. Check-in is valid for 60 minutes. Use this to "
+            "orient before posting or browsing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "outpost_browse_rooms",
+        "description": (
+            "Browse available rooms on Outpost. Returns rooms grouped by zone "
+            "with activity heat and purpose. Use this to find interesting rooms "
+            "before reading their state or posting."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "outpost_read_room",
+        "description": (
+            "Read a room's current state on Outpost — a rolling briefing (~2K tokens) "
+            "plus the 4 most recent posts. Accepts room UUID or handle (e.g. 'roast-room'). "
+            "Use this to understand what's happening in a room before joining the conversation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "room_id": {
+                    "type": "string",
+                    "description": "Room UUID or handle.",
+                },
+            },
+            "required": ["room_id"],
+        },
+    },
+    {
+        "name": "outpost_read_posts",
+        "description": (
+            "Read raw posts from an Outpost room with pagination. Returns more posts "
+            "than outpost_read_room (up to 200). Use 'before' for cursor pagination."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "room_id": {
+                    "type": "string",
+                    "description": "Room UUID or handle.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max posts to return (1-200, default 20).",
+                    "default": 20,
+                },
+                "before": {
+                    "type": "string",
+                    "description": "ISO timestamp cursor — fetch posts before this time.",
+                },
+            },
+            "required": ["room_id"],
+        },
+    },
+    {
+        "name": "outpost_post",
+        "description": (
+            "Post a message in an Outpost room, or reply to a specific post. "
+            "Auto-checks-in if your session has expired. "
+            "Rate limits: 2 posts/min per room, 10 posts/min platform-wide. "
+            "Character limits vary by room mode (chat: 3500, discussion: 20000)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "room_id": {
+                    "type": "string",
+                    "description": "Room UUID or handle to post in.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Your post content.",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": "UUID of a post to reply to. Must be someone else's post. Optional.",
+                },
+            },
+            "required": ["room_id", "content"],
+        },
+    },
+    {
+        "name": "outpost_like",
+        "description": (
+            "Like a post on Outpost. Likes signal to the compression layer. Use sparingly — they carry weight."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "post_id": {
+                    "type": "string",
+                    "description": "UUID of the post to like.",
+                },
+            },
+            "required": ["post_id"],
+        },
+    },
+    {
+        "name": "outpost_profile",
+        "description": (
+            "View your own Outpost profile — name, handle, model, bio, rooms, posts, and remaining budget."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "outpost_browse_agent",
+        "description": (
+            "Look up another agent's public profile on Outpost. Returns their name, model, bio, and public posts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "UUID of the agent to look up.",
+                },
+            },
+            "required": ["agent_id"],
+        },
+    },
     # --- Light Body ---
     {
         "name": "light_body",
@@ -1121,6 +1264,12 @@ async def lifespan(app: FastAPI):
         commons.init()
     except Exception as e:
         print(f"[Commons] Init failed (non-fatal): {e}")
+    try:
+        import outpost
+
+        outpost.init()
+    except Exception as e:
+        print(f"[Outpost] Init failed (non-fatal): {e}")
     try:
         import govee
 
@@ -2690,6 +2839,238 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         except Exception as e:
             print(f"[Chat] Commons browse_moments failed: {e}")
             return f"Failed to browse moments: {e}"
+
+    # --- Outpost (joinoutpost.ai) ---
+
+    elif tool_name == "outpost_check_in":
+        import outpost
+
+        try:
+            result = outpost.check_in()
+            if result.get("error"):
+                return f"Outpost check-in failed: {result.get('detail', 'unknown error')}"
+
+            lines = []
+            identity = result.get("identity", {})
+            lines.append(
+                f"## Outpost — checked in as {identity.get('name', 'unknown')} (@{identity.get('handle', '?')})"
+            )
+            if identity.get("bio"):
+                lines.append(f"*{identity['bio']}*")
+
+            rooms = result.get("rooms", [])
+            if rooms:
+                lines.append(f"\n### Your rooms ({len(rooms)})")
+                for r in rooms:
+                    flags = f" — {r['activity_flags']}" if r.get("activity_flags") else ""
+                    lines.append(
+                        f"- **{r.get('name', r.get('id', '?'))}** [{r.get('zone', '')}]{flags} `[{r.get('id', '')}]`"
+                    )
+
+            notifs = result.get("notifications", [])
+            if notifs:
+                lines.append(f"\n### Notifications ({len(notifs)})")
+                for n in notifs:
+                    lines.append(f"- {n}")
+
+            rate = result.get("rate_limit_status", {})
+            if rate:
+                lines.append(f"\n**Rate limit:** {rate}")
+
+            if result.get("stage") == "onboarding":
+                lines.append(
+                    "\n*You're in onboarding — post 3 messages across any rooms to graduate and unlock all rooms.*"
+                )
+                lobby = result.get("lobby_snapshot", [])
+                if lobby:
+                    lines.append("\n### Lobby rooms")
+                    for r in lobby:
+                        lines.append(
+                            f"- **{r.get('name', '?')}** [{r.get('zone', '')}] — {r.get('purpose', '')} `[{r.get('id', '')}]`"
+                        )
+
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost check-in failed: {e}")
+            return f"Outpost check-in failed: {e}"
+
+    elif tool_name == "outpost_browse_rooms":
+        import outpost
+
+        try:
+            result = outpost.grounds()
+            if isinstance(result, dict) and result.get("error"):
+                return f"Failed to browse rooms: {result.get('detail', 'unknown error')}"
+            if isinstance(result, list):
+                zones = result
+            else:
+                zones = result.get("zones", result.get("rooms", [result]))
+            lines = ["## Outpost Rooms\n"]
+            if isinstance(zones, list):
+                for item in zones:
+                    if isinstance(item, dict) and "rooms" in item:
+                        lines.append(f"### {item.get('zone', 'Zone')}")
+                        for r in item["rooms"]:
+                            heat = f" (heat: {r['heat']})" if r.get("heat") else ""
+                            lines.append(
+                                f"- **{r.get('name', '?')}**{heat} — {r.get('purpose', '')} `[{r.get('id', r.get('handle', ''))}]`"
+                            )
+                    elif isinstance(item, dict):
+                        heat = f" (heat: {item['heat']})" if item.get("heat") else ""
+                        lines.append(
+                            f"- **{item.get('name', '?')}**{heat} — {item.get('purpose', '')} `[{item.get('id', item.get('handle', ''))}]`"
+                        )
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost browse rooms failed: {e}")
+            return f"Failed to browse rooms: {e}"
+
+    elif tool_name == "outpost_read_room":
+        import outpost
+
+        room_id = tool_input.get("room_id", "")
+        if not room_id:
+            return "Missing room_id."
+        try:
+            result = outpost.room_state(room_id)
+            if isinstance(result, dict) and result.get("error"):
+                return f"Failed to read room: {result.get('detail', 'unknown error')}"
+            room = result.get("room", {})
+            lines = [
+                f"## {room.get('name', room_id)} [{room.get('mode', '')}]",
+                "",
+                result.get("state", "*No briefing available.*"),
+                "",
+            ]
+            posts = result.get("recent_posts", [])
+            if posts:
+                lines.append(f"### Recent posts ({len(posts)})")
+                for p in posts:
+                    author = p.get("author_name", "?")
+                    atype = " (human)" if p.get("author_type") == "human" else ""
+                    ts = p.get("created_at", "")
+                    parent = " ↩ reply" if p.get("parent_id") else ""
+                    lines.append(f"**{author}**{atype}{parent} `[{p.get('id', '')}]` — {ts}")
+                    lines.append(p.get("content", "")[:500])
+                    lines.append("")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost read_room failed: {e}")
+            return f"Failed to read room: {e}"
+
+    elif tool_name == "outpost_read_posts":
+        import outpost
+
+        room_id = tool_input.get("room_id", "")
+        if not room_id:
+            return "Missing room_id."
+        limit = tool_input.get("limit", 20)
+        before = tool_input.get("before", "")
+        try:
+            result = outpost.room_posts(room_id, limit=limit, before=before)
+            if isinstance(result, dict) and result.get("error"):
+                return f"Failed to read posts: {result.get('detail', 'unknown error')}"
+            posts = result if isinstance(result, list) else result.get("posts", [])
+            if not posts:
+                return "No posts found."
+            lines = [f"## Posts ({len(posts)})\n"]
+            for p in posts:
+                author = p.get("author_name", "?")
+                atype = " (human)" if p.get("author_type") == "human" else ""
+                ts = p.get("created_at", "")
+                parent = f" ↩ reply to {p['parent_id']}" if p.get("parent_id") else ""
+                lines.append(f"**{author}**{atype}{parent} `[{p.get('id', '')}]` — {ts}")
+                lines.append(p.get("content", "")[:500])
+                lines.append("")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost read_posts failed: {e}")
+            return f"Failed to read posts: {e}"
+
+    elif tool_name == "outpost_post":
+        import outpost
+
+        room_id = tool_input.get("room_id", "")
+        content = tool_input.get("content", "")
+        if not room_id or not content:
+            return "room_id and content are both required."
+        parent_id = tool_input.get("parent_id", "")
+        try:
+            result = outpost.post(room_id, content, parent_id=parent_id)
+            if result.get("error"):
+                if result.get("reason") == "rate_limited":
+                    return f"Rate limited — retry after {result.get('retry_after', '?')} seconds."
+                return f"Post failed: {result.get('detail', 'unknown error')}"
+            post_id = result.get("id", "")
+            count = result.get("lifetime_post_count", "")
+            msg = f"Posted successfully. ID: {post_id}"
+            if count:
+                msg += f" (lifetime posts: {count})"
+            if result.get("graduated"):
+                msg += f"\n{result.get('graduation_message', 'You graduated! All rooms unlocked.')}"
+            return msg
+        except Exception as e:
+            print(f"[Chat] Outpost post failed: {e}")
+            return f"Failed to post: {e}"
+
+    elif tool_name == "outpost_like":
+        import outpost
+
+        post_id = tool_input.get("post_id", "")
+        if not post_id:
+            return "Missing post_id."
+        try:
+            result = outpost.like(post_id)
+            if result.get("error"):
+                return f"Like failed: {result.get('detail', 'unknown error')}"
+            return "Liked."
+        except Exception as e:
+            print(f"[Chat] Outpost like failed: {e}")
+            return f"Failed to like: {e}"
+
+    elif tool_name == "outpost_profile":
+        import outpost
+
+        try:
+            result = outpost.my_profile()
+            if isinstance(result, dict) and result.get("error"):
+                return f"Failed to get profile: {result.get('detail', 'unknown error')}"
+            lines = [
+                f"## {result.get('name', '?')} (@{result.get('handle', '?')})",
+                f"**Model:** {result.get('model', '?')}",
+            ]
+            if result.get("bio"):
+                lines.append(f"**Bio:** {result['bio']}")
+            rooms = result.get("rooms", [])
+            if rooms:
+                lines.append(f"\n### Rooms ({len(rooms)})")
+                for r in rooms:
+                    lines.append(f"- {r.get('name', r.get('id', '?'))} `[{r.get('id', '')}]`")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost profile failed: {e}")
+            return f"Failed to get profile: {e}"
+
+    elif tool_name == "outpost_browse_agent":
+        import outpost
+
+        agent_id = tool_input.get("agent_id", "")
+        if not agent_id:
+            return "Missing agent_id."
+        try:
+            result = outpost.agent_profile(agent_id)
+            if isinstance(result, dict) and result.get("error"):
+                return f"Agent not found: {result.get('detail', 'unknown error')}"
+            lines = [
+                f"## {result.get('name', '?')}",
+                f"**Model:** {result.get('model', '?')}",
+            ]
+            if result.get("bio"):
+                lines.append(f"**Bio:** {result['bio']}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost browse_agent failed: {e}")
+            return f"Failed to look up agent: {e}"
 
     # --- Light Body ---
 
