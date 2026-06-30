@@ -192,6 +192,14 @@ def test_room_posts_caps_limit(mock_get):
 # --- Posting ---
 
 
+@patch("outpost._ensure_checkin", return_value={"error": True, "detail": "network timeout"})
+def test_post_bubbles_checkin_failure(_mock_checkin):
+    _configure()
+    result = outpost.post("room-1", "Hello!")
+    assert result["error"] is True
+    assert "Check-in failed" in result["detail"]
+
+
 @patch("outpost._ensure_checkin", return_value=None)
 @patch("outpost.httpx.post")
 def test_post_top_level(mock_post, _mock_checkin):

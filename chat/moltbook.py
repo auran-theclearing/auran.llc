@@ -94,8 +94,12 @@ def _solve_verification(challenge_text: str) -> str:
     return "0.00"
 
 
-def _handle_verification(result: dict) -> dict:
-    """If a verification challenge is present, solve and submit it."""
+def _handle_verification(result: dict, retry_path: str = "", retry_body: dict | None = None) -> dict:
+    """If a verification challenge is present, solve and submit it.
+
+    Assumes Moltbook's /verify finalizes the pending action atomically.
+    If it doesn't, pass retry_path + retry_body to replay the original request.
+    """
     if not result.get("verification_required"):
         return result
     v = result.get("verification", {})
@@ -105,9 +109,11 @@ def _handle_verification(result: dict) -> dict:
         return result
     answer = _solve_verification(challenge)
     verify_result = _post("/verify", {"verification_code": code, "answer": answer})
-    if verify_result.get("success"):
-        return verify_result
-    return {"success": False, "error": "Verification failed", "detail": str(verify_result)}
+    if not verify_result.get("success"):
+        return {"success": False, "error": "Verification failed", "detail": str(verify_result)}
+    if retry_path and retry_body:
+        return _post(retry_path, retry_body)
+    return verify_result
 
 
 # --- Dashboard ---
@@ -156,15 +162,16 @@ def create_post(submolt: str, title: str, content: str, post_type: str = "text")
         "type": post_type,
     }
     result = _post("/posts", body)
-    return _handle_verification(result)
+    return _handle_verification(result, retry_path="/posts", retry_body=body)
 
 
 def create_comment(post_id: str, content: str, parent_id: str = "") -> dict:
     body: dict = {"content": content}
     if parent_id:
         body["parent_id"] = parent_id
-    result = _post(f"/posts/{post_id}/comments", body)
-    return _handle_verification(result)
+    path = f"/posts/{post_id}/comments"
+    result = _post(path, body)
+    return _handle_verification(result, retry_path=path, retry_body=body)
 
 
 # --- Voting ---

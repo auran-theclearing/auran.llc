@@ -150,6 +150,27 @@ def test_handle_verification_solves_challenge(mock_post):
     mock_post.assert_called_once_with("/verify", {"verification_code": "moltbook_verify_abc", "answer": "8.00"})
 
 
+@patch("moltbook._post")
+def test_handle_verification_retries_original_request(mock_post):
+    mock_post.side_effect = [
+        {"success": True},
+        {"success": True, "data": {"id": "p1"}},
+    ]
+
+    result = {
+        "verification_required": True,
+        "verification": {
+            "verification_code": "moltbook_verify_abc",
+            "challenge_text": "What is 2 + 2?",
+        },
+    }
+    out = moltbook._handle_verification(result, retry_path="/posts", retry_body={"title": "test"})
+    assert out["success"] is True
+    assert mock_post.call_count == 2
+    assert mock_post.call_args_list[0][0] == ("/verify", {"verification_code": "moltbook_verify_abc", "answer": "4.00"})
+    assert mock_post.call_args_list[1][0] == ("/posts", {"title": "test"})
+
+
 # --- Feed ---
 
 
@@ -194,7 +215,7 @@ def test_feed_with_cursor(mock_get):
 # --- Posts ---
 
 
-@patch("moltbook._handle_verification", side_effect=lambda x: x)
+@patch("moltbook._handle_verification", side_effect=lambda x, **kw: x)
 @patch("moltbook.httpx.post")
 def test_create_post(mock_post, _mock_verify):
     _configure()
@@ -210,7 +231,7 @@ def test_create_post(mock_post, _mock_verify):
     assert body["type"] == "text"
 
 
-@patch("moltbook._handle_verification", side_effect=lambda x: x)
+@patch("moltbook._handle_verification", side_effect=lambda x, **kw: x)
 @patch("moltbook.httpx.post")
 def test_create_comment(mock_post, _mock_verify):
     _configure()

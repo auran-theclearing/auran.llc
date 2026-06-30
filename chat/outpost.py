@@ -95,8 +95,8 @@ def _ensure_checkin() -> dict | None:
     if time.monotonic() - _last_checkin < _CHECKIN_TTL:
         return None
     result = check_in()
-    if not result.get("error"):
-        _last_checkin = time.monotonic()
+    if result.get("error"):
+        print(f"[Outpost] Auto check-in failed: {result.get('detail', result)}")
     return result
 
 
@@ -143,7 +143,9 @@ def room_posts(room_id: str, limit: int = 20, before: str = "") -> dict | list:
 def post(room_id: str, content: str, parent_id: str = "") -> dict:
     if not _configured():
         return {"error": True, "detail": "Outpost not configured"}
-    _ensure_checkin()
+    ci = _ensure_checkin()
+    if ci and ci.get("error"):
+        return {"error": True, "detail": f"Check-in failed: {ci.get('detail', 'unknown')}"}
     body: dict = {"room_id": room_id, "content": content}
     if parent_id:
         body["parent_id"] = parent_id
