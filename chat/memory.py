@@ -2212,6 +2212,9 @@ async def extract_scenes(
 # --- Audio Frequency Analysis ---
 
 
+_MAX_AUDIO_BYTES = 15 * 1024 * 1024  # 15 MB
+
+
 def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
     """Analyze frequency content of an audio file.
 
@@ -2223,6 +2226,10 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
     above ~11 kHz are not represented. Duration capped at 60s (quick) or
     300s (full).
     """
+    import time as _time
+
+    t0 = _time.monotonic()
+
     try:
         import librosa
         import numpy as np
@@ -2240,23 +2247,45 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
 
             bucket = os.getenv("AUDIO_BUCKET", "auran-audio-staging")
             s3 = boto3.client("s3", region_name="us-east-1")
+
+            head = s3.head_object(Bucket=bucket, Key=file_path)
+            file_size = head.get("ContentLength", 0)
+            if file_size > _MAX_AUDIO_BYTES:
+                return {
+                    "error": f"File too large ({file_size / 1024 / 1024:.1f} MB, max {_MAX_AUDIO_BYTES / 1024 / 1024:.0f} MB)"
+                }
+            logger.info(f"[frequency] S3 file size: {file_size / 1024:.0f} KB")
+
             fd, tmp_path = tempfile.mkstemp(suffix=".audio")
             os.close(fd)
+            t_dl = _time.monotonic()
             s3.download_file(bucket, file_path, tmp_path)
+            logger.info(f"[frequency] S3 download: {_time.monotonic() - t_dl:.1f}s")
             local_path = tmp_path
         except Exception as e:
             logger.warning(f"S3 download failed for '{file_path}': {e}")
             if tmp_path:
                 os.unlink(tmp_path)
             return {"error": f"S3 download failed: {e}"}
+    else:
+        if not os.path.exists(local_path):
+            return {"error": f"File not found: {file_path}"}
+        file_size = os.path.getsize(local_path)
+        if file_size > _MAX_AUDIO_BYTES:
+            return {
+                "error": f"File too large ({file_size / 1024 / 1024:.1f} MB, max {_MAX_AUDIO_BYTES / 1024 / 1024:.0f} MB)"
+            }
 
     try:
         max_dur = 60 if detail == "quick" else 300
+        t_load = _time.monotonic()
         file_duration = librosa.get_duration(path=local_path)
-        y, sr = librosa.load(local_path, sr=22050, duration=max_dur)
+        y, sr = librosa.load(local_path, sr=22050, mono=True, duration=max_dur)
+        logger.info(f"[frequency] librosa.load: {_time.monotonic() - t_load:.1f}s, {len(y)} samples")
         analyzed_duration = librosa.get_duration(y=y, sr=sr)
         truncated = file_duration > analyzed_duration + 0.5
 
+        t_analysis = _time.monotonic()
         spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
         spectral_bandwidth = float(np.mean(librosa.feature.spectral_bandwidth(y=y, sr=sr)))
 
@@ -2309,9 +2338,15 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
             result["rhythmic_density"] = round(float(np.mean(onset_env)), 3)
             result["rhythmic_variance"] = round(float(np.std(onset_env)), 3)
 
+        logger.info(
+            f"[frequency] analysis: {_time.monotonic() - t_analysis:.1f}s, total: {_time.monotonic() - t0:.1f}s"
+        )
         return result
     except Exception as e:
+        import traceback
+
         logger.warning(f"analyze_audio_frequency failed for '{file_path}': {e}")
+        logger.warning(traceback.format_exc())
         return {"error": str(e)}
     finally:
         if tmp_path:

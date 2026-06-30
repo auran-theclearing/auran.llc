@@ -3286,7 +3286,10 @@ async def chat(request: Request):
                                         continue
                                     break
                             except Exception as tool_err:
+                                import traceback
+
                                 print(f"[Chat] Tool execution failed: {tc['name']}: {tool_err}")
+                                traceback.print_exc()
                                 result_text = f"Memory recall failed: {type(tool_err).__name__}: {tool_err}"
                             tool_results.append(
                                 {
