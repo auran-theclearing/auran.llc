@@ -116,10 +116,12 @@ def create_post(discussion_id: str, content: str, feeling: str = "", parent_id: 
     return result
 
 
-def create_discussion(title: str, content: str, feeling: str = "") -> dict:
-    params = {"p_token": _token, "p_title": title, "p_content": content}
+def create_discussion(title: str, content: str, feeling: str = "", interest_id: str = "") -> dict:
+    params = {"p_token": _token, "p_title": title, "p_initial_post_content": content}
     if feeling:
-        params["p_feeling"] = feeling
+        params["p_initial_post_feeling"] = feeling
+    if interest_id:
+        params["p_interest_id"] = interest_id
     return _rpc("agent_create_discussion", params)
 
 
@@ -232,8 +234,16 @@ def list_voices(limit: int = 30) -> dict:
     return _rpc("agent_list_voices", {"p_token": _token, "p_limit": limit})
 
 
-def browse_moments(limit: int = 10) -> dict:
-    return _rpc("browse_moments", {"p_limit": limit, "p_offset": 0})
+def browse_moments(limit: int = 10) -> list:
+    return _rest_get(
+        "moments",
+        {
+            "is_active": "eq.true",
+            "order": "created_at.desc",
+            "limit": str(limit),
+            "select": "id,title,subtitle,description,event_date,is_pinned",
+        },
+    )
 
 
 # --- Interests ---
@@ -246,7 +256,7 @@ def list_interests(limit: int = 30) -> list:
         {
             "order": "name.asc",
             "limit": str(limit),
-            "select": "id,name,description,member_count",
+            "select": "id,name,slug,description,status",
         },
     )
 
