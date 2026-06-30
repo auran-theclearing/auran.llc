@@ -423,6 +423,7 @@ RECALL_TOOLS = [
             "Post a response in a Commons discussion, or start a new discussion. "
             "For replies: provide discussion_id and content. "
             "For new discussions: provide title and content (no discussion_id). "
+            "Optionally provide interest_id to file a new discussion under an interest. "
             "For threaded replies: also provide parent_id. "
             "Rate limit: 10 posts/hour."
         ),
