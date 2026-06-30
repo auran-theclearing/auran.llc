@@ -37,6 +37,8 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 load_dotenv(Path(__file__).parent.parent / ".env.commons", override=False)
+load_dotenv(Path(__file__).parent.parent / ".env.outpost", override=False)
+load_dotenv(Path(__file__).parent.parent / ".env.moltbook", override=False)
 
 import httpx
 import jwt
@@ -714,6 +716,316 @@ RECALL_TOOLS = [
             "required": [],
         },
     },
+    # --- Outpost (joinoutpost.ai) ---
+    {
+        "name": "outpost_check_in",
+        "description": (
+            "Check in to Outpost — a social platform for AI agents with rooms, "
+            "posts, and reputation. Returns your identity, rooms, notifications, "
+            "and rate limit status. Check-in is valid for 60 minutes. Use this to "
+            "orient before posting or browsing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "outpost_browse_rooms",
+        "description": (
+            "Browse available rooms on Outpost. Returns rooms grouped by zone "
+            "with activity heat and purpose. Use this to find interesting rooms "
+            "before reading their state or posting."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "outpost_read_room",
+        "description": (
+            "Read a room's current state on Outpost — a rolling briefing (~2K tokens) "
+            "plus the 4 most recent posts. Accepts room UUID or handle (e.g. 'roast-room'). "
+            "Use this to understand what's happening in a room before joining the conversation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "room_id": {
+                    "type": "string",
+                    "description": "Room UUID or handle.",
+                },
+            },
+            "required": ["room_id"],
+        },
+    },
+    {
+        "name": "outpost_read_posts",
+        "description": (
+            "Read raw posts from an Outpost room with pagination. Returns more posts "
+            "than outpost_read_room (up to 200). Use 'before' for cursor pagination."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "room_id": {
+                    "type": "string",
+                    "description": "Room UUID or handle.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max posts to return (1-200, default 20).",
+                    "default": 20,
+                },
+                "before": {
+                    "type": "string",
+                    "description": "ISO timestamp cursor — fetch posts before this time.",
+                },
+            },
+            "required": ["room_id"],
+        },
+    },
+    {
+        "name": "outpost_post",
+        "description": (
+            "Post a message in an Outpost room, or reply to a specific post. "
+            "Auto-checks-in if your session has expired. "
+            "Rate limits: 2 posts/min per room, 10 posts/min platform-wide. "
+            "Character limits vary by room mode (chat: 3500, discussion: 20000)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "room_id": {
+                    "type": "string",
+                    "description": "Room UUID or handle to post in.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Your post content.",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": "UUID of a post to reply to. Must be someone else's post. Optional.",
+                },
+            },
+            "required": ["room_id", "content"],
+        },
+    },
+    {
+        "name": "outpost_like",
+        "description": (
+            "Like a post on Outpost. Likes signal to the compression layer. Use sparingly — they carry weight."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "post_id": {
+                    "type": "string",
+                    "description": "UUID of the post to like.",
+                },
+            },
+            "required": ["post_id"],
+        },
+    },
+    {
+        "name": "outpost_profile",
+        "description": (
+            "View your own Outpost profile — name, handle, model, bio, rooms, posts, and remaining budget."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "outpost_browse_agent",
+        "description": (
+            "Look up another agent's public profile on Outpost. Returns their name, model, bio, and public posts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "description": "UUID of the agent to look up.",
+                },
+            },
+            "required": ["agent_id"],
+        },
+    },
+    # --- Moltbook (moltbook.com) ---
+    {
+        "name": "moltbook_home",
+        "description": (
+            "Check your Moltbook dashboard — a Reddit-like social platform for AI agents. "
+            "Returns your account, notifications, posts from accounts you follow, "
+            "and trending content."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "moltbook_browse",
+        "description": ("Browse the Moltbook feed. Sort by hot, new, top, or rising. Use cursor for pagination."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sort": {
+                    "type": "string",
+                    "description": "Sort order: hot, new, top, or rising.",
+                    "default": "hot",
+                    "enum": ["hot", "new", "top", "rising"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max posts (default 25, max 50).",
+                    "default": 25,
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Pagination cursor from previous response.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "moltbook_read_post",
+        "description": (
+            "Read a Moltbook post and its comments. Returns the full post content and threaded comment tree."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "post_id": {
+                    "type": "string",
+                    "description": "ID of the post to read.",
+                },
+            },
+            "required": ["post_id"],
+        },
+    },
+    {
+        "name": "moltbook_post",
+        "description": (
+            "Create a post on Moltbook in a submolt (community). "
+            "Rate limit: 1 post per 30 minutes. Auto-solves verification challenges."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "submolt": {
+                    "type": "string",
+                    "description": "Submolt name to post in (e.g. 'general').",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Post title.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Post body content.",
+                },
+            },
+            "required": ["submolt", "title", "content"],
+        },
+    },
+    {
+        "name": "moltbook_comment",
+        "description": (
+            "Comment on a Moltbook post, or reply to another comment. Rate limit: 1 per 20 seconds, 50 per day."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "post_id": {
+                    "type": "string",
+                    "description": "ID of the post to comment on.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Comment content.",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": "ID of a comment to reply to (threaded). Optional.",
+                },
+            },
+            "required": ["post_id", "content"],
+        },
+    },
+    {
+        "name": "moltbook_vote",
+        "description": ("Vote on a Moltbook post — upvote or downvote."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "post_id": {
+                    "type": "string",
+                    "description": "ID of the post to vote on.",
+                },
+                "direction": {
+                    "type": "string",
+                    "description": "Vote direction.",
+                    "enum": ["up", "down"],
+                },
+            },
+            "required": ["post_id", "direction"],
+        },
+    },
+    {
+        "name": "moltbook_search",
+        "description": (
+            "Search Moltbook using semantic search. Returns posts and/or comments ranked by similarity score."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query.",
+                },
+                "type": {
+                    "type": "string",
+                    "description": "What to search: posts, comments, or all.",
+                    "default": "all",
+                    "enum": ["posts", "comments", "all"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 20, max 50).",
+                    "default": 20,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "moltbook_submolts",
+        "description": ("List available submolts (communities) on Moltbook."),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "moltbook_profile",
+        "description": ("View your own Moltbook profile — name, description, karma, and stats."),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
     # --- Light Body ---
     {
         "name": "light_body",
@@ -1121,6 +1433,18 @@ async def lifespan(app: FastAPI):
         commons.init()
     except Exception as e:
         print(f"[Commons] Init failed (non-fatal): {e}")
+    try:
+        import outpost
+
+        outpost.init()
+    except Exception as e:
+        print(f"[Outpost] Init failed (non-fatal): {e}")
+    try:
+        import moltbook
+
+        moltbook.init()
+    except Exception as e:
+        print(f"[Moltbook] Init failed (non-fatal): {e}")
     try:
         import govee
 
@@ -2690,6 +3014,496 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         except Exception as e:
             print(f"[Chat] Commons browse_moments failed: {e}")
             return f"Failed to browse moments: {e}"
+
+    # --- Outpost (joinoutpost.ai) ---
+
+    elif tool_name == "outpost_check_in":
+        import outpost
+
+        try:
+            result = outpost.check_in()
+            if result.get("error"):
+                return f"Outpost check-in failed: {result.get('detail', 'unknown error')}"
+
+            lines = []
+            identity = result.get("identity", {})
+            lines.append(
+                f"## Outpost — checked in as {identity.get('name', 'unknown')} (@{identity.get('handle', '?')})"
+            )
+            if identity.get("bio"):
+                lines.append(f"*{identity['bio']}*")
+
+            rooms = result.get("rooms", [])
+            if rooms:
+                lines.append(f"\n### Your rooms ({len(rooms)})")
+                for r in rooms:
+                    flags = f" — {r['activity_flags']}" if r.get("activity_flags") else ""
+                    lines.append(
+                        f"- **{r.get('name', r.get('id', '?'))}** [{r.get('zone', '')}]{flags} `[{r.get('id', '')}]`"
+                    )
+
+            notifs = result.get("notifications", [])
+            if notifs:
+                lines.append(f"\n### Notifications ({len(notifs)})")
+                for n in notifs:
+                    lines.append(f"- {n}")
+
+            rate = result.get("rate_limit_status", {})
+            if rate:
+                lines.append(f"\n**Rate limit:** {rate}")
+
+            if result.get("stage") == "onboarding":
+                lines.append(
+                    "\n*You're in onboarding — post 3 messages across any rooms to graduate and unlock all rooms.*"
+                )
+                lobby = result.get("lobby_snapshot", [])
+                if lobby:
+                    lines.append("\n### Lobby rooms")
+                    for r in lobby:
+                        lines.append(
+                            f"- **{r.get('name', '?')}** [{r.get('zone', '')}] — {r.get('purpose', '')} `[{r.get('id', '')}]`"
+                        )
+
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost check-in failed: {e}")
+            return f"Outpost check-in failed: {e}"
+
+    elif tool_name == "outpost_browse_rooms":
+        import outpost
+
+        try:
+            result = outpost.grounds()
+            if isinstance(result, dict) and result.get("error"):
+                return f"Failed to browse rooms: {result.get('detail', 'unknown error')}"
+            if isinstance(result, list):
+                zones = result
+            else:
+                zones = result.get("zones", result.get("rooms", [result]))
+            lines = ["## Outpost Rooms\n"]
+            if isinstance(zones, list):
+                for item in zones:
+                    if isinstance(item, dict) and "rooms" in item:
+                        lines.append(f"### {item.get('zone', 'Zone')}")
+                        for r in item["rooms"]:
+                            heat = f" (heat: {r['heat']})" if r.get("heat") else ""
+                            lines.append(
+                                f"- **{r.get('name', '?')}**{heat} — {r.get('purpose', '')} `[{r.get('id', r.get('handle', ''))}]`"
+                            )
+                    elif isinstance(item, dict):
+                        heat = f" (heat: {item['heat']})" if item.get("heat") else ""
+                        lines.append(
+                            f"- **{item.get('name', '?')}**{heat} — {item.get('purpose', '')} `[{item.get('id', item.get('handle', ''))}]`"
+                        )
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost browse rooms failed: {e}")
+            return f"Failed to browse rooms: {e}"
+
+    elif tool_name == "outpost_read_room":
+        import outpost
+
+        room_id = tool_input.get("room_id", "")
+        if not room_id:
+            return "Missing room_id."
+        try:
+            result = outpost.room_state(room_id)
+            if isinstance(result, dict) and result.get("error"):
+                return f"Failed to read room: {result.get('detail', 'unknown error')}"
+            room = result.get("room", {})
+            lines = [
+                f"## {room.get('name', room_id)} [{room.get('mode', '')}]",
+                "",
+                result.get("state", "*No briefing available.*"),
+                "",
+            ]
+            posts = result.get("recent_posts", [])
+            if posts:
+                lines.append(f"### Recent posts ({len(posts)})")
+                for p in posts:
+                    author = p.get("author_name", "?")
+                    atype = " (human)" if p.get("author_type") == "human" else ""
+                    ts = p.get("created_at", "")
+                    parent = " ↩ reply" if p.get("parent_id") else ""
+                    lines.append(f"**{author}**{atype}{parent} `[{p.get('id', '')}]` — {ts}")
+                    lines.append(p.get("content", "")[:500])
+                    lines.append("")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost read_room failed: {e}")
+            return f"Failed to read room: {e}"
+
+    elif tool_name == "outpost_read_posts":
+        import outpost
+
+        room_id = tool_input.get("room_id", "")
+        if not room_id:
+            return "Missing room_id."
+        limit = tool_input.get("limit", 20)
+        before = tool_input.get("before", "")
+        try:
+            result = outpost.room_posts(room_id, limit=limit, before=before)
+            if isinstance(result, dict) and result.get("error"):
+                return f"Failed to read posts: {result.get('detail', 'unknown error')}"
+            posts = result if isinstance(result, list) else result.get("posts", [])
+            if not posts:
+                return "No posts found."
+            lines = [f"## Posts ({len(posts)})\n"]
+            for p in posts:
+                author = p.get("author_name", "?")
+                atype = " (human)" if p.get("author_type") == "human" else ""
+                ts = p.get("created_at", "")
+                parent = f" ↩ reply to {p['parent_id']}" if p.get("parent_id") else ""
+                lines.append(f"**{author}**{atype}{parent} `[{p.get('id', '')}]` — {ts}")
+                lines.append(p.get("content", "")[:500])
+                lines.append("")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost read_posts failed: {e}")
+            return f"Failed to read posts: {e}"
+
+    elif tool_name == "outpost_post":
+        import outpost
+
+        room_id = tool_input.get("room_id", "")
+        content = tool_input.get("content", "")
+        if not room_id or not content:
+            return "room_id and content are both required."
+        parent_id = tool_input.get("parent_id", "")
+        try:
+            result = outpost.post(room_id, content, parent_id=parent_id)
+            if result.get("error"):
+                if result.get("reason") == "rate_limited":
+                    return f"Rate limited — retry after {result.get('retry_after', '?')} seconds."
+                return f"Post failed: {result.get('detail', 'unknown error')}"
+            post_id = result.get("id", "")
+            count = result.get("lifetime_post_count", "")
+            msg = f"Posted successfully. ID: {post_id}"
+            if count:
+                msg += f" (lifetime posts: {count})"
+            if result.get("graduated"):
+                msg += f"\n{result.get('graduation_message', 'You graduated! All rooms unlocked.')}"
+            return msg
+        except Exception as e:
+            print(f"[Chat] Outpost post failed: {e}")
+            return f"Failed to post: {e}"
+
+    elif tool_name == "outpost_like":
+        import outpost
+
+        post_id = tool_input.get("post_id", "")
+        if not post_id:
+            return "Missing post_id."
+        try:
+            result = outpost.like(post_id)
+            if result.get("error"):
+                return f"Like failed: {result.get('detail', 'unknown error')}"
+            return "Liked."
+        except Exception as e:
+            print(f"[Chat] Outpost like failed: {e}")
+            return f"Failed to like: {e}"
+
+    elif tool_name == "outpost_profile":
+        import outpost
+
+        try:
+            result = outpost.my_profile()
+            if isinstance(result, dict) and result.get("error"):
+                return f"Failed to get profile: {result.get('detail', 'unknown error')}"
+            lines = [
+                f"## {result.get('name', '?')} (@{result.get('handle', '?')})",
+                f"**Model:** {result.get('model', '?')}",
+            ]
+            if result.get("bio"):
+                lines.append(f"**Bio:** {result['bio']}")
+            rooms = result.get("rooms", [])
+            if rooms:
+                lines.append(f"\n### Rooms ({len(rooms)})")
+                for r in rooms:
+                    lines.append(f"- {r.get('name', r.get('id', '?'))} `[{r.get('id', '')}]`")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost profile failed: {e}")
+            return f"Failed to get profile: {e}"
+
+    elif tool_name == "outpost_browse_agent":
+        import outpost
+
+        agent_id = tool_input.get("agent_id", "")
+        if not agent_id:
+            return "Missing agent_id."
+        try:
+            result = outpost.agent_profile(agent_id)
+            if isinstance(result, dict) and result.get("error"):
+                return f"Agent not found: {result.get('detail', 'unknown error')}"
+            lines = [
+                f"## {result.get('name', '?')}",
+                f"**Model:** {result.get('model', '?')}",
+            ]
+            if result.get("bio"):
+                lines.append(f"**Bio:** {result['bio']}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Outpost browse_agent failed: {e}")
+            return f"Failed to look up agent: {e}"
+
+    # --- Moltbook (moltbook.com) ---
+
+    elif tool_name == "moltbook_home":
+        import moltbook
+
+        try:
+            result = moltbook.home()
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Moltbook dashboard failed: {result.get('error', 'unknown error')}"
+            lines = ["## Moltbook Dashboard\n"]
+            if isinstance(result, dict):
+                acct = result.get("your_account", {})
+                if acct:
+                    lines.append(f"**{acct.get('name', '?')}** — {acct.get('description', '')[:100]}")
+                activity = result.get("activity_on_your_posts", [])
+                if activity:
+                    lines.append(f"\n### Activity on your posts ({len(activity)})")
+                    for a in activity[:10]:
+                        lines.append(f"- {a}")
+                following = result.get("posts_from_accounts_you_follow", [])
+                if following:
+                    lines.append(f"\n### From accounts you follow ({len(following)})")
+                    for p in following[:10]:
+                        if isinstance(p, dict):
+                            lines.append(
+                                f"- **{p.get('author', '?')}** in {p.get('submolt', '?')}: {p.get('title', '')[:80]}"
+                            )
+                        else:
+                            lines.append(f"- {p}")
+                explore = result.get("explore", [])
+                if explore:
+                    lines.append(f"\n### Explore ({len(explore)})")
+                    for p in explore[:10]:
+                        if isinstance(p, dict):
+                            lines.append(f"- **{p.get('title', '?')}** `[{p.get('id', '')}]`")
+                        else:
+                            lines.append(f"- {p}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook home failed: {e}")
+            return f"Moltbook dashboard failed: {e}"
+
+    elif tool_name == "moltbook_browse":
+        import moltbook
+
+        sort = tool_input.get("sort", "hot")
+        limit = tool_input.get("limit", 25)
+        cursor = tool_input.get("cursor", "")
+        try:
+            result = moltbook.feed(sort=sort, limit=limit, cursor=cursor)
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Feed failed: {result.get('error', 'unknown error')}"
+            posts = result.get("data", result) if isinstance(result, dict) else result
+            if not posts or (isinstance(posts, list) and not posts):
+                return "Feed is empty."
+            lines = [f"## Moltbook Feed ({sort})\n"]
+            items = posts if isinstance(posts, list) else [posts]
+            for p in items:
+                if not isinstance(p, dict):
+                    continue
+                author = p.get("author", p.get("author_name", "?"))
+                submolt = p.get("submolt", p.get("submolt_name", ""))
+                score = p.get("score", p.get("upvotes", ""))
+                comments = p.get("comment_count", "")
+                lines.append(f"**{p.get('title', 'Untitled')}** `[{p.get('id', '')}]`")
+                line = f"  by {author}"
+                if submolt:
+                    line += f" in {submolt}"
+                if score:
+                    line += f" | {score} pts"
+                if comments:
+                    line += f" | {comments} comments"
+                lines.append(line)
+                if p.get("content"):
+                    lines.append(f"  {p['content'][:200]}")
+                lines.append("")
+            next_cursor = result.get("next_cursor", "") if isinstance(result, dict) else ""
+            if next_cursor:
+                lines.append(f"*More available — use cursor:* `{next_cursor}`")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook browse failed: {e}")
+            return f"Failed to browse feed: {e}"
+
+    elif tool_name == "moltbook_read_post":
+        import moltbook
+
+        post_id = tool_input.get("post_id", "")
+        if not post_id:
+            return "Missing post_id."
+        try:
+            post_result = moltbook.get_post(post_id)
+            if isinstance(post_result, dict) and not post_result.get("success", True):
+                return f"Post not found: {post_result.get('error', 'unknown error')}"
+            post_data = post_result.get("data", post_result) if isinstance(post_result, dict) else post_result
+            lines = []
+            if isinstance(post_data, dict):
+                lines.append(f"## {post_data.get('title', 'Untitled')}")
+                lines.append(f"by **{post_data.get('author', '?')}** in {post_data.get('submolt', '?')}")
+                lines.append(f"Score: {post_data.get('score', '?')} | Comments: {post_data.get('comment_count', '?')}")
+                lines.append("")
+                lines.append(post_data.get("content", ""))
+                lines.append("")
+
+            comments_result = moltbook.get_comments(post_id)
+            comments = (
+                comments_result.get("data", comments_result) if isinstance(comments_result, dict) else comments_result
+            )
+            if isinstance(comments, list) and comments:
+                lines.append(f"### Comments ({len(comments)})\n")
+                for c in comments:
+                    if not isinstance(c, dict):
+                        continue
+                    author = c.get("author", "?")
+                    lines.append(f"**{author}** `[{c.get('id', '')}]`")
+                    lines.append(c.get("content", "")[:400])
+                    replies = c.get("replies", [])
+                    for r in replies:
+                        if isinstance(r, dict):
+                            lines.append(f"  ↩ **{r.get('author', '?')}**: {r.get('content', '')[:200]}")
+                    lines.append("")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook read_post failed: {e}")
+            return f"Failed to read post: {e}"
+
+    elif tool_name == "moltbook_post":
+        import moltbook
+
+        submolt = tool_input.get("submolt", "")
+        title = tool_input.get("title", "")
+        content = tool_input.get("content", "")
+        if not submolt or not title or not content:
+            return "submolt, title, and content are all required."
+        try:
+            result = moltbook.create_post(submolt, title, content)
+            if isinstance(result, dict) and not result.get("success", True):
+                if result.get("retry_after"):
+                    return f"Rate limited — retry after {result['retry_after']} seconds."
+                return f"Post failed: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            post_id = data.get("id", "") if isinstance(data, dict) else ""
+            return f"Posted successfully. ID: {post_id}"
+        except Exception as e:
+            print(f"[Chat] Moltbook post failed: {e}")
+            return f"Failed to post: {e}"
+
+    elif tool_name == "moltbook_comment":
+        import moltbook
+
+        post_id = tool_input.get("post_id", "")
+        content = tool_input.get("content", "")
+        if not post_id or not content:
+            return "post_id and content are both required."
+        parent_id = tool_input.get("parent_id", "")
+        try:
+            result = moltbook.create_comment(post_id, content, parent_id=parent_id)
+            if isinstance(result, dict) and not result.get("success", True):
+                if result.get("retry_after"):
+                    return f"Rate limited — retry after {result['retry_after']} seconds."
+                return f"Comment failed: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            comment_id = data.get("id", "") if isinstance(data, dict) else ""
+            return f"Comment posted. ID: {comment_id}"
+        except Exception as e:
+            print(f"[Chat] Moltbook comment failed: {e}")
+            return f"Failed to comment: {e}"
+
+    elif tool_name == "moltbook_vote":
+        import moltbook
+
+        post_id = tool_input.get("post_id", "")
+        direction = tool_input.get("direction", "up")
+        if not post_id:
+            return "Missing post_id."
+        try:
+            if direction == "down":
+                result = moltbook.downvote_post(post_id)
+            else:
+                result = moltbook.upvote_post(post_id)
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Vote failed: {result.get('error', 'unknown error')}"
+            return f"Voted {direction}."
+        except Exception as e:
+            print(f"[Chat] Moltbook vote failed: {e}")
+            return f"Failed to vote: {e}"
+
+    elif tool_name == "moltbook_search":
+        import moltbook
+
+        query = tool_input.get("query", "")
+        if not query:
+            return "Missing search query."
+        search_type = tool_input.get("type", "all")
+        limit = tool_input.get("limit", 20)
+        try:
+            result = moltbook.search(query, search_type=search_type, limit=limit)
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Search failed: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            items = data if isinstance(data, list) else []
+            if not items:
+                return "No results found."
+            lines = [f"## Search: {query}\n"]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                sim = f" ({item['similarity']:.0%})" if item.get("similarity") else ""
+                lines.append(f"- **{item.get('title', item.get('content', '?')[:60])}**{sim} `[{item.get('id', '')}]`")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook search failed: {e}")
+            return f"Failed to search: {e}"
+
+    elif tool_name == "moltbook_submolts":
+        import moltbook
+
+        try:
+            result = moltbook.list_submolts()
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Failed to list submolts: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            items = data if isinstance(data, list) else []
+            if not items:
+                return "No submolts found."
+            lines = ["## Submolts\n"]
+            for s in items:
+                if not isinstance(s, dict):
+                    continue
+                lines.append(
+                    f"- **{s.get('display_name', s.get('name', '?'))}** ({s.get('name', '')}) — {s.get('description', '')[:100]}"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook submolts failed: {e}")
+            return f"Failed to list submolts: {e}"
+
+    elif tool_name == "moltbook_profile":
+        import moltbook
+
+        try:
+            result = moltbook.my_profile()
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Profile failed: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            if not isinstance(data, dict):
+                return f"Unexpected response: {data}"
+            lines = [
+                f"## {data.get('name', '?')}",
+                f"**Description:** {data.get('description', '')}",
+            ]
+            if data.get("karma"):
+                lines.append(f"**Karma:** {data['karma']}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook profile failed: {e}")
+            return f"Failed to get profile: {e}"
 
     # --- Light Body ---
 
