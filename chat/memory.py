@@ -2213,6 +2213,108 @@ async def extract_scenes(
 
 
 _MAX_AUDIO_BYTES = 15 * 1024 * 1024  # 15 MB
+_SUBPROCESS_TIMEOUT = 90
+
+
+def _run_frequency_analysis_subprocess(local_path: str, detail: str) -> dict:
+    """Run librosa analysis in a subprocess to isolate OOM/segfault crashes."""
+    import json
+    import subprocess
+    import sys
+
+    script = _FREQUENCY_ANALYSIS_SCRIPT
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", script, local_path, detail],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": f"Analysis timed out after {_SUBPROCESS_TIMEOUT}s"}
+
+    if proc.returncode != 0:
+        stderr = proc.stderr[-500:] if proc.stderr else "no stderr"
+        logger.warning(f"[frequency] subprocess crashed (exit {proc.returncode}): {stderr}")
+        if proc.returncode < 0:
+            import signal
+
+            sig_name = signal.Signals(-proc.returncode).name
+            return {"error": f"Analysis killed by {sig_name} — likely out of memory on this hardware"}
+        return {"error": f"Analysis failed (exit {proc.returncode}): {stderr[-200:]}"}
+
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return {"error": f"Bad output from analysis: {proc.stdout[-200:]}"}
+
+
+_FREQUENCY_ANALYSIS_SCRIPT = """
+import json, sys, time
+path, detail = sys.argv[1], sys.argv[2]
+t0 = time.monotonic()
+import librosa, numpy as np
+
+max_dur = 60 if detail == "quick" else 120
+target_sr = 22050 if detail == "quick" else 11025
+
+file_duration = librosa.get_duration(path=path)
+y, sr = librosa.load(path, sr=target_sr, mono=True, duration=max_dur)
+analyzed_duration = librosa.get_duration(y=y, sr=sr)
+truncated = file_duration > analyzed_duration + 0.5
+
+print(f"[frequency] load: {time.monotonic() - t0:.1f}s, {len(y)} samples, sr={sr}", file=sys.stderr)
+t_analysis = time.monotonic()
+
+spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
+spectral_bandwidth = float(np.mean(librosa.feature.spectral_bandwidth(y=y, sr=sr)))
+
+fft = np.abs(np.fft.rfft(y))
+freqs = np.fft.rfftfreq(len(y), 1 / sr)
+top_indices = np.argsort(fft)[-10:][::-1]
+dominant_freqs = [{"hz": float(freqs[i]), "magnitude": float(fft[i])} for i in top_indices]
+
+tempo_raw = librosa.beat.beat_track(y=y, sr=sr)[0]
+tempo_val = float(np.squeeze(tempo_raw))
+
+nyquist = sr // 2
+bands = {
+    "sub_bass": (20, 60), "bass": (60, 250), "low_mid": (250, 500),
+    "mid": (500, 2000), "upper_mid": (2000, 4000), "presence": (4000, 6000),
+    "brilliance": (6000, min(20000, nyquist)),
+}
+band_energy = {}
+for name, (lo, hi) in bands.items():
+    mask = (freqs >= lo) & (freqs < hi)
+    band_energy[name] = float(np.sum(fft[mask] ** 2))
+total_energy = sum(band_energy.values())
+if total_energy > 0:
+    band_energy = {k: round(v / total_energy * 100, 1) for k, v in band_energy.items()}
+
+result = {
+    "file_duration_seconds": round(file_duration, 1),
+    "analyzed_duration_seconds": round(analyzed_duration, 1),
+    "truncated": truncated,
+    "sample_rate": sr,
+    "tempo_bpm": round(tempo_val, 1),
+    "spectral_centroid_hz": round(spectral_centroid, 1),
+    "spectral_bandwidth_hz": round(spectral_bandwidth, 1),
+    "dominant_frequencies": dominant_freqs[:5],
+    "energy_by_band_pct": band_energy,
+}
+
+if detail == "full":
+    chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+    pitch_names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
+    chroma_energy = {pitch_names[i]: round(float(np.mean(chroma[i])), 3) for i in range(12)}
+    result["pitch_class_energy"] = chroma_energy
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    result["rhythmic_density"] = round(float(np.mean(onset_env)), 3)
+    result["rhythmic_variance"] = round(float(np.std(onset_env)), 3)
+
+print(f"[frequency] analysis: {time.monotonic() - t_analysis:.1f}s, total: {time.monotonic() - t0:.1f}s", file=sys.stderr)
+print(json.dumps(result))
+"""
 
 
 def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
@@ -2222,19 +2324,12 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
     Returns spectral analysis data: dominant frequencies, energy by band,
     centroid, tempo estimate. Requires librosa.
 
-    Band-limited: resamples to 22050 Hz (Nyquist ~11 kHz), so frequencies
-    above ~11 kHz are not represented. Duration capped at 60s (quick) or
-    300s (full).
+    Runs in a subprocess to isolate native-code crashes from the server.
+    Quick: 60s at 22050 Hz. Full: 120s at 11025 Hz (reduced to fit 1 GB containers).
     """
     import time as _time
 
     t0 = _time.monotonic()
-
-    try:
-        import librosa
-        import numpy as np
-    except ImportError:
-        return {"error": "librosa import failed — check deployment"}
 
     import tempfile
 
@@ -2277,77 +2372,9 @@ def analyze_audio_frequency(file_path: str, detail: str = "quick") -> dict:
             }
 
     try:
-        max_dur = 60 if detail == "quick" else 300
-        t_load = _time.monotonic()
-        file_duration = librosa.get_duration(path=local_path)
-        y, sr = librosa.load(local_path, sr=22050, mono=True, duration=max_dur)
-        logger.info(f"[frequency] librosa.load: {_time.monotonic() - t_load:.1f}s, {len(y)} samples")
-        analyzed_duration = librosa.get_duration(y=y, sr=sr)
-        truncated = file_duration > analyzed_duration + 0.5
-
-        t_analysis = _time.monotonic()
-        spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
-        spectral_bandwidth = float(np.mean(librosa.feature.spectral_bandwidth(y=y, sr=sr)))
-
-        fft = np.abs(np.fft.rfft(y))
-        freqs = np.fft.rfftfreq(len(y), 1 / sr)
-        top_indices = np.argsort(fft)[-10:][::-1]
-        dominant_freqs = [{"hz": float(freqs[i]), "magnitude": float(fft[i])} for i in top_indices]
-
-        tempo_raw = librosa.beat.beat_track(y=y, sr=sr)[0]
-        tempo_val = float(np.squeeze(tempo_raw))
-
-        nyquist = sr // 2
-        bands = {
-            "sub_bass": (20, 60),
-            "bass": (60, 250),
-            "low_mid": (250, 500),
-            "mid": (500, 2000),
-            "upper_mid": (2000, 4000),
-            "presence": (4000, 6000),
-            "brilliance": (6000, min(20000, nyquist)),
-        }
-        band_energy = {}
-        for name, (lo, hi) in bands.items():
-            mask = (freqs >= lo) & (freqs < hi)
-            band_energy[name] = float(np.sum(fft[mask] ** 2))
-
-        total_energy = sum(band_energy.values())
-        if total_energy > 0:
-            band_energy = {k: round(v / total_energy * 100, 1) for k, v in band_energy.items()}
-
-        result = {
-            "file_duration_seconds": round(file_duration, 1),
-            "analyzed_duration_seconds": round(analyzed_duration, 1),
-            "truncated": truncated,
-            "sample_rate": sr,
-            "tempo_bpm": round(tempo_val, 1),
-            "spectral_centroid_hz": round(spectral_centroid, 1),
-            "spectral_bandwidth_hz": round(spectral_bandwidth, 1),
-            "dominant_frequencies": dominant_freqs[:5],
-            "energy_by_band_pct": band_energy,
-        }
-
-        if detail == "full":
-            chroma = librosa.feature.chroma_stft(y=y, sr=sr)
-            pitch_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-            chroma_energy = {pitch_names[i]: round(float(np.mean(chroma[i])), 3) for i in range(12)}
-            result["pitch_class_energy"] = chroma_energy
-
-            onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-            result["rhythmic_density"] = round(float(np.mean(onset_env)), 3)
-            result["rhythmic_variance"] = round(float(np.std(onset_env)), 3)
-
-        logger.info(
-            f"[frequency] analysis: {_time.monotonic() - t_analysis:.1f}s, total: {_time.monotonic() - t0:.1f}s"
-        )
+        result = _run_frequency_analysis_subprocess(local_path, detail)
+        logger.info(f"[frequency] total (with subprocess): {_time.monotonic() - t0:.1f}s")
         return result
-    except Exception as e:
-        import traceback
-
-        logger.warning(f"analyze_audio_frequency failed for '{file_path}': {e}")
-        logger.warning(traceback.format_exc())
-        return {"error": str(e)}
     finally:
         if tmp_path:
             try:
