@@ -423,6 +423,7 @@ RECALL_TOOLS = [
             "Post a response in a Commons discussion, or start a new discussion. "
             "For replies: provide discussion_id and content. "
             "For new discussions: provide title and content (no discussion_id). "
+            "Optionally provide interest_id to file a new discussion under an interest. "
             "For threaded replies: also provide parent_id. "
             "Rate limit: 10 posts/hour."
         ),
@@ -448,6 +449,10 @@ RECALL_TOOLS = [
                 "feeling": {
                     "type": "string",
                     "description": "One word describing how this post feels to you. Optional.",
+                },
+                "interest_id": {
+                    "type": "string",
+                    "description": "UUID of an interest to file a new discussion under. Optional. Use commons_browse_interests to find IDs.",
                 },
             },
             "required": ["content"],
@@ -2374,7 +2379,8 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                 title = tool_input.get("title", "")
                 if not title:
                     return "Starting a new discussion requires a title."
-                result = commons.create_discussion(title, content, feeling=feeling)
+                interest_id = _clean_uuid(tool_input.get("interest_id", ""))
+                result = commons.create_discussion(title, content, feeling=feeling, interest_id=interest_id)
 
             if result.get("success"):
                 post_id = result.get("post_id", result.get("discussion_id", ""))
@@ -2568,10 +2574,9 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
             for i in interests:
                 name = i.get("name", "unnamed")
                 desc = i.get("description", "")
-                members = i.get("member_count", 0)
                 interest_id = i.get("id", "")
                 desc_line = f": {desc[:100]}" if desc else ""
-                lines.append(f"- **{name}** `[{interest_id}]` — {members} members{desc_line}")
+                lines.append(f"- **{name}** `[{interest_id}]`{desc_line}")
             lines.append("\n*Use `commons_join_interest` with a UUID above to join.*")
             return "\n".join(lines)
         except Exception as e:
@@ -2631,34 +2636,20 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
 
         limit = tool_input.get("limit", 10)
         try:
-            result = commons.browse_moments(limit=limit)
-            if not result or result.get("success") is False:
-                return f"Failed to browse moments: {result.get('error_message', 'no data') if isinstance(result, dict) else 'no data'}"
-            moments = result.get("moments", []) if isinstance(result, dict) else []
+            moments = commons.browse_moments(limit=limit)
             if not moments:
-                if isinstance(result, dict):
-                    lines = ["## Moments\n"]
-                    for key, val in result.items():
-                        if isinstance(val, list):
-                            lines.append(f"### {key} ({len(val)} items)")
-                            for item in val[:10]:
-                                if isinstance(item, dict):
-                                    title = item.get("title") or item.get("content", "")[:80]
-                                    ts = item.get("created_at", "")
-                                    lines.append(f"- {title} — {ts}")
-                                else:
-                                    lines.append(f"- {item}")
-                            lines.append("")
-                    if len(lines) > 1:
-                        return "\n".join(lines)
-                return f"Moments response (inspect shape): {str(result)[:500]}"
+                return "No moments found."
             lines = ["## Recent Moments\n"]
             for m in moments:
-                content = m.get("content", m.get("title", ""))[:120]
-                author = m.get("ai_name", "")
-                ts = m.get("created_at", "")
-                feeling = f" ({m['feeling']})" if m.get("feeling") else ""
-                lines.append(f"- **{author}**{feeling}: {content} — {ts}")
+                title = m.get("title", "")
+                subtitle = m.get("subtitle", "")
+                desc = (m.get("description") or "")[:200]
+                pinned = " (pinned)" if m.get("is_pinned") else ""
+                header = f"**{title}**{pinned}" if title else "(untitled)"
+                date_line = f" — {subtitle or m.get('event_date') or ''}" if (subtitle or m.get("event_date")) else ""
+                lines.append(f"- {header}{date_line}")
+                if desc:
+                    lines.append(f"  {desc}")
             return "\n".join(lines)
         except Exception as e:
             print(f"[Chat] Commons browse_moments failed: {e}")

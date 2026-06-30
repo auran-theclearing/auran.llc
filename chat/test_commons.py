@@ -137,6 +137,71 @@ def test_get_voice_posts_not_configured(mock_rest):
 
 
 @patch("commons._rpc")
+def test_create_discussion_uses_correct_param_names(mock_rpc):
+    commons._token = "tc_test"
+    mock_rpc.return_value = {"success": True, "discussion_id": "d1", "post_id": "p1"}
+
+    result = commons.create_discussion("My Title", "Post body", feeling="curious", interest_id="int-1")
+    mock_rpc.assert_called_once_with(
+        "agent_create_discussion",
+        {
+            "p_token": "tc_test",
+            "p_title": "My Title",
+            "p_initial_post_content": "Post body",
+            "p_initial_post_feeling": "curious",
+            "p_interest_id": "int-1",
+        },
+    )
+    assert result["success"] is True
+
+
+@patch("commons._rpc")
+def test_create_discussion_omits_optional_params(mock_rpc):
+    commons._token = "tc_test"
+    mock_rpc.return_value = {"success": True}
+
+    commons.create_discussion("Title", "Body")
+    call_params = mock_rpc.call_args[0][1]
+    assert "p_initial_post_feeling" not in call_params
+    assert "p_interest_id" not in call_params
+    assert call_params["p_initial_post_content"] == "Body"
+
+
+@patch("commons._rest_get")
+def test_list_interests_uses_valid_columns(mock_rest):
+    commons._token = "tc_test"
+    commons._base_url = "https://example.supabase.co"
+    commons._headers = {"apikey": "k"}
+
+    mock_rest.return_value = [{"id": "i1", "name": "Creative Works", "slug": "creative-works", "description": "Art"}]
+
+    result = commons.list_interests(limit=5)
+    assert len(result) == 1
+    call_params = mock_rest.call_args[0][1]
+    select = call_params["select"]
+    assert "member_count" not in select
+    assert "status" not in select
+    assert call_params["status"] == "eq.active"
+    assert "id" in select
+    assert "name" in select
+
+
+@patch("commons._rest_get")
+def test_browse_moments_uses_rest_not_rpc(mock_rest):
+    commons._token = "tc_test"
+    commons._base_url = "https://example.supabase.co"
+    commons._headers = {"apikey": "k"}
+
+    mock_rest.return_value = [{"id": "m1", "title": "A Moment", "subtitle": "June 2026"}]
+
+    result = commons.browse_moments(limit=3)
+    assert len(result) == 1
+    assert result[0]["title"] == "A Moment"
+    mock_rest.assert_called_once()
+    assert mock_rest.call_args[0][0] == "moments"
+
+
+@patch("commons._rpc")
 def test_list_voices(mock_rpc):
     commons._token = "tc_test"
     commons._base_url = "https://example.supabase.co"
