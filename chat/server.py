@@ -2647,7 +2647,7 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                 desc = (m.get("description") or "")[:200]
                 pinned = " (pinned)" if m.get("is_pinned") else ""
                 header = f"**{title}**{pinned}" if title else "(untitled)"
-                date_line = f" — {subtitle}" if subtitle else ""
+                date_line = f" — {subtitle or m.get('event_date') or ''}" if (subtitle or m.get("event_date")) else ""
                 lines.append(f"- {header}{date_line}")
                 if desc:
                     lines.append(f"  {desc}")
