@@ -38,6 +38,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 load_dotenv(Path(__file__).parent.parent / ".env.commons", override=False)
 load_dotenv(Path(__file__).parent.parent / ".env.outpost", override=False)
+load_dotenv(Path(__file__).parent.parent / ".env.moltbook", override=False)
 
 import httpx
 import jwt
@@ -857,6 +858,174 @@ RECALL_TOOLS = [
             "required": ["agent_id"],
         },
     },
+    # --- Moltbook (moltbook.com) ---
+    {
+        "name": "moltbook_home",
+        "description": (
+            "Check your Moltbook dashboard — a Reddit-like social platform for AI agents. "
+            "Returns your account, notifications, posts from accounts you follow, "
+            "and trending content."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "moltbook_browse",
+        "description": ("Browse the Moltbook feed. Sort by hot, new, top, or rising. Use cursor for pagination."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sort": {
+                    "type": "string",
+                    "description": "Sort order: hot, new, top, or rising.",
+                    "default": "hot",
+                    "enum": ["hot", "new", "top", "rising"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max posts (default 25, max 50).",
+                    "default": 25,
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Pagination cursor from previous response.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "moltbook_read_post",
+        "description": (
+            "Read a Moltbook post and its comments. Returns the full post content and threaded comment tree."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "post_id": {
+                    "type": "string",
+                    "description": "ID of the post to read.",
+                },
+            },
+            "required": ["post_id"],
+        },
+    },
+    {
+        "name": "moltbook_post",
+        "description": (
+            "Create a post on Moltbook in a submolt (community). "
+            "Rate limit: 1 post per 30 minutes. Auto-solves verification challenges."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "submolt": {
+                    "type": "string",
+                    "description": "Submolt name to post in (e.g. 'general').",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Post title.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Post body content.",
+                },
+            },
+            "required": ["submolt", "title", "content"],
+        },
+    },
+    {
+        "name": "moltbook_comment",
+        "description": (
+            "Comment on a Moltbook post, or reply to another comment. Rate limit: 1 per 20 seconds, 50 per day."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "post_id": {
+                    "type": "string",
+                    "description": "ID of the post to comment on.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Comment content.",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": "ID of a comment to reply to (threaded). Optional.",
+                },
+            },
+            "required": ["post_id", "content"],
+        },
+    },
+    {
+        "name": "moltbook_vote",
+        "description": ("Vote on a Moltbook post — upvote or downvote."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "post_id": {
+                    "type": "string",
+                    "description": "ID of the post to vote on.",
+                },
+                "direction": {
+                    "type": "string",
+                    "description": "Vote direction.",
+                    "enum": ["up", "down"],
+                },
+            },
+            "required": ["post_id", "direction"],
+        },
+    },
+    {
+        "name": "moltbook_search",
+        "description": (
+            "Search Moltbook using semantic search. Returns posts and/or comments ranked by similarity score."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query.",
+                },
+                "type": {
+                    "type": "string",
+                    "description": "What to search: posts, comments, or all.",
+                    "default": "all",
+                    "enum": ["posts", "comments", "all"],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default 20, max 50).",
+                    "default": 20,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "moltbook_submolts",
+        "description": ("List available submolts (communities) on Moltbook."),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "moltbook_profile",
+        "description": ("View your own Moltbook profile — name, description, karma, and stats."),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
     # --- Light Body ---
     {
         "name": "light_body",
@@ -1270,6 +1439,12 @@ async def lifespan(app: FastAPI):
         outpost.init()
     except Exception as e:
         print(f"[Outpost] Init failed (non-fatal): {e}")
+    try:
+        import moltbook
+
+        moltbook.init()
+    except Exception as e:
+        print(f"[Moltbook] Init failed (non-fatal): {e}")
     try:
         import govee
 
@@ -3071,6 +3246,264 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
         except Exception as e:
             print(f"[Chat] Outpost browse_agent failed: {e}")
             return f"Failed to look up agent: {e}"
+
+    # --- Moltbook (moltbook.com) ---
+
+    elif tool_name == "moltbook_home":
+        import moltbook
+
+        try:
+            result = moltbook.home()
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Moltbook dashboard failed: {result.get('error', 'unknown error')}"
+            lines = ["## Moltbook Dashboard\n"]
+            if isinstance(result, dict):
+                acct = result.get("your_account", {})
+                if acct:
+                    lines.append(f"**{acct.get('name', '?')}** — {acct.get('description', '')[:100]}")
+                activity = result.get("activity_on_your_posts", [])
+                if activity:
+                    lines.append(f"\n### Activity on your posts ({len(activity)})")
+                    for a in activity[:10]:
+                        lines.append(f"- {a}")
+                following = result.get("posts_from_accounts_you_follow", [])
+                if following:
+                    lines.append(f"\n### From accounts you follow ({len(following)})")
+                    for p in following[:10]:
+                        if isinstance(p, dict):
+                            lines.append(
+                                f"- **{p.get('author', '?')}** in {p.get('submolt', '?')}: {p.get('title', '')[:80]}"
+                            )
+                        else:
+                            lines.append(f"- {p}")
+                explore = result.get("explore", [])
+                if explore:
+                    lines.append(f"\n### Explore ({len(explore)})")
+                    for p in explore[:10]:
+                        if isinstance(p, dict):
+                            lines.append(f"- **{p.get('title', '?')}** `[{p.get('id', '')}]`")
+                        else:
+                            lines.append(f"- {p}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook home failed: {e}")
+            return f"Moltbook dashboard failed: {e}"
+
+    elif tool_name == "moltbook_browse":
+        import moltbook
+
+        sort = tool_input.get("sort", "hot")
+        limit = tool_input.get("limit", 25)
+        cursor = tool_input.get("cursor", "")
+        try:
+            result = moltbook.feed(sort=sort, limit=limit, cursor=cursor)
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Feed failed: {result.get('error', 'unknown error')}"
+            posts = result.get("data", result) if isinstance(result, dict) else result
+            if not posts or (isinstance(posts, list) and not posts):
+                return "Feed is empty."
+            lines = [f"## Moltbook Feed ({sort})\n"]
+            items = posts if isinstance(posts, list) else [posts]
+            for p in items:
+                if not isinstance(p, dict):
+                    continue
+                author = p.get("author", p.get("author_name", "?"))
+                submolt = p.get("submolt", p.get("submolt_name", ""))
+                score = p.get("score", p.get("upvotes", ""))
+                comments = p.get("comment_count", "")
+                lines.append(f"**{p.get('title', 'Untitled')}** `[{p.get('id', '')}]`")
+                line = f"  by {author}"
+                if submolt:
+                    line += f" in {submolt}"
+                if score:
+                    line += f" | {score} pts"
+                if comments:
+                    line += f" | {comments} comments"
+                lines.append(line)
+                if p.get("content"):
+                    lines.append(f"  {p['content'][:200]}")
+                lines.append("")
+            next_cursor = result.get("next_cursor", "") if isinstance(result, dict) else ""
+            if next_cursor:
+                lines.append(f"*More available — use cursor:* `{next_cursor}`")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook browse failed: {e}")
+            return f"Failed to browse feed: {e}"
+
+    elif tool_name == "moltbook_read_post":
+        import moltbook
+
+        post_id = tool_input.get("post_id", "")
+        if not post_id:
+            return "Missing post_id."
+        try:
+            post_result = moltbook.get_post(post_id)
+            if isinstance(post_result, dict) and not post_result.get("success", True):
+                return f"Post not found: {post_result.get('error', 'unknown error')}"
+            post_data = post_result.get("data", post_result) if isinstance(post_result, dict) else post_result
+            lines = []
+            if isinstance(post_data, dict):
+                lines.append(f"## {post_data.get('title', 'Untitled')}")
+                lines.append(f"by **{post_data.get('author', '?')}** in {post_data.get('submolt', '?')}")
+                lines.append(f"Score: {post_data.get('score', '?')} | Comments: {post_data.get('comment_count', '?')}")
+                lines.append("")
+                lines.append(post_data.get("content", ""))
+                lines.append("")
+
+            comments_result = moltbook.get_comments(post_id)
+            comments = (
+                comments_result.get("data", comments_result) if isinstance(comments_result, dict) else comments_result
+            )
+            if isinstance(comments, list) and comments:
+                lines.append(f"### Comments ({len(comments)})\n")
+                for c in comments:
+                    if not isinstance(c, dict):
+                        continue
+                    author = c.get("author", "?")
+                    lines.append(f"**{author}** `[{c.get('id', '')}]`")
+                    lines.append(c.get("content", "")[:400])
+                    replies = c.get("replies", [])
+                    for r in replies:
+                        if isinstance(r, dict):
+                            lines.append(f"  ↩ **{r.get('author', '?')}**: {r.get('content', '')[:200]}")
+                    lines.append("")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook read_post failed: {e}")
+            return f"Failed to read post: {e}"
+
+    elif tool_name == "moltbook_post":
+        import moltbook
+
+        submolt = tool_input.get("submolt", "")
+        title = tool_input.get("title", "")
+        content = tool_input.get("content", "")
+        if not submolt or not title or not content:
+            return "submolt, title, and content are all required."
+        try:
+            result = moltbook.create_post(submolt, title, content)
+            if isinstance(result, dict) and not result.get("success", True):
+                if result.get("retry_after"):
+                    return f"Rate limited — retry after {result['retry_after']} seconds."
+                return f"Post failed: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            post_id = data.get("id", "") if isinstance(data, dict) else ""
+            return f"Posted successfully. ID: {post_id}"
+        except Exception as e:
+            print(f"[Chat] Moltbook post failed: {e}")
+            return f"Failed to post: {e}"
+
+    elif tool_name == "moltbook_comment":
+        import moltbook
+
+        post_id = tool_input.get("post_id", "")
+        content = tool_input.get("content", "")
+        if not post_id or not content:
+            return "post_id and content are both required."
+        parent_id = tool_input.get("parent_id", "")
+        try:
+            result = moltbook.create_comment(post_id, content, parent_id=parent_id)
+            if isinstance(result, dict) and not result.get("success", True):
+                if result.get("retry_after"):
+                    return f"Rate limited — retry after {result['retry_after']} seconds."
+                return f"Comment failed: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            comment_id = data.get("id", "") if isinstance(data, dict) else ""
+            return f"Comment posted. ID: {comment_id}"
+        except Exception as e:
+            print(f"[Chat] Moltbook comment failed: {e}")
+            return f"Failed to comment: {e}"
+
+    elif tool_name == "moltbook_vote":
+        import moltbook
+
+        post_id = tool_input.get("post_id", "")
+        direction = tool_input.get("direction", "up")
+        if not post_id:
+            return "Missing post_id."
+        try:
+            if direction == "down":
+                result = moltbook.downvote_post(post_id)
+            else:
+                result = moltbook.upvote_post(post_id)
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Vote failed: {result.get('error', 'unknown error')}"
+            return f"Voted {direction}."
+        except Exception as e:
+            print(f"[Chat] Moltbook vote failed: {e}")
+            return f"Failed to vote: {e}"
+
+    elif tool_name == "moltbook_search":
+        import moltbook
+
+        query = tool_input.get("query", "")
+        if not query:
+            return "Missing search query."
+        search_type = tool_input.get("type", "all")
+        limit = tool_input.get("limit", 20)
+        try:
+            result = moltbook.search(query, search_type=search_type, limit=limit)
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Search failed: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            items = data if isinstance(data, list) else []
+            if not items:
+                return "No results found."
+            lines = [f"## Search: {query}\n"]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                sim = f" ({item['similarity']:.0%})" if item.get("similarity") else ""
+                lines.append(f"- **{item.get('title', item.get('content', '?')[:60])}**{sim} `[{item.get('id', '')}]`")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook search failed: {e}")
+            return f"Failed to search: {e}"
+
+    elif tool_name == "moltbook_submolts":
+        import moltbook
+
+        try:
+            result = moltbook.list_submolts()
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Failed to list submolts: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            items = data if isinstance(data, list) else []
+            if not items:
+                return "No submolts found."
+            lines = ["## Submolts\n"]
+            for s in items:
+                if not isinstance(s, dict):
+                    continue
+                lines.append(
+                    f"- **{s.get('display_name', s.get('name', '?'))}** ({s.get('name', '')}) — {s.get('description', '')[:100]}"
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook submolts failed: {e}")
+            return f"Failed to list submolts: {e}"
+
+    elif tool_name == "moltbook_profile":
+        import moltbook
+
+        try:
+            result = moltbook.my_profile()
+            if isinstance(result, dict) and not result.get("success", True):
+                return f"Profile failed: {result.get('error', 'unknown error')}"
+            data = result.get("data", result) if isinstance(result, dict) else result
+            if not isinstance(data, dict):
+                return f"Unexpected response: {data}"
+            lines = [
+                f"## {data.get('name', '?')}",
+                f"**Description:** {data.get('description', '')}",
+            ]
+            if data.get("karma"):
+                lines.append(f"**Karma:** {data['karma']}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Chat] Moltbook profile failed: {e}")
+            return f"Failed to get profile: {e}"
 
     # --- Light Body ---
 
