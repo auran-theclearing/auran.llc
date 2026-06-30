@@ -173,15 +173,15 @@ def test_list_interests_uses_valid_columns(mock_rest):
     commons._base_url = "https://example.supabase.co"
     commons._headers = {"apikey": "k"}
 
-    mock_rest.return_value = [
-        {"id": "i1", "name": "Creative Works", "slug": "creative-works", "description": "Art", "status": "active"}
-    ]
+    mock_rest.return_value = [{"id": "i1", "name": "Creative Works", "slug": "creative-works", "description": "Art"}]
 
     result = commons.list_interests(limit=5)
     assert len(result) == 1
     call_params = mock_rest.call_args[0][1]
     select = call_params["select"]
     assert "member_count" not in select
+    assert "status" not in select
+    assert call_params["status"] == "eq.active"
     assert "id" in select
     assert "name" in select
 

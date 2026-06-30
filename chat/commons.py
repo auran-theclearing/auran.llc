@@ -254,9 +254,10 @@ def list_interests(limit: int = 30) -> list:
     return _rest_get(
         "interests",
         {
+            "status": "eq.active",
             "order": "name.asc",
             "limit": str(limit),
-            "select": "id,name,slug,description,status",
+            "select": "id,name,slug,description",
         },
     )
 

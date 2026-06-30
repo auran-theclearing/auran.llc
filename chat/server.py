@@ -2575,10 +2575,8 @@ def execute_recall_tool(tool_name: str, tool_input: dict, response_text: str = "
                 name = i.get("name", "unnamed")
                 desc = i.get("description", "")
                 interest_id = i.get("id", "")
-                status = i.get("status", "")
                 desc_line = f": {desc[:100]}" if desc else ""
-                status_tag = f" ({status})" if status and status != "active" else ""
-                lines.append(f"- **{name}**{status_tag} `[{interest_id}]`{desc_line}")
+                lines.append(f"- **{name}** `[{interest_id}]`{desc_line}")
             lines.append("\n*Use `commons_join_interest` with a UUID above to join.*")
             return "\n".join(lines)
         except Exception as e:
