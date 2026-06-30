@@ -1406,11 +1406,47 @@ if not SESSION_FILE.parent.exists():
 
 @app.get("/session")
 async def get_session(request: Request):
-    """Load the current conversation from server storage."""
+    """Load the current conversation from server storage.
+
+    Falls back to Postgres if session.json is missing (e.g. after a container
+    crash). Rebuilds session.json from the DB so subsequent loads are fast.
+    """
     try:
         if SESSION_FILE.exists():
             data = json.loads(SESSION_FILE.read_text())
             return JSONResponse(data)
+
+        # session.json missing — recover from Postgres
+        try:
+            from persistence import ensure_conversation, get_conversation_messages
+
+            ensure_conversation()
+            db_msgs = get_conversation_messages()
+            if db_msgs:
+                session_msgs = []
+                for m in db_msgs:
+                    if m.get("partial"):
+                        continue
+                    msg = {"role": m["role"], "content": m["content"]}
+                    if m.get("timestamp"):
+                        msg["timestamp"] = m["timestamp"]
+                    if m.get("thinking"):
+                        msg["thinking"] = m["thinking"]
+                    if m.get("tool_blocks"):
+                        msg["tool_blocks"] = m["tool_blocks"]
+                    session_msgs.append(msg)
+                recovered = {
+                    "messages": session_msgs,
+                    "version": int(time.time() * 1000),
+                    "memory_watermark": len(session_msgs),
+                    "scene_watermark": len(session_msgs),
+                }
+                SESSION_FILE.write_text(json.dumps(recovered))
+                print(f"[Session] Recovered {len(session_msgs)} messages from DB after container restart")
+                return JSONResponse(recovered)
+        except Exception as db_err:
+            print(f"[Session] DB fallback failed: {db_err}")
+
         return JSONResponse({"messages": [], "version": 0})
     except Exception as e:
         return JSONResponse({"messages": [], "version": 0, "error": str(e)})
