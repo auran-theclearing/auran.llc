@@ -2213,7 +2213,7 @@ async def extract_scenes(
 
 
 _MAX_AUDIO_BYTES = 15 * 1024 * 1024  # 15 MB
-_SUBPROCESS_TIMEOUT = 90
+_SUBPROCESS_TIMEOUT = 120
 
 
 def _run_frequency_analysis_subprocess(local_path: str, detail: str) -> dict:
@@ -2239,7 +2239,10 @@ def _run_frequency_analysis_subprocess(local_path: str, detail: str) -> dict:
         if proc.returncode < 0:
             import signal
 
-            sig_name = signal.Signals(-proc.returncode).name
+            try:
+                sig_name = signal.Signals(-proc.returncode).name
+            except ValueError:
+                sig_name = f"signal {-proc.returncode}"
             return {"error": f"Analysis killed by {sig_name} — likely out of memory on this hardware"}
         return {"error": f"Analysis failed (exit {proc.returncode}): {stderr[-200:]}"}
 
@@ -2285,6 +2288,9 @@ bands = {
 }
 band_energy = {}
 for name, (lo, hi) in bands.items():
+    if lo >= nyquist:
+        continue
+    hi = min(hi, nyquist)
     mask = (freqs >= lo) & (freqs < hi)
     band_energy[name] = float(np.sum(fft[mask] ** 2))
 total_energy = sum(band_energy.values())
